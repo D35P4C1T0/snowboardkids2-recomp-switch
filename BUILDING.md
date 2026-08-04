@@ -55,8 +55,8 @@ Now that you have the required files, you must build [N64Recomp](https://github.
 
 After that, go back to the repository root, and run the following commands:
 ```bash
-./N64Recomp us.rev1.toml
-./RSPRecomp aspMain.us.rev1.toml
+./N64Recomp us.toml
+./RSPRecomp aspMain.us.toml
 ```
 
 ## 4. Building the Project
@@ -78,3 +78,47 @@ Voilà! You should now have a `SnowboardKids2Recompiled` executable in the build
 
 > [!IMPORTANT]  
 > In the game itself, you should be using a standard ROM, not the decompressed one.
+
+## Nintendo Switch port
+
+With devkitA64, libnx, and `switch-sdl2` installed, build the validated SDK/SDL
+bootstrap with:
+
+```bash
+./scripts/switch-build.sh bootstrap
+```
+
+To build the pinned NVK Vulkan driver and the complete runtime/RT64 hardware
+probe, Docker and about 15 GB of free storage are also required:
+
+```bash
+./scripts/build-switch-nvk.sh
+export SK2_SWITCH_NVK_ROOT="$PWD/build-switch-nvk/source/nvk-switch"
+./scripts/switch-build.sh core
+```
+
+This produces `build-switch-core/snowboardkids2-core-probe.nro`. See
+[`docs/SWITCH_PORT.md`](docs/SWITCH_PORT.md) for hardware-test details and the
+remaining playable-build gates.
+
+After the bootstrap passes on hardware, generate the game sources from your
+own decompressed NTSC-U 1.1 ROM:
+
+```bash
+cp /path/to/your/rom.z64 snowboardkids2.z64
+./scripts/generate-recompiled-code.sh
+export SK2_SWITCH_NVK_ROOT="$PWD/build-switch-nvk/source/nvk-switch"
+./scripts/switch-build.sh full
+```
+
+The full-build script reuses the pinned switch-nvk Docker image to compile the
+MIPS patch payload, which also avoids relying on Apple's Clang (it has no MIPS
+backend). The ROM and generated outputs are ignored by Git and are never
+included in a release package.
+
+The complete SD-card payload is staged at
+`build-switch-full/sdcard/switch/snowboardkids2-recompiled/`. Copy that whole
+directory to `sdmc:/switch/`, then add your own ROM as `snowboardkids2.z64`.
+The `assets/` directory is required by the launcher and must accompany the NRO.
+Alternatively, extract `build-switch-full/snowboardkids2-switch-sdcard.zip`
+directly at the SD-card root; it contains the exact `switch/` hierarchy.

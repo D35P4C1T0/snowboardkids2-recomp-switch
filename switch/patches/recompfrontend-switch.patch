@@ -1,0 +1,409 @@
+diff --git a/recompinput/CMakeLists.txt b/recompinput/CMakeLists.txt
+index 899372b..4fdff7c 100644
+--- a/recompinput/CMakeLists.txt
++++ b/recompinput/CMakeLists.txt
+@@ -42,7 +42,7 @@ target_include_directories(recompinput PRIVATE
+ 
+ if (WIN32)
+     target_include_directories(recompinput PRIVATE ${sdl2_SOURCE_DIR}/include)
+-elseif (APPLE OR CMAKE_SYSTEM_NAME MATCHES "Linux")
++elseif (APPLE OR CMAKE_SYSTEM_NAME MATCHES "Linux" OR CMAKE_SYSTEM_NAME STREQUAL "NintendoSwitch")
+     target_include_directories(recompinput PRIVATE ${SDL2_INCLUDE_DIRS})
+ endif()
+ 
+diff --git a/recompui/CMakeLists.txt b/recompui/CMakeLists.txt
+index b9c5458..ae7d0af 100644
+--- a/recompui/CMakeLists.txt
++++ b/recompui/CMakeLists.txt
+@@ -103,7 +103,7 @@ target_include_directories(recompui PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include
+ 
+ if (WIN32)
+     target_include_directories(recompui PRIVATE ${sdl2_SOURCE_DIR}/include)
+-elseif (APPLE OR CMAKE_SYSTEM_NAME MATCHES "Linux")
++elseif (APPLE OR CMAKE_SYSTEM_NAME MATCHES "Linux" OR CMAKE_SYSTEM_NAME STREQUAL "NintendoSwitch")
+     target_include_directories(recompui PRIVATE ${SDL2_INCLUDE_DIRS})
+ endif()
+ 
+diff --git a/recompui/lib/lunasvg b/recompui/lib/lunasvg
+--- a/recompui/lib/lunasvg
++++ b/recompui/lib/lunasvg
+@@ -1 +1 @@
+-Subproject commit 83c58df8103dc7dca423dfd824992af94d49bed6
++Subproject commit 83c58df8103dc7dca423dfd824992af94d49bed6-dirty
+diff --git a/recompui/src/base/ui_state.cpp b/recompui/src/base/ui_state.cpp
+index d23eafa..5c02af9 100644
+--- a/recompui/src/base/ui_state.cpp
++++ b/recompui/src/base/ui_state.cpp
+@@ -33,6 +33,13 @@
+ #include "rml_elements/ui_rml_elements.h"
+ #include "util/file.h"
+ 
++#if defined(__SWITCH__)
++void switch_log_checkpoint(const char*, bool);
++#define RECOMPUI_SWITCH_CHECKPOINT(message) ::switch_log_checkpoint(message, false)
++#else
++#define RECOMPUI_SWITCH_CHECKPOINT(message) ((void)0)
++#endif
++
+ static std::atomic_bool cursor_enabled = true;
+ 
+ void recompui::open_quit_game_prompt() {
+@@ -236,14 +243,19 @@ public:
+         this->window = window;
+ 
+         system_interface = std::make_unique<SystemInterface_SDL>();
++        RECOMPUI_SWITCH_CHECKPOINT("ui: SDL system interface ready");
++#if !defined(__SWITCH__)
+         system_interface->SetWindow(window);
++#endif
+         render_interface.init(interface, device);
++        RECOMPUI_SWITCH_CHECKPOINT("ui: render interface ready");
+ 
+         Rml::SetSystemInterface(system_interface.get());
+         Rml::SetRenderInterface(render_interface.get_rml_interface());
+         Rml::Factory::RegisterEventListenerInstancer(&event_listener_instancer);
+ 
+         Rml::Initialise();
++        RECOMPUI_SWITCH_CHECKPOINT("ui: RmlUi initialized");
+ 
+         recompui::register_custom_elements();
+ 
+@@ -251,11 +263,18 @@ public:
+         recompui::apply_color_hack();
+ 
+         int width, height;
++#if defined(__SWITCH__)
++        width = 1280;
++        height = 720;
++#else
+         SDL_GetWindowSizeInPixels(window, &width, &height);
++#endif
+         
+         context = Rml::CreateContext("main", Rml::Vector2i(width, height));
++        RECOMPUI_SWITCH_CHECKPOINT("ui: RmlUi context created");
+ 
+         Rml::Debugger::Initialise(context);
++        RECOMPUI_SWITCH_CHECKPOINT("ui: RmlUi debugger initialized");
+         {
+             struct FontFace {
+                 const char* filename;
+@@ -283,12 +302,18 @@ public:
+                 Rml::LoadFontFace(extra_font_path.string(), false);
+             }
+         }
++        RECOMPUI_SWITCH_CHECKPOINT("ui: fonts loaded");
+     }
+ 
+     Rml::Vector2i scale_mouse_position(int x, int y) {
+         int window_width = 0;
+         int window_height = 0;
++#if defined(__SWITCH__)
++        window_width = 1280;
++        window_height = 720;
++#else
+         SDL_GetWindowSize(window, &window_width, &window_height);
++#endif
+ 
+         Rml::Vector2i context_dimensions = context->GetDimensions();
+         if (window_width <= 0 || window_height <= 0) {
+@@ -303,10 +328,15 @@ public:
+ 
+     void create_menus() {
+         recompui::init_styling(recompui::file::get_asset_path("recomp.rcss"));
++        RECOMPUI_SWITCH_CHECKPOINT("ui: styling initialized");
+         recompui::init_launcher_menu();
++        RECOMPUI_SWITCH_CHECKPOINT("ui: launcher initialized");
+         recompui::init_prompt_context();
++        RECOMPUI_SWITCH_CHECKPOINT("ui: prompt initialized");
+         recompui::AssignPlayersModal::init();
++        RECOMPUI_SWITCH_CHECKPOINT("ui: player modal initialized");
+         recompui::config::init_modal();
++        RECOMPUI_SWITCH_CHECKPOINT("ui: config modal initialized");
+     }
+ 
+     void unload() {
+@@ -531,7 +561,12 @@ std::recursive_mutex ui_state_mutex{};
+ extern SDL_Window* window;
+ 
+ void recompui::get_window_size(int& width, int& height) {
++#if defined(__SWITCH__)
++    width = 1280;
++    height = 720;
++#else
+     SDL_GetWindowSizeInPixels(window, &width, &height);
++#endif
+ }
+ 
+ inline const std::string read_file_to_string(std::filesystem::path path) {
+@@ -542,11 +577,14 @@ inline const std::string read_file_to_string(std::filesystem::path path) {
+ }
+ 
+ void init_hook(plume::RenderInterface* interface, plume::RenderDevice* device) {
++    RECOMPUI_SWITCH_CHECKPOINT("ui: init hook entered");
+ #if defined(__linux__)
+     std::locale::global(std::locale::classic());
+ #endif
+     ui_state = std::make_unique<UIState>(window, interface, device);
++    RECOMPUI_SWITCH_CHECKPOINT("ui: state constructed");
+     ui_state->create_menus();
++    RECOMPUI_SWITCH_CHECKPOINT("ui: init hook complete");
+ }
+ 
+ moodycamel::ConcurrentQueue<SDL_Event> ui_event_queue{};
+diff --git a/recompui/src/composites/ui_mod_installer.cpp b/recompui/src/composites/ui_mod_installer.cpp
+index 1f98b3c..3024b9f 100644
+--- a/recompui/src/composites/ui_mod_installer.cpp
++++ b/recompui/src/composites/ui_mod_installer.cpp
+@@ -15,6 +15,11 @@ namespace recompui {
+         return file_path.extension() == ".so" || file_path.filename().string().find(".so.") != std::string::npos;
+ #elif defined(__APPLE__)
+         return file_path.extension() == ".dylib";
++#elif defined(__SWITCH__)
++        // Horizon builds intentionally disable dynamic code modules. Data-only
++        // NRM/RTZ content is still installed and scanned normally.
++        (void)file_path;
++        return false;
+ #else
+         static_assert(false, "Unimplemented for this platform.");
+ #endif
+diff --git a/recompui/src/composites/ui_mod_menu.cpp b/recompui/src/composites/ui_mod_menu.cpp
+index 631cfb7..0d33b41 100644
+--- a/recompui/src/composites/ui_mod_menu.cpp
++++ b/recompui/src/composites/ui_mod_menu.cpp
+@@ -299,7 +299,7 @@ void ModMenu::open_mods_folder() {
+ #elif defined(__APPLE__)
+     std::string command = "open \"" + mods_directory.string() + "\"";
+     std::system(command.c_str());
+-#else
++#elif !defined(__SWITCH__)
+     static_assert(false, "Not implemented for this platform.");
+ #endif
+ }
+diff --git a/recompui/src/core/ui_context.cpp b/recompui/src/core/ui_context.cpp
+index e99229a..fe907ec 100644
+--- a/recompui/src/core/ui_context.cpp
++++ b/recompui/src/core/ui_context.cpp
+@@ -236,8 +236,17 @@ void recompui::init_styling(const std::filesystem::path& rcss_file) {
+     std::string style{};
+     {
+         std::ifstream style_stream{rcss_file};
++        if (!style_stream) {
++            return;
++        }
++
+         style_stream.seekg(0, std::ios::end);
+-        style.resize(style_stream.tellg());
++        const std::streampos style_size = style_stream.tellg();
++        if (style_size <= 0) {
++            return;
++        }
++
++        style.resize(static_cast<size_t>(style_size));
+         style_stream.seekg(0, std::ios::beg);
+ 
+         style_stream.read(style.data(), style.size());
+@@ -246,7 +255,10 @@ void recompui::init_styling(const std::filesystem::path& rcss_file) {
+     rml_stream->SetSourceURL(rcss_file.filename().string());
+ 
+     // Merge user rcss with base rcss.
+-    context_state.style_sheet->MergeStyleSheetContainer(*Rml::Factory::InstanceStyleSheetStream(rml_stream.get()));
++    auto user_style_sheet = Rml::Factory::InstanceStyleSheetStream(rml_stream.get());
++    if (user_style_sheet != nullptr) {
++        context_state.style_sheet->MergeStyleSheetContainer(*user_style_sheet);
++    }
+ 
+     Rml::RegisterPlugin(&init_base_rcss_plugin_instance);
+ }
+diff --git a/recompui/src/renderer/rt64_render_context.cpp b/recompui/src/renderer/rt64_render_context.cpp
+index a7954c7..75eaa90 100644
+--- a/recompui/src/renderer/rt64_render_context.cpp
++++ b/recompui/src/renderer/rt64_render_context.cpp
+@@ -15,6 +15,10 @@
+ #include "recompui/config.h"
+ #include "concurrentqueue.h"
+ 
++#if defined(__SWITCH__)
++void switch_log_checkpoint(const char*, bool);
++#endif
++
+ using namespace recompui;
+ 
+ static RT64::UserConfiguration::Antialiasing device_max_msaa = RT64::UserConfiguration::Antialiasing::None;
+@@ -218,6 +222,9 @@ ultramodern::renderer::GraphicsApi map_graphics_api(RT64::UserConfiguration::Gra
+ }
+ 
+ renderer::RT64Context::RT64Context(uint8_t* rdram, ultramodern::renderer::WindowHandle window_handle, ultramodern::renderer::PresentationMode presentation_mode, bool debug) {
++#if defined(__SWITCH__)
++    ::switch_log_checkpoint("renderer: RT64Context entered", false);
++#endif
+     static unsigned char dummy_rom_header[0x40];
+     recompui::set_render_hooks();
+ 
+@@ -227,6 +234,8 @@ renderer::RT64Context::RT64Context(uint8_t* rdram, ultramodern::renderer::Window
+     appCore.window = window_handle.window;
+ #elif defined(__linux__) || defined(__ANDROID__)
+     appCore.window = window_handle;
++#elif defined(__SWITCH__)
++    appCore.window = reinterpret_cast<plume::RenderWindow>(window_handle);
+ #elif defined(__APPLE__)
+     appCore.window.window = window_handle.window;
+     appCore.window.view = window_handle.view;
+@@ -272,6 +281,9 @@ renderer::RT64Context::RT64Context(uint8_t* rdram, ultramodern::renderer::Window
+ 
+     // Create the RT64 application.
+     app = std::make_unique<RT64::Application>(appCore, appConfig);
++#if defined(__SWITCH__)
++    ::switch_log_checkpoint("renderer: RT64 application allocated", false);
++#endif
+ 
+     // Set initial user config settings based on the current settings.
+     auto& cur_config = ultramodern::renderer::get_graphics_config();
+@@ -304,8 +316,14 @@ renderer::RT64Context::RT64Context(uint8_t* rdram, ultramodern::renderer::Window
+     uint32_t thread_id = 0;
+ #ifdef _WIN32
+     thread_id = window_handle.thread_id;
++#endif
++#if defined(__SWITCH__)
++    ::switch_log_checkpoint("renderer: RT64 application setup entered", false);
+ #endif
+     setup_result = map_setup_result(app->setup(thread_id));
++#if defined(__SWITCH__)
++    ::switch_log_checkpoint("renderer: RT64 application setup returned", false);
++#endif
+     // Get the API that RT64 chose.
+     chosen_api = map_graphics_api(app->chosenGraphicsAPI);
+     if (setup_result != ultramodern::renderer::SetupResult::Success) {
+@@ -345,19 +363,55 @@ void renderer::RT64Context::send_dl(const OSTask* task) {
+ }
+ 
+ void renderer::RT64Context::send_dummy_workload(uint32_t fb_address) {
++#if defined(__SWITCH__)
++    static bool first_dummy = true;
++    const bool trace_dummy = first_dummy;
++    if (trace_dummy) ::switch_log_checkpoint("renderer: dummy list begin entered", false);
++#endif
+     app->state->listProcessBegin();
++#if defined(__SWITCH__)
++    if (trace_dummy) ::switch_log_checkpoint("renderer: dummy list begin returned", false);
++#endif
+     app->state->rdp->setColorImage(G_IM_FMT_RGBA, G_IM_SIZ_16b, 320, fb_address);
++#if defined(__SWITCH__)
++    if (trace_dummy) ::switch_log_checkpoint("renderer: dummy color image set", false);
++#endif
+     // G_AD_DISABLE | G_CD_MAGICSQ | G_CK_NONE | G_TC_FILT | G_TF_BILERP | G_TT_NONE | G_TL_TILE | G_TD_CLAMP | G_TP_PERSP | G_CYC_FILL | G_PM_NPRIMITIVE
+     // G_AC_NONE | G_ZS_PIXEL | G_RM_NOOP | G_RM_NOOP2
+     app->state->rdp->setOtherMode(0x382C30, 0);
++#if defined(__SWITCH__)
++    if (trace_dummy) ::switch_log_checkpoint("renderer: dummy other mode set", false);
++#endif
+     app->state->rdp->fillRect(0, 0, 320 << 2, 240 << 2);
++#if defined(__SWITCH__)
++    if (trace_dummy) ::switch_log_checkpoint("renderer: dummy fill rectangle set", false);
++#endif
+     app->state->fullSync();
++#if defined(__SWITCH__)
++    if (trace_dummy) ::switch_log_checkpoint("renderer: dummy full sync returned", false);
++#endif
+     app->state->listProcessEnd();
++#if defined(__SWITCH__)
++    if (trace_dummy) {
++        ::switch_log_checkpoint("renderer: dummy list end returned", false);
++        first_dummy = false;
++    }
++#endif
+ }
+ 
+ void renderer::RT64Context::update_screen() {
++#if defined(__SWITCH__)
++    static bool first_update = true;
++    if (first_update) ::switch_log_checkpoint("renderer: first updateScreen entered", false);
++#endif
+     check_refresh_rate_changes();
+     app->updateScreen();
++#if defined(__SWITCH__)
++    if (first_update) {
++        ::switch_log_checkpoint("renderer: first updateScreen returned", false);
++        first_update = false;
++    }
++#endif
+ }
+ 
+ void renderer::RT64Context::shutdown() {
+diff --git a/recompui/src/util/file.cpp b/recompui/src/util/file.cpp
+index 7ee84ed..3463cce 100644
+--- a/recompui/src/util/file.cpp
++++ b/recompui/src/util/file.cpp
+@@ -1,7 +1,9 @@
+ #include "file.h"
+ 
+ #include <SDL.h>
++#if !defined(__SWITCH__)
+ #include "nfd.h"
++#endif
+ #include "RmlUi/Core.h"
+ 
+ #include "recompui/program_config.h"
+@@ -20,6 +22,7 @@
+ #endif
+ 
+ namespace recompui {
++#if !defined(__SWITCH__)
+     static void perform_file_dialog_operation(const std::function<void(bool, const std::filesystem::path&)>& callback) {
+         nfdnchar_t* native_path = nullptr;
+         nfdresult_t result = NFD_OpenDialogN(&native_path, nullptr, 0, nullptr);
+@@ -57,8 +60,15 @@ namespace recompui {
+ 
+         callback(success, paths);
+     }
++#endif
+ 
+     std::filesystem::path file::get_app_folder_path() {
++#if defined(__SWITCH__)
++#ifndef RECOMP_SWITCH_APP_FOLDER
++#define RECOMP_SWITCH_APP_FOLDER "sdmc:/switch/snowboardkids2-recompiled"
++#endif
++        return RECOMP_SWITCH_APP_FOLDER;
++#else
+         // directly check for portable.txt (windows and native linux binary)
+         if (std::filesystem::exists("portable.txt")) {
+             return std::filesystem::current_path();
+@@ -112,10 +122,13 @@ namespace recompui {
+ #endif
+ 
+         return recomp_dir;
++#endif
+     }
+ 
+     std::filesystem::path file::get_program_path() {
+-#if defined(__APPLE__)
++#if defined(__SWITCH__)
++        return file::get_app_folder_path();
++#elif defined(__APPLE__)
+         return file::apple::get_bundle_resource_directory();
+ #elif defined(__linux__) && defined(RECOMP_FLATPAK)
+         return "/app/bin";
+@@ -129,7 +142,10 @@ namespace recompui {
+     }
+ 
+     void file::open_file_dialog(std::function<void(bool success, const std::filesystem::path& path)> callback) {
+-#ifdef __APPLE__
++#if defined(__SWITCH__)
++        const std::filesystem::path rom_path = file::get_app_folder_path() / "snowboardkids2.z64";
++        callback(std::filesystem::is_regular_file(rom_path), rom_path);
++#elif defined(__APPLE__)
+         file::apple::dispatch_on_ui_thread([callback]() {
+             perform_file_dialog_operation(callback);
+         });
+@@ -139,7 +155,11 @@ namespace recompui {
+     }
+ 
+     void file::open_file_dialog_multiple(std::function<void(bool success, const std::list<std::filesystem::path>& paths)> callback) {
+-#ifdef __APPLE__
++#if defined(__SWITCH__)
++        // Mods are discovered directly from the SD-card mods directory. There
++        // is no native multi-file picker on Horizon.
++        callback(false, {});
++#elif defined(__APPLE__)
+         file::apple::dispatch_on_ui_thread([callback]() {
+             perform_file_dialog_operation_multiple(callback);
+         });

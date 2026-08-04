@@ -1,0 +1,55 @@
+diff --git a/volk.c b/volk.c
+index 90b08e9..9387183 100644
+--- a/volk.c
++++ b/volk.c
+@@ -13,7 +13,7 @@
+ 	#else
+ 		typedef int (__stdcall* FARPROC)(void);
+ 	#endif
+-#else
++#elif !defined(__SWITCH__)
+ #	include <dlfcn.h>
+ #endif
+ 
+@@ -72,15 +72,16 @@ static PFN_vkVoidFunction nullProcAddrStub(void* context, const char* name)
+ 
+ VkResult volkInitialize(void)
+ {
++	void* module = NULL;
+ #if defined(_WIN32)
+-	HMODULE module = LoadLibraryA("vulkan-1.dll");
++	module = (void*)LoadLibraryA("vulkan-1.dll");
+ 	if (!module)
+ 		return VK_ERROR_INITIALIZATION_FAILED;
+ 
+ 	// note: function pointer is cast through void function pointer to silence cast-function-type warning on gcc8
+ 	vkGetInstanceProcAddr = (PFN_vkGetInstanceProcAddr)(void(*)(void))GetProcAddress(module, "vkGetInstanceProcAddr");
+ #elif defined(__APPLE__)
+-	void* module = dlopen("libvulkan.dylib", RTLD_NOW | RTLD_LOCAL);
++	module = dlopen("libvulkan.dylib", RTLD_NOW | RTLD_LOCAL);
+ 	if (!module)
+ 		module = dlopen("libvulkan.1.dylib", RTLD_NOW | RTLD_LOCAL);
+ 	// modern versions of macOS don't search /usr/local/lib automatically contrary to what man dlopen says
+@@ -99,8 +100,12 @@ VkResult volkInitialize(void)
+ 		return VK_ERROR_INITIALIZATION_FAILED;
+ 
+ 	vkGetInstanceProcAddr = (PFN_vkGetInstanceProcAddr)dlsym(module, "vkGetInstanceProcAddr");
++#elif defined(__SWITCH__)
++	// A Switch build uses volkInitializeCustom with the statically linked NVK
++	// ICD. Keep the desktop loader entry point unavailable by design.
++	return VK_ERROR_INITIALIZATION_FAILED;
+ #else
+-	void* module = dlopen("libvulkan.so.1", RTLD_NOW | RTLD_LOCAL);
++	module = dlopen("libvulkan.so.1", RTLD_NOW | RTLD_LOCAL);
+ 	if (!module)
+ 		module = dlopen("libvulkan.so", RTLD_NOW | RTLD_LOCAL);
+ 	if (!module)
+@@ -130,7 +135,7 @@ void volkFinalize(void)
+ 	{
+ #if defined(_WIN32)
+ 		FreeLibrary((HMODULE)loadedModule);
+-#else
++#elif !defined(__SWITCH__)
+ 		dlclose(loadedModule);
+ #endif
+ 	}

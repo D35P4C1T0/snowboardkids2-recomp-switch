@@ -86,6 +86,128 @@ configure_file(
     @ONLY
 )
 
+# The Horizon OS port is being brought up in layers. The bootstrap target is a
+# small, hardware-runnable NRO that validates the devkitA64, libnx, SDL2, audio,
+# controller, and SD-card path before the much larger RT64 Vulkan integration is
+# enabled. Keeping it as an early return also avoids perturbing desktop builds.
+if(CMAKE_SYSTEM_NAME STREQUAL "NintendoSwitch")
+    option(
+        SK2_SWITCH_BOOTSTRAP_ONLY
+        "Build the Switch platform bootstrap NRO instead of the game runtime"
+        ON
+    )
+    option(
+        SK2_SWITCH_CORE_PROBE_ONLY
+        "Cross-build the complete runtime/frontend/RT64 stack without generated game code"
+        ON
+    )
+
+    if(SK2_SWITCH_BOOTSTRAP_ONLY)
+        add_subdirectory(switch)
+        return()
+    endif()
+
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(SDL2 REQUIRED IMPORTED_TARGET sdl2)
+    pkg_check_modules(FREETYPE REQUIRED IMPORTED_TARGET freetype2)
+
+    if(NOT TARGET SDL2::SDL2)
+        add_library(SDL2::SDL2 ALIAS PkgConfig::SDL2)
+    endif()
+
+    set(SDL2_FOUND TRUE)
+    set(SDL2_LIBRARIES SDL2::SDL2)
+
+    # RecompFrontend reuses RT64's shader helper functions from the parent
+    # scope, so provide runnable host DXC settings before adding either tree.
+    set(DXC_SPV_OPTS "-spirv" "-fspv-target-env=vulkan1.0" "-fvk-use-dx-layout")
+    set(DXC_PS_OPTS "-I${CMAKE_SOURCE_DIR}/src" "-E" "PSMain" "-T" "ps_6_0" "-D" "DYNAMIC_RENDER_PARAMS")
+    set(DXC_VS_OPTS "-I${CMAKE_SOURCE_DIR}/src" "-E" "VSMain" "-T" "vs_6_0" "-D" "DYNAMIC_RENDER_PARAMS" "-fvk-invert-y")
+    if(CMAKE_HOST_APPLE)
+        if(CMAKE_HOST_SYSTEM_PROCESSOR MATCHES "x86_64|amd64|AMD64")
+            set(DXC
+                "DYLD_LIBRARY_PATH=${CMAKE_SOURCE_DIR}/lib/rt64/src/contrib/dxc/lib/x64"
+                "${CMAKE_SOURCE_DIR}/lib/rt64/src/contrib/dxc/bin/x64/dxc-macos"
+            )
+        else()
+            set(DXC
+                "DYLD_LIBRARY_PATH=${CMAKE_SOURCE_DIR}/lib/rt64/src/contrib/dxc/lib/arm64"
+                "${CMAKE_SOURCE_DIR}/lib/rt64/src/contrib/dxc/bin/arm64/dxc-macos"
+            )
+        endif()
+    endif()
+
+    set(SK2_HOST_FILE_TO_C
+        "${CMAKE_SOURCE_DIR}/build-tools/file-to-c-host/file_to_c"
+        CACHE FILEPATH "Runnable host file_to_c executable"
+    )
+    if(NOT EXISTS "${SK2_HOST_FILE_TO_C}")
+        message(FATAL_ERROR
+            "The host file_to_c tool is missing. Run "
+            "scripts/generate-recompiled-code.sh after placing snowboardkids2.z64 "
+            "in the repository root."
+        )
+    endif()
+
+    set(SK2_HOST_N64RECOMP
+        "${CMAKE_SOURCE_DIR}/build-tools/n64recomp-host/N64Recomp"
+        CACHE FILEPATH "Runnable host N64Recomp executable"
+    )
+    if(NOT EXISTS "${SK2_HOST_N64RECOMP}")
+        message(FATAL_ERROR
+            "The host N64Recomp tool is missing. Run scripts/generate-recompiled-code.sh."
+        )
+    endif()
+
+    set(SK2_SWITCH_NVK_ROOT "" CACHE PATH
+        "Path to the packaged switch-nvk tree (include/ and lib/libvulkan.a)"
+    )
+    if(SK2_SWITCH_NVK_ROOT STREQUAL "" AND DEFINED ENV{SK2_SWITCH_NVK_ROOT})
+        set(SK2_SWITCH_NVK_ROOT "$ENV{SK2_SWITCH_NVK_ROOT}")
+    endif()
+
+    find_path(SK2_SWITCH_NVK_INCLUDE_DIR
+        NAMES vulkan/vulkan.h
+        PATHS "${SK2_SWITCH_NVK_ROOT}/include"
+        NO_DEFAULT_PATH
+    )
+    find_library(SK2_SWITCH_NVK_LIBRARY
+        NAMES vulkan libvulkan.a
+        PATHS "${SK2_SWITCH_NVK_ROOT}/lib"
+        NO_DEFAULT_PATH
+    )
+    find_library(SK2_SWITCH_NVK_EXPAT_LIBRARY
+        NAMES expat libexpat.a
+        PATHS "${SK2_SWITCH_NVK_ROOT}/lib"
+        NO_DEFAULT_PATH
+    )
+    if(NOT SK2_SWITCH_NVK_INCLUDE_DIR OR
+       NOT SK2_SWITCH_NVK_LIBRARY OR
+       NOT SK2_SWITCH_NVK_EXPAT_LIBRARY)
+        message(FATAL_ERROR
+            "A packaged switch-nvk build is required for the full game. Set "
+            "SK2_SWITCH_NVK_ROOT to an nvk-switch directory containing "
+            "include/, lib/libvulkan.a, and lib/libexpat.a."
+        )
+    endif()
+
+    add_library(SwitchNVK STATIC IMPORTED GLOBAL)
+    set_target_properties(SwitchNVK PROPERTIES
+        IMPORTED_LOCATION "${SK2_SWITCH_NVK_LIBRARY}"
+        INTERFACE_INCLUDE_DIRECTORIES "${SK2_SWITCH_NVK_INCLUDE_DIR}"
+    )
+
+    add_compile_definitions(
+        SK2_SWITCH=1
+        _GNU_SOURCE
+        RECOMP_SWITCH_APP_FOLDER="sdmc:/switch/snowboardkids2-recompiled"
+        PLUME_SDL_VULKAN_ENABLED
+        RT64_SDL_WINDOW_VULKAN
+        VK_USE_PLATFORM_VI_NN
+    )
+    include_directories(BEFORE "${CMAKE_SOURCE_DIR}/switch/compat")
+endif()
+
 if (CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND CMAKE_CXX_SIMULATE_ID STREQUAL "MSVC")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-everything /W4")
 endif()
@@ -131,6 +253,58 @@ set(BUILD_SHARED_LIBS OFF)
 add_subdirectory(${CMAKE_SOURCE_DIR}/lib/N64ModernRuntime)
 
 target_include_directories(rt64 PRIVATE ${CMAKE_BINARY_DIR}/rt64/src)
+
+if (CMAKE_SYSTEM_NAME STREQUAL "NintendoSwitch" AND SK2_SWITCH_CORE_PROBE_ONLY)
+    set(RECOMP_FRONTEND_N64MODERNRUNTIME_PATH ${CMAKE_SOURCE_DIR}/lib/N64ModernRuntime)
+    set(RECOMP_FRONTEND_RT64_PATH ${CMAKE_SOURCE_DIR}/lib/rt64)
+    add_subdirectory(${CMAKE_SOURCE_DIR}/lib/RecompFrontend)
+
+    add_executable(SnowboardKids2SwitchCoreProbe switch/core_probe.cpp switch/full_main.cpp)
+    target_include_directories(SnowboardKids2SwitchCoreProbe PRIVATE
+        ${CMAKE_SOURCE_DIR}/lib/RecompFrontend/recompui/src
+        ${CMAKE_SOURCE_DIR}/lib/RecompFrontend/recompui/include
+        ${CMAKE_SOURCE_DIR}/lib/rt64/src/contrib/plume
+        ${SDL2_INCLUDE_DIRS}
+    )
+    target_link_options(SnowboardKids2SwitchCoreProbe PRIVATE
+        "-Wl,--wrap=open"
+        "-Wl,--wrap=close"
+        "-Wl,--wrap=stat"
+        "-Wl,--wrap=lstat"
+        "-Wl,--allow-multiple-definition"
+        # Plume's static archive retains this SDL helper even though the
+        # headless probe never creates a window. Force it into SDL's archive
+        # before Plume appears later in the transitive static-link order.
+        "-Wl,--undefined=SDL_GetWindowSizeInPixels"
+    )
+    target_link_libraries(SnowboardKids2SwitchCoreProbe PRIVATE
+        recompui
+        recompinput
+        librecomp
+        ultramodern
+        rt64
+        PkgConfig::SDL2
+        PkgConfig::FREETYPE
+        "-Wl,--whole-archive"
+        SwitchNVK
+        "-Wl,--no-whole-archive"
+        "${SK2_SWITCH_NVK_EXPAT_LIBRARY}"
+    )
+
+    set(SK2_SWITCH_CORE_NACP "${CMAKE_CURRENT_BINARY_DIR}/snowboardkids2-core-probe.nacp")
+    nx_generate_nacp(
+        OUTPUT "${SK2_SWITCH_CORE_NACP}"
+        NAME "SK2 Runtime + NVK Probe"
+        AUTHOR "Snowboard Kids 2 Recompiled"
+        VERSION "${SK2_GAME_VERSION}"
+    )
+    nx_create_nro(
+        SnowboardKids2SwitchCoreProbe
+        OUTPUT "${CMAKE_BINARY_DIR}/snowboardkids2-core-probe.nro"
+        NACP "${SK2_SWITCH_CORE_NACP}"
+    )
+    return()
+endif()
 
 # RecompiledFuncs - Library containing the primary recompiler output
 add_library(RecompiledFuncs STATIC)
@@ -225,7 +399,7 @@ add_custom_command(OUTPUT
                        ${CMAKE_SOURCE_DIR}/RecompiledPatches/funcs.h
                    # TODO: Look into why modifying patches requires two builds to take
                    COMMAND ${CMAKE_COMMAND}
-                           -DRUN_EXECUTABLE=./N64Recomp
+                           -DRUN_EXECUTABLE=${SK2_HOST_N64RECOMP}
                            -DRUN_ARGUMENTS=patches.toml
                            -DRUN_ATTEMPTS=${PATCH_RECOMP_ATTEMPTS}
                            -DRUN_DELAY_SECONDS=2
@@ -260,6 +434,10 @@ if (APPLE)
     list(APPEND SOURCES ${CMAKE_SOURCE_DIR}/src/main/support_apple.mm)
 endif()
 
+if (CMAKE_SYSTEM_NAME STREQUAL "NintendoSwitch")
+    list(APPEND SOURCES ${CMAKE_SOURCE_DIR}/switch/full_main.cpp)
+endif()
+
 target_include_directories(SnowboardKids2Recompiled PRIVATE
     ${CMAKE_SOURCE_DIR}/include
     ${CMAKE_SOURCE_DIR}/lib/N64ModernRuntime/N64Recomp/include
@@ -280,6 +458,25 @@ target_include_directories(SnowboardKids2Recompiled PRIVATE
     ${CMAKE_CURRENT_BINARY_DIR}/generated
     ${CMAKE_CURRENT_BINARY_DIR}
 )
+
+if (CMAKE_SYSTEM_NAME STREQUAL "NintendoSwitch")
+    target_include_directories(SnowboardKids2Recompiled PRIVATE
+        ${SDL2_INCLUDE_DIRS}
+        ${FREETYPE_INCLUDE_DIRS}
+        ${SK2_SWITCH_NVK_INCLUDE_DIR}
+    )
+    target_link_libraries(SnowboardKids2Recompiled PRIVATE
+        PkgConfig::SDL2
+        PkgConfig::FREETYPE
+    )
+    target_link_options(SnowboardKids2Recompiled PRIVATE
+        "-Wl,--wrap=open"
+        "-Wl,--wrap=close"
+        "-Wl,--wrap=stat"
+        "-Wl,--wrap=lstat"
+        "-Wl,--allow-multiple-definition"
+    )
+endif()
 
 if(CMAKE_SIZEOF_VOID_P EQUAL 8 AND CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64|AMD64")
     target_compile_options(SnowboardKids2Recompiled PRIVATE
@@ -423,10 +620,10 @@ if (${WIN32})
     set (DXC "${PROJECT_SOURCE_DIR}/lib/rt64/src/contrib/dxc/bin/x64/dxc.exe")
     add_compile_definitions(NOMINMAX)
 else()
-    if (APPLE)
+    if (CMAKE_HOST_APPLE)
         # Apple's binary is universal, so it'll work on both x86_64 and arm64
         set (DXC "DYLD_LIBRARY_PATH=${PROJECT_SOURCE_DIR}/lib/rt64/src/contrib/dxc/lib/arm64" "${PROJECT_SOURCE_DIR}/lib/rt64/src/contrib/dxc/bin/arm64/dxc-macos")
-        if(CMAKE_SIZEOF_VOID_P EQUAL 8 AND CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64|AMD64")
+        if(CMAKE_HOST_SYSTEM_PROCESSOR MATCHES "x86_64|amd64|AMD64")
             set(SPIRVCROSS "DYLD_LIBRARY_PATH=${PROJECT_SOURCE_DIR}/lib/rt64/src/contrib/spirv-cross/lib/x64" "${PROJECT_SOURCE_DIR}/lib/rt64//src/contrib/spirv-cross/bin/x64/spirv-cross")
         else()
             set(SPIRVCROSS "DYLD_LIBRARY_PATH=${PROJECT_SOURCE_DIR}/lib/rt64/src/contrib/spirv-cross/lib/arm64" "${PROJECT_SOURCE_DIR}/lib/rt64//src/contrib/spirv-cross/bin/x64/spirv-cross")
@@ -462,6 +659,28 @@ target_link_libraries(SnowboardKids2Recompiled PRIVATE
     rt64
     nfd
 )
+
+if (CMAKE_SYSTEM_NAME STREQUAL "NintendoSwitch")
+    target_link_libraries(SnowboardKids2Recompiled PRIVATE
+        "-Wl,--whole-archive"
+        SwitchNVK
+        "-Wl,--no-whole-archive"
+        "${SK2_SWITCH_NVK_EXPAT_LIBRARY}"
+    )
+
+    set(SK2_SWITCH_NACP "${CMAKE_CURRENT_BINARY_DIR}/snowboardkids2-recompiled.nacp")
+    nx_generate_nacp(
+        OUTPUT "${SK2_SWITCH_NACP}"
+        NAME "Snowboard Kids 2: Recompiled"
+        AUTHOR "Snowboard Kids 2 Recompiled"
+        VERSION "${SK2_GAME_VERSION}"
+    )
+    nx_create_nro(
+        SnowboardKids2Recompiled
+        OUTPUT "${CMAKE_BINARY_DIR}/snowboardkids2-recompiled.nro"
+        NACP "${SK2_SWITCH_NACP}"
+    )
+endif()
 
 # Embed all .nrm files in the "mods" directory
 file(GLOB NRM_FILES "${CMAKE_SOURCE_DIR}/mods/*.nrm")

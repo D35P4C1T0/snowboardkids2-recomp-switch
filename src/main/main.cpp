@@ -6,15 +6,18 @@
 #include <filesystem>
 #include <stdexcept>
 #include <cinttypes>
+#include <mutex>
 
+#if !defined(__SWITCH__)
 #include "nfd.h"
+#endif
 
 #include "ultramodern/ultra64.h"
 #include "ultramodern/ultramodern.hpp"
 #define SDL_MAIN_HANDLED
 #ifdef _WIN32
 #include "SDL.h"
-#else
+#elif !defined(__SWITCH__)
 #include "SDL2/SDL.h"
 #include "SDL2/SDL_syswm.h"
 // Undefine x11 macros that get included by SDL_syswm.h.
@@ -24,6 +27,9 @@
 #undef ControlMask
 #undef Success
 #undef Always
+#else
+#include <SDL2/SDL.h>
+#include <switch.h>
 #endif
 
 #include "zelda_config.h"
@@ -62,7 +68,34 @@
 const std::string version_string = sk2_game_version;
 constexpr int sk2_max_players = 4;
 
+#if defined(__SWITCH__)
+constexpr const char* switch_startup_log_path =
+    "sdmc:/switch/snowboardkids2-recompiled/startup.log";
+
+void switch_log_checkpoint(const char* message, bool reset = false) {
+    static std::mutex log_mutex;
+    const std::lock_guard<std::mutex> lock(log_mutex);
+    FILE* log = std::fopen(switch_startup_log_path, reset ? "w" : "a");
+    if (log == nullptr) {
+        return;
+    }
+
+    std::fprintf(log, "%s\n", message);
+    std::fclose(log);
+}
+#else
+void switch_log_checkpoint(const char*, bool = false) {
+}
+#endif
+
+void switch_log_sdl_error(const char* operation) {
+    char message[512]{};
+    std::snprintf(message, sizeof(message), "%s: %s", operation, SDL_GetError());
+    switch_log_checkpoint(message);
+}
+
 template <typename... Ts> void exit_error(const char* str, Ts... args) {
+    switch_log_checkpoint("fatal: exit_error invoked");
     // TODO pop up an error
     ((void) fprintf(stderr, str, args), ...);
     assert(false);
@@ -71,6 +104,7 @@ template <typename... Ts> void exit_error(const char* str, Ts... args) {
 }
 
 ultramodern::gfx_callbacks_t::gfx_data_t create_gfx() {
+    switch_log_checkpoint("gfx: create_gfx entered");
     SDL_SetHint(SDL_HINT_WINDOWS_DPI_AWARENESS, "permonitorv2");
     SDL_SetHint(SDL_HINT_GAMECONTROLLER_USE_BUTTON_LABELS, "0");
     SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_PS4_RUMBLE, "1");
@@ -81,6 +115,7 @@ ultramodern::gfx_callbacks_t::gfx_data_t create_gfx() {
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER) < 0) {
         exit_error("Failed to initialize SDL2: %s\n", SDL_GetError());
     }
+    switch_log_checkpoint("gfx: SDL video and controller initialized");
 
     fprintf(stdout, "SDL Video Driver: %s\n", SDL_GetCurrentVideoDriver());
 
@@ -138,6 +173,15 @@ bool SetImageAsIcon(const char* filename, SDL_Window* window) {
 SDL_Window* window;
 
 ultramodern::renderer::WindowHandle create_window(ultramodern::gfx_callbacks_t::gfx_data_t) {
+    switch_log_checkpoint("gfx: create_window entered");
+#if defined(__SWITCH__)
+    // switch-sdl2 always creates an OpenGL ES surface for SDL windows. RT64
+    // presents through NVK instead, so pass the default libnx NWindow as an
+    // opaque handle and retain SDL solely for input/events/audio.
+    window = reinterpret_cast<SDL_Window*>(nwindowGetDefault());
+    switch_log_checkpoint("gfx: native libnx window selected");
+    return window;
+#else
     uint32_t flags = SDL_WINDOW_RESIZABLE;
 
 #if defined(__APPLE__)
@@ -145,8 +189,8 @@ ultramodern::renderer::WindowHandle create_window(ultramodern::gfx_callbacks_t::
 #elif defined(RT64_SDL_WINDOW_VULKAN)
     flags |= SDL_WINDOW_VULKAN;
 #endif
-
-    window = SDL_CreateWindow("Snowboard Kids 2: Recompiled", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 1600, 960,
+    window = SDL_CreateWindow("Snowboard Kids 2: Recompiled", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
+                              1600, 960,
                               flags);
 #if defined(__linux__)
     SetImageAsIcon("icons/512.png", window);
@@ -160,8 +204,10 @@ ultramodern::renderer::WindowHandle create_window(ultramodern::gfx_callbacks_t::
 #endif
 
     if (window == nullptr) {
+        switch_log_sdl_error("gfx: SDL_CreateWindow failed");
         exit_error("Failed to create window: %s\n", SDL_GetError());
     }
+    switch_log_checkpoint("gfx: SDL window created");
 
     // macOS can leave the launcher behind the terminal/harness that spawned it,
     // so explicitly ask SDL to surface the window after creation.
@@ -174,7 +220,7 @@ ultramodern::renderer::WindowHandle create_window(ultramodern::gfx_callbacks_t::
 
 #if defined(_WIN32)
     return ultramodern::renderer::WindowHandle{ wmInfo.info.win.window, GetCurrentThreadId() };
-#elif defined(__linux__) || defined(__ANDROID__)
+#elif defined(__linux__) || defined(__ANDROID__) || defined(__SWITCH__)
     return ultramodern::renderer::WindowHandle{ window };
 #elif defined(__APPLE__)
     SDL_MetalView view = SDL_Metal_CreateView(window);
@@ -182,10 +228,19 @@ ultramodern::renderer::WindowHandle create_window(ultramodern::gfx_callbacks_t::
 #else
     static_assert(false && "Unimplemented");
 #endif
+#endif
 }
 
 void update_gfx(void*) {
+    static bool first_update = true;
+    if (first_update) {
+        switch_log_checkpoint("runtime: first input event pass entered");
+    }
     recompinput::handle_events();
+    if (first_update) {
+        switch_log_checkpoint("runtime: first input event pass returned");
+        first_update = false;
+    }
 }
 
 static SDL_AudioCVT audio_convert;
@@ -558,7 +613,7 @@ void release_preload(PreloadContext& context) {
     context = {};
 }
 
-#elif defined(__linux__) || defined(__APPLE__)
+#elif defined(__linux__) || defined(__APPLE__) || defined(__SWITCH__)
 
 struct PreloadContext {};
 
@@ -615,17 +670,41 @@ ultramodern::input::connected_device_info_t get_sk2_connected_device_info(int co
 int main(int argc, char** argv) {
     (void) argc;
     (void) argv;
+#if defined(__SWITCH__)
+    std::set_terminate([]() {
+        switch_log_checkpoint("fatal: std::terminate invoked");
+        std::_Exit(EXIT_FAILURE);
+    });
+    const std::filesystem::path switch_root = "sdmc:/switch/snowboardkids2-recompiled";
+    std::error_code switch_path_error;
+    std::filesystem::create_directories(switch_root / "assets", switch_path_error);
+    std::filesystem::create_directories(switch_root / "mods", switch_path_error);
+    std::filesystem::create_directories(switch_root / "saves", switch_path_error);
+    std::filesystem::create_directories(switch_root / "config", switch_path_error);
+    switch_log_checkpoint("startup: entered main", true);
+
+    // NVK does not advertise the non-conformant GM20B device unless the
+    // application opts in explicitly.
+    SDL_setenv("NVK_I_WANT_A_BROKEN_VULKAN_DRIVER", "1", 1);
+    // The driver's zero-copy NvGraphicBuffer path is still experimental on
+    // Horizon. Prefer the stable linear framebuffer path until it has been
+    // validated across supported firmware/libnx combinations.
+    SDL_setenv("NVK_SWITCH_WSI_CPU_COPY", "1", 1);
+    switch_log_checkpoint("startup: NVK environment configured");
+#endif
     recomp::Version project_version{};
     if (!recomp::Version::from_string(version_string, project_version)) {
         ultramodern::error_handling::message_box(("Invalid version string: " + version_string).c_str());
         return EXIT_FAILURE;
     }
+    switch_log_checkpoint("startup: version parsed");
 
     // Map this executable into memory and lock it, which should keep it in physical memory. This ensures
     // that there are no stutters from the OS having to load new pages of the executable whenever a new code page is
     // run.
     PreloadContext preload_context;
     bool preloaded = preload_executable(preload_context);
+    switch_log_checkpoint("startup: executable preload attempted");
 
     if (!preloaded) {
         fprintf(stderr, "Failed to preload executable!\n");
@@ -680,6 +759,7 @@ int main(int argc, char** argv) {
     recompui::programconfig::set_program_id(std::u8string{ zelda64::program_id });
 
     // Initialize SDL audio and set the output frequency.
+    switch_log_checkpoint("audio: initialization entered");
     if (SDL_InitSubSystem(SDL_INIT_AUDIO) < 0) {
         std::string audio_error = std::string("Failed to initialize audio.\nSDL error: ") + SDL_GetError();
         recompui::message_box(audio_error.c_str());
@@ -688,9 +768,12 @@ int main(int argc, char** argv) {
     if (!reset_audio(48000)) {
         return EXIT_FAILURE;
     }
+    switch_log_checkpoint("audio: initialized at 48 kHz");
 
     // Initialize native file dialogs after all fallible startup services have succeeded.
+#if !defined(__SWITCH__)
     NFD_Init();
+#endif
 
     // Source controller mappings file
     std::u8string controller_db_path = (recompui::file::get_program_path() / "recompcontrollerdb.txt").u8string();
@@ -742,6 +825,7 @@ int main(int argc, char** argv) {
     zelda64::init_config();
 
     sk2::launcher::register_callbacks(supported_games[0]);
+    switch_log_checkpoint("startup: game, mods, and launcher registered");
 
     recomp::rsp::callbacks_t rsp_callbacks{
         .get_rsp_microcode = get_rsp_microcode,
@@ -750,8 +834,11 @@ int main(int argc, char** argv) {
     ultramodern::renderer::callbacks_t renderer_callbacks{
         .create_render_context =
             [](uint8_t* rdram, ultramodern::renderer::WindowHandle window_handle, bool developer_mode) {
-                return recompui::renderer::create_render_context(
+                switch_log_checkpoint("renderer: context creation entered");
+                auto context = recompui::renderer::create_render_context(
                     rdram, window_handle, ultramodern::renderer::PresentationMode::PresentEarly, developer_mode);
+                switch_log_checkpoint("renderer: context created");
+                return context;
             },
     };
 
@@ -800,10 +887,14 @@ int main(int argc, char** argv) {
     // Register the .rtz texture pack file format with the previous content type as its only allowed content type.
     recomp::mods::register_mod_container_type("rtz", std::vector{ texture_pack_content_type_id }, false);
 
+    switch_log_checkpoint("runtime: recomp::start entered");
     recomp::start(project_version, {}, rsp_callbacks, renderer_callbacks, audio_callbacks, input_callbacks,
                   gfx_callbacks, thread_callbacks, error_handling_callbacks, threads_callbacks);
+    switch_log_checkpoint("runtime: recomp::start returned cleanly");
 
+#if !defined(__SWITCH__)
     NFD_Quit();
+#endif
 
     if (preloaded) {
         release_preload(preload_context);

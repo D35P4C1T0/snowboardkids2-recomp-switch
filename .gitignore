@@ -14,6 +14,8 @@ RecompiledPatches/
 
 # Mac / Linux build output
 build*
+!scripts/build-host-tools.sh
+!scripts/build-switch-nvk.sh
 *.o
 .cache
 
@@ -61,6 +63,8 @@ vcpkg_installed/
 # Runtime files
 imgui.ini
 rt64.log
+startup.log
+core-probe.log
 
 node_modules/
 

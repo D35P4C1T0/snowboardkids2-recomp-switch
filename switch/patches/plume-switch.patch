@@ -1,0 +1,112 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 0789c20..07326ab 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -14,10 +14,15 @@ if(APPLE)
+ endif()
+ 
+ string(COMPARE EQUAL ${CMAKE_SYSTEM_NAME} "Linux" IS_LINUX)
++if(CMAKE_SYSTEM_NAME STREQUAL "NintendoSwitch")
++    set(IS_SDL_PLATFORM TRUE)
++else()
++    set(IS_SDL_PLATFORM ${IS_LINUX})
++endif()
+ 
+ # Project options
+ include(CMakeDependentOption)
+-cmake_dependent_option(PLUME_SDL_VULKAN_ENABLED "Enable SDL Vulkan integration" OFF IS_LINUX OFF)
++cmake_dependent_option(PLUME_SDL_VULKAN_ENABLED "Enable SDL Vulkan integration" OFF IS_SDL_PLATFORM OFF)
+ cmake_dependent_option(PLUME_D3D12_AGILITY_SDK_ENABLED "Enable D3D12 Agility SDK" OFF WIN32 OFF)
+ cmake_dependent_option(PLUME_APPLE_RETINA_ENABLED "Enable Apple Retina display support" ON APPLE ON)
+ option(PLUME_BUILD_EXAMPLES "Build example applications" OFF)
+@@ -75,6 +80,10 @@ endif()
+ # Create target
+ add_library(plume STATIC ${PLUME_SOURCES})
+ 
++if(CMAKE_SYSTEM_NAME STREQUAL "NintendoSwitch")
++    target_compile_definitions(plume PUBLIC VK_USE_PLATFORM_VI_NN)
++endif()
++
+ # Include directories
+ target_include_directories(plume PUBLIC
+     ${CMAKE_CURRENT_SOURCE_DIR}
+diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
+index f1dd503..f73de10 100644
+--- a/plume_vulkan.cpp
++++ b/plume_vulkan.cpp
+@@ -15,6 +15,13 @@
+ #include <climits>
+ #include <unordered_map>
+ 
++#if defined(__SWITCH__)
++#include <switch.h>
++
++extern "C" VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL
++vk_icdGetInstanceProcAddr(VkInstance instance, const char *name);
++#endif
++
+ #if DLSS_ENABLED
+ #   include "render/plume_dlss.h"
+ #endif
+@@ -58,6 +65,8 @@ namespace plume {
+ #   endif
+ #   elif defined(__APPLE__)
+         VK_EXT_METAL_SURFACE_EXTENSION_NAME,
++#   elif defined(__SWITCH__)
++        VK_NN_VI_SURFACE_EXTENSION_NAME,
+ #   endif
+     };
+ 
+@@ -2095,6 +2104,17 @@ namespace plume {
+             fprintf(stderr, "vkCreateWin32SurfaceKHR failed with error code 0x%X.\n", res);
+             return;
+         }
++#   elif defined(__SWITCH__)
++        VkViSurfaceCreateInfoNN surfaceCreateInfo = {};
++        surfaceCreateInfo.sType = VK_STRUCTURE_TYPE_VI_SURFACE_CREATE_INFO_NN;
++        surfaceCreateInfo.window = nwindowGetDefault();
++
++        VulkanInterface *renderInterface = commandQueue->device->renderInterface;
++        res = vkCreateViSurfaceNN(renderInterface->instance, &surfaceCreateInfo, nullptr, &surface);
++        if (res != VK_SUCCESS) {
++            fprintf(stderr, "vkCreateViSurfaceNN failed with error code 0x%X.\n", res);
++            return;
++        }
+ #   elif defined(PLUME_SDL_VULKAN_ENABLED)
+         VulkanInterface *renderInterface = commandQueue->device->renderInterface;
+         SDL_bool sdlRes = SDL_Vulkan_CreateSurface(desc.renderWindow, renderInterface->instance, &surface);
+@@ -2464,6 +2484,12 @@ namespace plume {
+         GetClientRect(desc.renderWindow, &rect);
+         dstWidth = rect.right - rect.left;
+         dstHeight = rect.bottom - rect.top;
++#   elif defined(__SWITCH__)
++        NWindow *window = nwindowGetDefault();
++        if (R_FAILED(nwindowGetDimensions(window, &dstWidth, &dstHeight))) {
++            dstWidth = 1280;
++            dstHeight = 720;
++        }
+ #   elif defined(PLUME_SDL_VULKAN_ENABLED)
+         SDL_GetWindowSizeInPixels(desc.renderWindow, (int *)(&dstWidth), (int *)(&dstHeight));
+ #   elif defined(__ANDROID__)
+@@ -4464,7 +4490,12 @@ namespace plume {
+ #else
+     VulkanInterface::VulkanInterface() {
+ #endif
++#if defined(__SWITCH__)
++        volkInitializeCustom(vk_icdGetInstanceProcAddr);
++        VkResult res = vkGetInstanceProcAddr != nullptr ? VK_SUCCESS : VK_ERROR_INITIALIZATION_FAILED;
++#else
+         VkResult res = volkInitialize();
++#endif
+         if (res != VK_SUCCESS) {
+             fprintf(stderr, "volkInitialize failed with error code 0x%X.\n", res);
+             return;
+@@ -4500,7 +4531,7 @@ namespace plume {
+         const std::unordered_set<std::string> dlssExtensions = DLSS::getRequiredInstanceExtensionsVulkan();
+ #   endif
+ 
+-#   if PLUME_SDL_VULKAN_ENABLED
++#   if PLUME_SDL_VULKAN_ENABLED && !defined(__SWITCH__)
+         // Push the extensions specified by SDL as required.
+         // SDL2 has this awkward requirement for the window to pull the extensions from. 
+         // This can be removed when upgrading to SDL3.

@@ -1,0 +1,33 @@
+#!/usr/bin/env sh
+set -eu
+
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+REPO_ROOT=$(CDPATH= cd -- "${SCRIPT_DIR}/.." && pwd)
+BUILD_DIR="${REPO_ROOT}/build-switch-full"
+APP_DIR="${BUILD_DIR}/sdcard/switch/snowboardkids2-recompiled"
+NRO="${BUILD_DIR}/snowboardkids2-recompiled.nro"
+ARCHIVE="${BUILD_DIR}/snowboardkids2-switch-sdcard.zip"
+
+if [ ! -f "${NRO}" ]; then
+    echo "Missing ${NRO}; build the full target first." >&2
+    exit 1
+fi
+
+cmake -E make_directory "${APP_DIR}"
+cmake -E copy_if_different "${NRO}" "${APP_DIR}/snowboardkids2-recompiled.nro"
+cmake -E copy_directory "${REPO_ROOT}/assets" "${APP_DIR}/assets"
+cmake -E copy_if_different \
+    "${REPO_ROOT}/recompcontrollerdb.txt" \
+    "${APP_DIR}/recompcontrollerdb.txt"
+cmake -E rm -f \
+    "${BUILD_DIR}/sdcard/switch/.DS_Store" \
+    "${APP_DIR}/.DS_Store" \
+    "${APP_DIR}/assets/.DS_Store" \
+    "${APP_DIR}/assets/icons/.DS_Store"
+
+cd "${BUILD_DIR}/sdcard"
+cmake -E tar cf "${ARCHIVE}" --format=zip switch
+
+echo "Switch SD-card package: ${APP_DIR}"
+echo "Switch SD-card archive: ${ARCHIVE}"
+echo "Copy your own supported ROM there as snowboardkids2.z64."

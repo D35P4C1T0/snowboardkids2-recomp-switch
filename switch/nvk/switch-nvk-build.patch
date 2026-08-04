@@ -1,0 +1,129 @@
+diff --git a/Dockerfile b/Dockerfile
+index 0068105..d3334f6 100644
+--- a/Dockerfile
++++ b/Dockerfile
+@@ -17,7 +17,7 @@ RUN python3 -m pip install --break-system-packages --no-cache-dir 'meson>=1.4' m
+ ENV RUSTUP_HOME=/opt/rust/rustup CARGO_HOME=/opt/rust/cargo
+ ENV PATH="/opt/rust/cargo/bin:${PATH}"
+ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
+-        sh -s -- -y --default-toolchain nightly --profile minimal --component rust-src \
++        sh -s -- -y --default-toolchain nightly-2026-05-25 --profile minimal --component rust-src \
+     && rustc --version && cargo --version
+ 
+ # bindgen (C->Rust FFI for NAK) + cbindgen (Rust->C headers for NIL, the nouveau image-layout lib).
+diff --git a/build-native-tools.sh b/build-native-tools.sh
+index 4c11abf..a51129f 100644
+--- a/build-native-tools.sh
++++ b/build-native-tools.sh
+@@ -29,9 +29,14 @@ meson setup "$NB" \
+   -Dstatic-libclc=all \
+   "$@"
+ 
+-# Build + install just the tools (and whatever they depend on). `ninja install` honors the
+-# install-*-compiler options, placing mesa_clc + the precomp compiler on PATH.
+-ninja -C "$NB"
+-ninja -C "$NB" install
++# Only the two build-machine tools are needed. Building Mesa's native Vulkan
++# shared object also pulls the Switch-only logging hook installed by the WSI
++# patch, which is intentionally unresolved in a Linux host driver.
++ninja -C "$NB" \
++  src/compiler/clc/mesa_clc \
++  src/compiler/spirv/vtn_bindgen
++mkdir -p "$PREFIX/bin"
++install -m 755 "$NB/src/compiler/clc/mesa_clc" "$PREFIX/bin/mesa_clc"
++install -m 755 "$NB/src/compiler/spirv/vtn_bindgen" "$PREFIX/bin/vtn_bindgen"
+ echo "=== installed native tools ==="
+ ls -la "$PREFIX/bin/" | grep -iE 'clc|precomp|nak' || true
+diff --git a/build-std-sysroot.sh b/build-std-sysroot.sh
+old mode 100644
+new mode 100755
+index 8f8139b..7cb17b8
+--- a/build-std-sysroot.sh
++++ b/build-std-sysroot.sh
+@@ -12,7 +12,7 @@ RUSTC_SYSROOT="$(rustc --print sysroot)"
+ rm -rf /tmp/stdsr && mkdir -p /tmp/stdsr/src && cd /tmp/stdsr
+ printf '#![no_main]\n' > src/lib.rs
+ printf '[package]\nname="stdsr"\nversion="0.0.0"\nedition="2021"\n[lib]\ncrate-type=["rlib"]\n[profile.release]\npanic="abort"\n' > Cargo.toml
+-cargo +nightly build --release -Zbuild-std=core,alloc,std,panic_abort --target "$TGT"
++cargo +nightly-2026-05-25 build --release -Zbuild-std=core,alloc,std,panic_abort --target "$TGT"
+ 
+ # 2. Assemble a sysroot: copy host sysroot structure for the target, then overlay our built std rlibs.
+ DEPS=/tmp/stdsr/target/$TGT/release/deps
+diff --git a/package-nvk.sh b/package-nvk.sh
+index 9692eb5..bccae6d 100644
+--- a/package-nvk.sh
++++ b/package-nvk.sh
+@@ -74,6 +74,10 @@ done
+ if [ -d mesa-25/include/vk_video ]; then
+   rm -rf "$OUT/include/vk_video"; cp -r mesa-25/include/vk_video "$OUT/include/vk_video"
+ fi
++# The static NVK package references Mesa's XML configuration parser. Keep its
++# matching Switch archive next to libvulkan.a so consumers do not depend on a
++# machine-global switch-expat installation.
++cp "$DKP/portlibs/switch/lib/libexpat.a" "$OUT/lib/libexpat.a"
+ 
+ echo "=== [4/4] VERIFY symbols (nm) ==="
+ # The loaderless-ICD contract: the ONLY strong exported entry is vk_icdGetInstanceProcAddr; every
+diff --git a/rustc-switch.sh b/rustc-switch.sh
+old mode 100644
+new mode 100755
+diff --git a/winsys/wsi/wsi_common_switch.c b/winsys/wsi/wsi_common_switch.c
+index 5136fe3..f8fd675 100644
+--- a/winsys/wsi/wsi_common_switch.c
++++ b/winsys/wsi/wsi_common_switch.c
+@@ -524,10 +524,28 @@ wsi_switch_surface_create_swapchain(VkIcdSurfaceBase *icd_surface,
+     * scanout buffer (build the NvGraphicBuffer with kind=0xfe + the image's NIL
+     * layout, then nwindowConfigureBuffer). slot == image index (identity). If any
+     * image can't be wrapped, fall back to the libnx-framebuffer CPU-copy path. */
+-   nvFenceInit();   /* required before nwindowDequeueBuffer / nvMultiFenceWait */
+-   nwindowSetDimensions(chain->window, chain->extent.width, chain->extent.height);
+-   chain->zero_copy = true;
+-   for (uint32_t i = 0; i < num_images; i++) {
++   dusk_switch_log("[wsi] swapchain images created; configuring native window\n");
++   /* The DRM shim initializes nvFence as part of device bring-up. Calling
++    * nvFenceInit again here leaks a service-guard reference per swapchain. */
++   Result dimensions_rc = nwindowSetDimensions(chain->window,
++                                                chain->extent.width,
++                                                chain->extent.height);
++   {
++      char msg[128];
++      snprintf(msg, sizeof(msg), "[wsi] nwindowSetDimensions -> 0x%x\n",
++               (unsigned)dimensions_rc);
++      dusk_switch_log(msg);
++   }
++
++   /* Zero-copy scanout depends on undocumented NvGraphicBuffer layout details
++    * and is not stable on every Horizon/libnx combination. Keep the proven
++    * linear framebuffer path selectable for correctness-first ports. */
++   const char *force_cpu_copy = getenv("NVK_SWITCH_WSI_CPU_COPY");
++   chain->zero_copy = force_cpu_copy == NULL || strcmp(force_cpu_copy, "0") == 0;
++   if (!chain->zero_copy)
++      dusk_switch_log("[wsi] CPU-copy fallback forced by environment\n");
++
++   for (uint32_t i = 0; chain->zero_copy && i < num_images; i++) {
+       if (!wsi_switch_build_graphic_buffer(&chain->images[i].gb,
+                                            chain->images[i].base.image,
+                                            chain->vk_format, chain->extent)) {
+@@ -545,18 +563,20 @@ wsi_switch_surface_create_swapchain(VkIcdSurfaceBase *icd_surface,
+       dusk_switch_log("[wsi] zero-copy ENABLED (block-linear nwindow scanout, kind=0xfe)\n");
+    } else {
+-      printf("[wsi-zc] zero-copy FAILED -> CPU-copy fallback\n"); fflush(stdout);
++      dusk_switch_log("[wsi] entering CPU-copy framebuffer setup\n");
+       /* Fallback: reset the nwindow, then libnx framebuffer + CPU-copy present. */
+       for (uint32_t i = 0; i < num_images; i++) chain->images[i].configured = false;
+       nwindowReleaseBuffers(chain->window);
++      dusk_switch_log("[wsi] nwindow buffers released\n");
+       u32 pixfmt = (chain->vk_format == VK_FORMAT_B8G8R8A8_UNORM)
+                    ? PIXEL_FORMAT_BGRA_8888 : PIXEL_FORMAT_RGBA_8888;
+       Result rc = framebufferCreate(&chain->fb, chain->window,
+                                     chain->extent.width, chain->extent.height,
+                                     pixfmt, num_images);
+       if (R_FAILED(rc)) { result = VK_ERROR_INITIALIZATION_FAILED; goto fail; }
++      dusk_switch_log("[wsi] linear framebuffer created\n");
+       framebufferMakeLinear(&chain->fb);
+       chain->fb_created = true;
+-      dusk_switch_log("[wsi] zero-copy FAILED -> CPU-copy fallback\n");
++      dusk_switch_log("[wsi] CPU-copy framebuffer ready\n");
+    }
+ 
+    *swapchain_out = &chain->base;

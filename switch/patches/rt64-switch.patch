@@ -1,0 +1,1388 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index d43917b..a5b6835 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -42,8 +42,8 @@ if (WIN32)
+     # Dependencies that must be next to the DLL.
+     configure_file("${PROJECT_SOURCE_DIR}/src/contrib/dxc/bin/x64/dxcompiler.dll" "dxcompiler.dll" COPYONLY)
+     configure_file("${PROJECT_SOURCE_DIR}/src/contrib/dxc/bin/x64/dxil.dll" "dxil.dll" COPYONLY)
+-elseif (APPLE)
+-    if (CMAKE_SYSTEM_PROCESSOR STREQUAL "x86_64")
++elseif (CMAKE_HOST_APPLE)
++    if (CMAKE_HOST_SYSTEM_PROCESSOR STREQUAL "x86_64")
+         # find zlib and include in dyld path
+         find_library(ZLIB_LIBRARY NAMES z)
+         get_filename_component(ZLIB_PATH ${ZLIB_LIBRARY} DIRECTORY)
+@@ -66,12 +66,27 @@ set(ZSTD_LEGACY_SUPPORT OFF)
+ set(ZSTD_BUILD_STATIC ON)
+ set(ZSTD_BUILD_SHARED OFF)
+ 
+-add_subdirectory(src/tools/file_to_c)
++if (CMAKE_SYSTEM_NAME STREQUAL "NintendoSwitch")
++    if(NOT SK2_HOST_FILE_TO_C OR NOT EXISTS "${SK2_HOST_FILE_TO_C}")
++        message(FATAL_ERROR "SK2_HOST_FILE_TO_C must name a runnable host file_to_c executable.")
++    endif()
++    add_executable(file_to_c IMPORTED GLOBAL)
++    set_target_properties(file_to_c PROPERTIES IMPORTED_LOCATION "${SK2_HOST_FILE_TO_C}")
++else()
++    add_subdirectory(src/tools/file_to_c)
++endif()
+ add_subdirectory(src/contrib/re-spirv)
+-add_subdirectory(src/contrib/nativefiledialog-extended)
++if (CMAKE_SYSTEM_NAME STREQUAL "NintendoSwitch")
++    # Horizon has no native desktop file picker. Consumers provide fixed-path
++    # discovery and only need the target name to keep RT64's link interface
++    # stable.
++    add_library(nfd INTERFACE)
++else()
++    add_subdirectory(src/contrib/nativefiledialog-extended)
++endif()
+ add_subdirectory(src/contrib/zstd/build/cmake)
+ 
+-if (CMAKE_SYSTEM_NAME MATCHES "Linux" AND RT64_SDL_WINDOW_VULKAN)
++if ((CMAKE_SYSTEM_NAME MATCHES "Linux" OR CMAKE_SYSTEM_NAME STREQUAL "NintendoSwitch") AND RT64_SDL_WINDOW_VULKAN)
+     set(PLUME_SDL_VULKAN_ENABLED TRUE)
+ elseif (APPLE)
+     set(PLUME_APPLE_RETINA_ENABLED ON)
+@@ -287,7 +302,12 @@ if (WIN32)
+     set(SDL2_LIBRARIES "SDL2" "SDL2main")
+     link_directories("${PROJECT_SOURCE_DIR}/src/contrib/mupen64plus-win32-deps/SDL2-2.26.3/lib/x64")
+ else()
+-    find_package(SDL2 REQUIRED)
++    if (NOT TARGET SDL2::SDL2)
++        find_package(SDL2 REQUIRED)
++    else()
++        set(SDL2_INCLUDE_DIRS "$<TARGET_PROPERTY:SDL2::SDL2,INTERFACE_INCLUDE_DIRECTORIES>")
++        set(SDL2_LIBRARIES SDL2::SDL2)
++    endif()
+ endif()
+ 
+ message(STATUS "${SDL2_INCLUDE_DIRS} ${SDL2_LIBRARIES}")
+@@ -555,4 +575,3 @@ build_pixel_shader(  rt64 "src/shaders/Im3DPS.hlsl")
+ build_pixel_shader(  rt64 "src/shaders/PostProcessPS.hlsl")
+ 
+ target_include_directories(rt64 PRIVATE ${CMAKE_BINARY_DIR}/src)
+-
+diff --git a/src/common/rt64_mapped_file.cpp b/src/common/rt64_mapped_file.cpp
+index c5e9978..ba74810 100644
+--- a/src/common/rt64_mapped_file.cpp
++++ b/src/common/rt64_mapped_file.cpp
+@@ -7,6 +7,7 @@
+ #if !defined(_WIN32)
+ #   include <cstring>
+ #   include <cstdio>
++#   include <cstdlib>
+ #   include <fcntl.h>
+ #   include <unistd.h>
+ #endif
+@@ -33,6 +34,10 @@ namespace RT64 {
+         if (fileHandle != nullptr) {
+             CloseHandle(fileHandle);
+         }
++#   elif defined(__SWITCH__)
++        free(fileView);
++        fileView = nullptr;
++        fileSize = 0;
+ #   else
+         if (fileView != MAP_FAILED) {
+             munmap(fileView, fileSize);
+@@ -80,6 +85,30 @@ namespace RT64 {
+         }
+ 
+         return true;
++#   elif defined(__SWITCH__)
++        FILE *file = fopen(path.c_str(), "rb");
++        if (file == nullptr) {
++            return false;
++        }
++        if (fseek(file, 0, SEEK_END) != 0) {
++            fclose(file);
++            return false;
++        }
++        const long measuredSize = ftell(file);
++        if (measuredSize <= 0 || fseek(file, 0, SEEK_SET) != 0) {
++            fclose(file);
++            return false;
++        }
++        fileSize = static_cast<size_t>(measuredSize);
++        fileView = malloc(fileSize);
++        const bool readSucceeded = fileView != nullptr && fread(fileView, 1, fileSize, file) == fileSize;
++        fclose(file);
++        if (!readSucceeded) {
++            free(fileView);
++            fileView = nullptr;
++            fileSize = 0;
++        }
++        return readSucceeded;
+ #   else
+         fileHandle = ::open(path.c_str(), O_RDONLY);
+         if (fileHandle == -1) {
+@@ -110,6 +139,8 @@ namespace RT64 {
+     bool MappedFile::isOpen() const {
+ #   if defined(_WIN32)
+         return (fileView != nullptr);
++#   elif defined(__SWITCH__)
++        return (fileView != nullptr);
+ #   else
+         return (fileView != MAP_FAILED);
+ #   endif
+@@ -122,6 +153,8 @@ namespace RT64 {
+     size_t MappedFile::size() const {
+ #   if defined(_WIN32)
+         return fileSize.QuadPart;
++#   elif defined(__SWITCH__)
++        return fileSize;
+ #   else
+         return static_cast<size_t>(fileSize);
+ #   endif
+diff --git a/src/common/rt64_mapped_file.h b/src/common/rt64_mapped_file.h
+index ff1c45a..0097918 100644
+--- a/src/common/rt64_mapped_file.h
++++ b/src/common/rt64_mapped_file.h
+@@ -8,7 +8,7 @@
+ 
+ #if defined(_WIN32)
+ #   include <Windows.h>
+-#else
++#elif !defined(__SWITCH__)
+ #   include <sys/mman.h>
+ #endif
+ 
+@@ -19,6 +19,9 @@ namespace RT64 {
+         HANDLE fileMappingHandle = nullptr;
+         LPVOID fileView = nullptr;
+         LARGE_INTEGER fileSize = {};
++#elif defined(__SWITCH__)
++        void *fileView = nullptr;
++        size_t fileSize = 0;
+ #else
+         int fileHandle = -1;
+         void *fileView = MAP_FAILED;
+@@ -33,4 +36,4 @@ namespace RT64 {
+         uint8_t *data() const;
+         size_t size() const;
+     };
+-};
+\ No newline at end of file
++};
+diff --git a/src/common/rt64_thread.cpp b/src/common/rt64_thread.cpp
+index c4b080b..a78a470 100644
+--- a/src/common/rt64_thread.cpp
++++ b/src/common/rt64_thread.cpp
+@@ -47,6 +47,8 @@ namespace RT64 {
+         pthread_setname_np(pthread_self(), str.c_str());
+ #   elif defined(__APPLE__)
+         pthread_setname_np(str.c_str());
++#   elif defined(__SWITCH__)
++        (void)str;
+ #   else
+         static_assert(false, "Unimplemented");
+ #   endif
+@@ -55,7 +57,7 @@ namespace RT64 {
+     void Thread::setCurrentThreadPriority(Priority priority) {
+ #   if defined(_WIN32)
+         SetThreadPriority(GetCurrentThread(), toWindowsPriority(priority));
+-#   elif defined(__linux__) || defined(__APPLE__)
++#   elif defined(__linux__) || defined(__APPLE__) || defined(__SWITCH__)
+         // On Linux, thread priorities can't be changed under the default scheduler policy (SCHED_OTHER) and the other policies
+         // that are available without root privileges are lower priority. Instead you can set the thread's "nice" value, which ranges
+         // from -20 to 19 (lower being higher priority). However, by strict POSIX spec "nice" is meant to be per-process instead of
+diff --git a/src/contrib/implot b/src/contrib/implot
+--- a/src/contrib/implot
++++ b/src/contrib/implot
+@@ -1 +1 @@
+-Subproject commit f156599faefe316f7dd20fe6c783bf87c8bb6fd9
++Subproject commit f156599faefe316f7dd20fe6c783bf87c8bb6fd9-dirty
+diff --git a/src/contrib/plume b/src/contrib/plume
+--- a/src/contrib/plume
++++ b/src/contrib/plume
+@@ -1 +1 @@
+-Subproject commit d890ac899e505fb30040e037a4037cdeca68f033
++Subproject commit d890ac899e505fb30040e037a4037cdeca68f033-dirty
+diff --git a/src/gui/rt64_file_dialog.cpp b/src/gui/rt64_file_dialog.cpp
+index 72faede..fd3cc2a 100644
+--- a/src/gui/rt64_file_dialog.cpp
++++ b/src/gui/rt64_file_dialog.cpp
+@@ -6,13 +6,36 @@
+ 
+ #include <cassert>
+ 
++#if !defined(__SWITCH__)
+ #include <nfd.h>
++#endif
+ 
+ namespace RT64 {
+     // FileDialog
+ 
+     std::atomic<bool> FileDialog::isOpen = false;
+ 
++#if defined(__SWITCH__)
++    void FileDialog::initialize() {
++    }
++
++    void FileDialog::finish() {
++    }
++
++    std::filesystem::path FileDialog::getDirectoryPath() {
++        return {};
++    }
++
++    std::filesystem::path FileDialog::getOpenFilename(const std::vector<FileFilter> &filters) {
++        (void)filters;
++        return {};
++    }
++
++    std::filesystem::path FileDialog::getSaveFilename(const std::vector<FileFilter> &filters) {
++        (void)filters;
++        return {};
++    }
++#else
+     void FileDialog::initialize() {
+         NFD_Init();
+     }
+@@ -76,4 +99,5 @@ namespace RT64 {
+         isOpen = false;
+         return path;
+     }
+-};
+\ No newline at end of file
++#endif
++};
+diff --git a/src/hle/rt64_application.cpp b/src/hle/rt64_application.cpp
+index 785de27..8e7316f 100644
+--- a/src/hle/rt64_application.cpp
++++ b/src/hle/rt64_application.cpp
+@@ -12,6 +12,13 @@
+ #include "common/rt64_elapsed_timer.h"
+ #include "common/rt64_math.h"
+ 
++#if defined(__SWITCH__)
++void switch_log_checkpoint(const char*, bool);
++#define RT64_SWITCH_CHECKPOINT(message) ::switch_log_checkpoint(message, false)
++#else
++#define RT64_SWITCH_CHECKPOINT(message) ((void)0)
++#endif
++
+ #if RT_ENABLED
+ #   include "res/bluenoise/LDR_64_64_64_RGB1.h"
+ #endif
+@@ -87,6 +94,7 @@ namespace RT64 {
+     }
+ 
+     Application::SetupResult Application::setup(uint32_t threadId) {
++        RT64_SWITCH_CHECKPOINT("rt64 setup: entered");
+ #   ifdef _WIN64
+         if (!DynamicLibraries::load()) {
+             fprintf(stderr, "Failed to load dynamic libraries. Make sure the dependencies are next to the Plugin's DLL.\n");
+@@ -98,11 +106,13 @@ namespace RT64 {
+         if (!loadConfiguration()) {
+             saveConfiguration();
+         }
++        RT64_SWITCH_CHECKPOINT("rt64 setup: configuration ready");
+ 
+         // Create the interpreter and its associated state.
+         interpreter = std::make_unique<Interpreter>();
+         state = std::make_unique<State>(core.RDRAM, core.MI_INTR_REG, core.checkInterrupts);
+         interpreter->setup(state.get());
++        RT64_SWITCH_CHECKPOINT("rt64 setup: interpreter ready");
+ 
+ #   if SCRIPT_ENABLED
+         // Create the script API and library and check if there's a compatible game script with the current ROM.
+@@ -125,12 +135,15 @@ namespace RT64 {
+         else {
+             appWindow->setup(windowTitle, this);
+         }
++        RT64_SWITCH_CHECKPOINT("rt64 setup: native window bound");
+ 
+         // Detect refresh rate from the display the window is located at.
+         appWindow->detectRefreshRate();
++        RT64_SWITCH_CHECKPOINT("rt64 setup: refresh rate ready");
+ 
+         // Resolve the graphics API option in case it's automatic.
+         chosenGraphicsAPI = UserConfiguration::resolveGraphicsAPI(userConfig.graphicsAPI);
++        RT64_SWITCH_CHECKPOINT("rt64 setup: graphics API resolved");
+ 
+ #   ifdef _WIN64
+         // Windows can try falling back to the other API option in case of failure.
+@@ -174,7 +187,9 @@ namespace RT64 {
+                 return SetupResult::InvalidGraphicsAPI;
+ #       endif
+             case UserConfiguration::GraphicsAPI::Vulkan:
++                RT64_SWITCH_CHECKPOINT("rt64 setup: Vulkan interface creation entered");
+                 renderInterface = CreateVulkanInterfaceWrapper(appWindow->windowHandle);
++                RT64_SWITCH_CHECKPOINT("rt64 setup: Vulkan interface creation returned");
+                 break;
+             default:
+                 fprintf(stderr, "Unknown Graphics API specified in configuration.\n");
+@@ -183,7 +198,9 @@ namespace RT64 {
+ 
+             if (renderInterface != nullptr) {
+                 // Create the render device.
++                RT64_SWITCH_CHECKPOINT("rt64 setup: Vulkan device creation entered");
+                 device = renderInterface->createDevice();
++                RT64_SWITCH_CHECKPOINT("rt64 setup: Vulkan device creation returned");
+             }
+         }
+ 
+@@ -199,6 +216,7 @@ namespace RT64 {
+ 
+         // Print device information to console.
+         RenderDeviceDescription deviceDescription = device->getDescription();
++        RT64_SWITCH_CHECKPOINT("rt64 setup: device description ready");
+         fprintf(stdout, "Device Name: %s\n", deviceDescription.name.c_str());
+         fprintf(stdout, "Device Vendor: 0x%X\n", deviceDescription.vendor);
+         fprintf(stdout, "Driver Version: 0x%" PRIx64 "\n", deviceDescription.driverVersion);
+@@ -297,7 +315,9 @@ namespace RT64 {
+         // Call the init hook if one was attached.
+         RenderHookInit *initHook = GetRenderHookInit();
+         if (initHook != nullptr) {
++            RT64_SWITCH_CHECKPOINT("rt64 setup: frontend init hook entered");
+             initHook(renderInterface.get(), device.get());
++            RT64_SWITCH_CHECKPOINT("rt64 setup: frontend init hook returned");
+         }
+ 
+         // Create all the render workers.
+@@ -312,6 +332,7 @@ namespace RT64 {
+         textureCopyWorker = std::make_unique<RenderWorker>(device.get(), "Texture Copy", RenderCommandListType::COPY);
+         workloadGraphicsWorker = std::make_unique<RenderWorker>(device.get(), "Workload Graphics", RenderCommandListType::DIRECT);
+         presentGraphicsWorker = std::make_unique<RenderWorker>(device.get(), "Present Graphics", RenderCommandListType::DIRECT);
++        RT64_SWITCH_CHECKPOINT("rt64 setup: render workers ready");
+ 
+         // Create the swap chain with the texture count specified from the configuration.
+         RenderSwapChainDesc swapChainDesc;
+@@ -331,7 +352,9 @@ namespace RT64 {
+             swapChainDesc.enablePresentWait = true;
+         }
+ 
++        RT64_SWITCH_CHECKPOINT("rt64 setup: swapchain creation entered");
+         swapChain = presentGraphicsWorker->commandQueue->createSwapChain(swapChainDesc);
++        RT64_SWITCH_CHECKPOINT("rt64 setup: swapchain creation returned");
+ 
+         // Before configuring multisampling, make sure the device actually supports it for the formats we'll use. If it doesn't, turn off antialiasing in the configuration.
+         const RenderSampleCounts colorSampleCounts = device->getSampleCountsSupported(RenderTarget::colorBufferFormat(usesHDR));
+@@ -346,6 +369,7 @@ namespace RT64 {
+         shaderLibrary = std::make_unique<ShaderLibrary>(usesHDR, usesHardwareResolve);
+         shaderLibrary->setupCommonShaders(renderInterface.get(), device.get());
+         shaderLibrary->setupMultisamplingShaders(renderInterface.get(), device.get(), multisampling);
++        RT64_SWITCH_CHECKPOINT("rt64 setup: common shaders ready");
+ 
+         // Create the shader caches.
+         // Estimate the amount of shader compiler threads by trying to use about half of the system's available threads.
+@@ -354,6 +378,7 @@ namespace RT64 {
+         const uint32_t ubershaderThreads = uint32_t(std::max(int(threadsAvailable) - 2, 1));
+         rasterShaderCache = std::make_unique<RasterShaderCache>(rasterShaderThreads, ubershaderThreads);
+         rasterShaderCache->setup(device.get(), renderInterface->getCapabilities().shaderFormat, shaderLibrary.get(), multisampling);
++        RT64_SWITCH_CHECKPOINT("rt64 setup: raster shader cache ready");
+ 
+ #   if RT_ENABLED
+         if (device->getCapabilities().raytracing) {
+@@ -369,6 +394,7 @@ namespace RT64 {
+         const uint64_t MinimumTexturePoolSize = 512 * 1024 * 1024;
+         uint64_t texturePoolSize = std::max((deviceDescription.dedicatedVideoMemory * 2) / 3, MinimumTexturePoolSize);
+         textureCache->setReplacementPoolMaxSize(texturePoolSize);
++        RT64_SWITCH_CHECKPOINT("rt64 setup: texture cache ready");
+ 
+ #   if RT_ENABLED
+         // Create the blue noise texture, upload it and wait for it to finish.
+@@ -423,6 +449,7 @@ namespace RT64 {
+         presentExt.shaderLibrary = shaderLibrary.get();
+         presentExt.createdGraphicsAPI = chosenGraphicsAPI;
+         presentQueue->setup(presentExt);
++        RT64_SWITCH_CHECKPOINT("rt64 setup: queues ready");
+ 
+         // Configure the state to use all the created components.
+         State::External stateExt;
+@@ -451,9 +478,11 @@ namespace RT64 {
+         stateExt.rtConfig = &rtConfig;
+ #   endif
+         state->setup(stateExt);
++        RT64_SWITCH_CHECKPOINT("rt64 setup: state ready");
+ 
+         // Set up the RDP
+         state->rdp->setGBI();
++        RT64_SWITCH_CHECKPOINT("rt64 setup: complete");
+ 
+         return SetupResult::Success;
+     }
+diff --git a/src/hle/rt64_application_window.cpp b/src/hle/rt64_application_window.cpp
+index 08f83e5..c77bf74 100755
+--- a/src/hle/rt64_application_window.cpp
++++ b/src/hle/rt64_application_window.cpp
+@@ -19,6 +19,8 @@
+ #elif defined(__APPLE__)
+ #   include "rt64_application.h"
+ #   include "apple/rt64_apple.h"
++#elif defined(__SWITCH__)
++#   include <switch.h>
+ #endif
+ 
+ #include "common/rt64_common.h"
+@@ -51,7 +53,7 @@ namespace RT64 {
+ 
+         windowHandle = window;
+ 
+-#   if defined(RT64_SDL_WINDOW_VULKAN)
++#   if defined(RT64_SDL_WINDOW_VULKAN) && !defined(__SWITCH__)
+         sdlWindow = window;
+ #   endif
+ 
+@@ -80,6 +82,10 @@ namespace RT64 {
+     }
+ 
+     void ApplicationWindow::setup(const char *windowTitle, Listener *listener) {
++#   if defined(__SWITCH__)
++        (void)windowTitle;
++        setup(reinterpret_cast<RenderWindow>(nwindowGetDefault()), listener, 0);
++#   else
+         assert(windowTitle != nullptr);
+ 
+         // Find the right window dimension and placement.
+@@ -124,18 +130,13 @@ namespace RT64 {
+ #   else
+         static_assert(false && "Unimplemented");
+ #   endif
+-        uint32_t createFlags = SDL_WINDOW_RESIZABLE;
+-#   if defined(__APPLE__)
+-        createFlags |= SDL_WINDOW_METAL;
+-#   endif
+-
+         // Create window.
+         uint32_t flags = SDL_WINDOW_RESIZABLE;
+-        # if defined(__APPLE__)
++#       if defined(__APPLE__)
+         flags |= SDL_WINDOW_METAL;
+-        # elif defined(RT64_SDL_WINDOW_VULKAN)
++#       elif defined(RT64_SDL_WINDOW_VULKAN)
+         flags |= SDL_WINDOW_VULKAN;
+-        #endif
++#       endif
+         sdlWindow = SDL_CreateWindow(windowTitle, bounds.left, bounds.top, bounds.width, bounds.height, flags);
+         assert((sdlWindow != nullptr) && "Failed to open window with SDL");
+ 
+@@ -168,6 +169,7 @@ namespace RT64 {
+         setup(windowHandle, listener, tid);
+ #   else
+         setup(windowHandle, listener, pthread_self());
++#   endif
+ #   endif
+     }
+ 
+@@ -229,6 +231,8 @@ namespace RT64 {
+         fullScreen = newFullScreen;
+ #   elif defined(__APPLE__)
+         windowWrapper->toggleFullscreen();
++#   elif defined(__SWITCH__)
++        fullScreen = newFullScreen;
+ #   elif defined(RT64_SDL_WINDOW_VULKAN)
+         if (newFullScreen) {
+             SDL_SetWindowFullscreen(windowHandle, SDL_WINDOW_FULLSCREEN_DESKTOP);
+@@ -279,6 +283,8 @@ namespace RT64 {
+         if ((refreshRate % 10) == 9) {
+             refreshRate++;
+         }
++#   elif defined(__SWITCH__)
++        refreshRate = 60;
+ #   elif defined(RT64_SDL_WINDOW_VULKAN)
+         int displayIndex = SDL_GetWindowDisplayIndex(windowHandle);
+         if (displayIndex < 0) {
+@@ -347,6 +353,8 @@ namespace RT64 {
+         GetWindowRect(windowHandle, &rect);
+         newWindowLeft = rect.left;
+         newWindowTop = rect.top;
++#   elif defined(__SWITCH__)
++        // Horizon exposes a single fixed-position application surface.
+ #   elif defined(RT64_SDL_WINDOW_VULKAN)
+         SDL_GetWindowPosition(windowHandle, &newWindowLeft, &newWindowTop);
+ #   elif defined(__linux__)
+diff --git a/src/hle/rt64_present_queue.cpp b/src/hle/rt64_present_queue.cpp
+index 3227ab1..7c3e584 100644
+--- a/src/hle/rt64_present_queue.cpp
++++ b/src/hle/rt64_present_queue.cpp
+@@ -4,11 +4,20 @@
+ 
+ #include "rt64_present_queue.h"
+ 
++#include <cstdlib>
++
+ #include "common/rt64_thread.h"
+ #include "rhi/rt64_render_hooks.h"
+ 
+ #include "rt64_workload_queue.h"
+ 
++#if defined(__SWITCH__)
++void switch_log_checkpoint(const char*, bool);
++#define RT64_PRESENT_SWITCH_CHECKPOINT(message) ::switch_log_checkpoint(message, false)
++#else
++#define RT64_PRESENT_SWITCH_CHECKPOINT(message) ((void)0)
++#endif
++
+ namespace RT64 {
+     // PresentQueue
+ 
+@@ -20,10 +29,16 @@ namespace RT64 {
+         presentThreadRunning = false;
+         cursorCondition.notify_all();
+ 
++#if defined(__SWITCH__)
++        if (presentThreadStarted) {
++            pthread_join(presentThread, nullptr);
++        }
++#else
+         if (presentThread != nullptr) {
+             presentThread->join();
+             delete presentThread;
+         }
++#endif
+ 
+         presentIdCondition.notify_all();
+     }
+@@ -89,10 +104,39 @@ namespace RT64 {
+         viRenderer = std::make_unique<VIRenderer>();
+ 
+         presentThreadRunning = true;
++#if defined(__SWITCH__)
++        constexpr size_t SwitchPresentStackSize = 8 * 1024 * 1024;
++        pthread_attr_t attributes{};
++        int result = pthread_attr_init(&attributes);
++        const bool attributesInitialized = (result == 0);
++        if (result == 0) result = pthread_attr_setstacksize(&attributes, SwitchPresentStackSize);
++        if (result == 0) result = pthread_create(&presentThread, &attributes, &PresentQueue::switchPresentThreadEntry, this);
++        if (attributesInitialized) pthread_attr_destroy(&attributes);
++        presentThreadStarted = (result == 0);
++        if (!presentThreadStarted) {
++            RT64_PRESENT_SWITCH_CHECKPOINT("rt64 queue: large-stack present thread creation failed");
++            std::abort();
++        }
++        RT64_PRESENT_SWITCH_CHECKPOINT("rt64 queue: large-stack present thread spawned");
++#else
+         presentThread = new std::thread(&PresentQueue::threadLoop, this);
++#endif
+     }
+ 
++#if defined(__SWITCH__)
++    void *PresentQueue::switchPresentThreadEntry(void *argument) {
++        static_cast<PresentQueue *>(argument)->threadLoop();
++        return nullptr;
++    }
++#endif
++
+     void PresentQueue::threadPresent(const Present &present, bool &swapChainValid) {
++#if defined(__SWITCH__)
++        static bool traceFirstPresent = true;
++        const bool tracePresent = traceFirstPresent;
++#else
++        constexpr bool tracePresent = false;
++#endif
+         FramebufferManager &fbManager = ext.sharedResources->framebufferManager;
+         RenderTargetManager &targetManager = ext.sharedResources->renderTargetManager;
+         const bool usingMSAA = (targetManager.multisampling.sampleCount > 1);
+@@ -113,6 +157,7 @@ namespace RT64 {
+             viOriginalRate = ext.sharedResources->viOriginalRate;
+             targetRate = ext.sharedResources->targetRate;
+         }
++        if (tracePresent) RT64_PRESENT_SWITCH_CHECKPOINT("rt64 present: configuration copied");
+ 
+         RenderTarget *colorTarget = nullptr;
+         int32_t framesToPresent = 1;
+@@ -127,18 +172,21 @@ namespace RT64 {
+         
+         // Perform any external write operations indicated by the event.
+         if (!present.fbOperations.empty()) {
++            if (tracePresent) RT64_PRESENT_SWITCH_CHECKPOINT("rt64 present: framebuffer operations entered");
+             const std::scoped_lock lock(screenFbChangePoolMutex);
+             {
+                 RenderWorkerExecution workerExecution(ext.presentGraphicsWorker);
+                 fbManager.performOperations(ext.presentGraphicsWorker, &screenFbChangePool, nullptr, ext.shaderLibrary, nullptr,
+                     present.fbOperations, targetManager, resolutionScale, 0, 0, nullptr);
+             }
++            if (tracePresent) RT64_PRESENT_SWITCH_CHECKPOINT("rt64 present: framebuffer operations returned");
+         }
+ 
+         // Present the VI specified by the event.
+         // Attempt to find the matching framebuffer for the VI based on the origin address.
+         // If that fails, we look at the shared storage.
+         if (present.screenVI.visible()) {
++            if (tracePresent) RT64_PRESENT_SWITCH_CHECKPOINT("rt64 present: visible VI entered");
+             Framebuffer *viFb = nullptr;
+             if (!viewRDRAM) {
+                 viFb = fbManager.find(present.screenVI.fbAddress());
+@@ -254,16 +302,22 @@ namespace RT64 {
+                     viHistory.pushVI(present.screenVI, fbSize.x);
+                 }
+             }
++            if (tracePresent) RT64_PRESENT_SWITCH_CHECKPOINT("rt64 present: visible VI prepared");
++        }
++        else if (tracePresent) {
++            RT64_PRESENT_SWITCH_CHECKPOINT("rt64 present: VI not visible");
+         }
+ 
+         // Create the framebuffers if necessary.
+         if (swapChainFramebuffers.empty()) {
++            if (tracePresent) RT64_PRESENT_SWITCH_CHECKPOINT("rt64 present: swapchain framebuffer creation entered");
+             uint32_t textureCount = ext.swapChain->getTextureCount();
+             swapChainFramebuffers.resize(textureCount);
+             for (uint32_t i = 0; i < textureCount; i++) {
+                 const RenderTexture *swapChainTexture = ext.swapChain->getTexture(i);
+                 swapChainFramebuffers[i] = ext.device->createFramebuffer(RenderFramebufferDesc(&swapChainTexture, 1));
+             }
++            if (tracePresent) RT64_PRESENT_SWITCH_CHECKPOINT("rt64 present: swapchain framebuffer creation returned");
+         }
+         
+         for (int32_t i = 0; i < framesToPresent; i++) {
+@@ -300,10 +354,13 @@ namespace RT64 {
+             uint32_t swapChainIndex = 0;
+             const bool presentFrame = (i < framesToPresent) && swapChainValid;
+             if (presentFrame) {
++                if (tracePresent) RT64_PRESENT_SWITCH_CHECKPOINT("rt64 present: swapchain acquire entered");
+                 swapChainValid = ext.swapChain->acquireTexture(acquiredSemaphore.get(), &swapChainIndex);
++                if (tracePresent) RT64_PRESENT_SWITCH_CHECKPOINT("rt64 present: swapchain acquire returned");
+             }
+ 
+             if (presentFrame && swapChainValid) {
++                if (tracePresent) RT64_PRESENT_SWITCH_CHECKPOINT("rt64 present: command recording entered");
+                 // Draw the framebuffer with the VI renderer.
+                 RenderTexture *swapChainTexture = ext.swapChain->getTexture(swapChainIndex);
+                 RenderFramebuffer *swapChainFramebuffer = swapChainFramebuffers[swapChainIndex].get();
+@@ -339,18 +396,23 @@ namespace RT64 {
+                         renderParams.textureHeight = colorTarget->height;
+                     }
+                 }
++                if (tracePresent) RT64_PRESENT_SWITCH_CHECKPOINT("rt64 present: VI render parameters ready");
+                 
+                 commandList->setFramebuffer(swapChainFramebuffer);
+                 commandList->clearColor();
+ 
+                 if (renderParams.texture != nullptr) {
++                    if (tracePresent) RT64_PRESENT_SWITCH_CHECKPOINT("rt64 present: VI renderer entered");
+                     commandList->barriers(RenderBarrierStage::GRAPHICS, RenderTextureBarrier(renderParams.texture, RenderTextureLayout::SHADER_READ));
+                     viRenderer->render(renderParams);
++                    if (tracePresent) RT64_PRESENT_SWITCH_CHECKPOINT("rt64 present: VI renderer returned");
+                 }
+ 
+                 RenderHookDraw *drawHook = GetRenderHookDraw();
+                 if (drawHook != nullptr) {
++                    if (tracePresent) RT64_PRESENT_SWITCH_CHECKPOINT("rt64 present: frontend draw hook entered");
+                     drawHook(commandList, swapChainFramebuffer);
++                    if (tracePresent) RT64_PRESENT_SWITCH_CHECKPOINT("rt64 present: frontend draw hook returned");
+                 }
+ 
+                 {
+@@ -361,11 +423,16 @@ namespace RT64 {
+                     
+                     commandList->barriers(RenderBarrierStage::NONE, RenderTextureBarrier(swapChainTexture, RenderTextureLayout::PRESENT));
+                     commandList->end();
++                    if (tracePresent) RT64_PRESENT_SWITCH_CHECKPOINT("rt64 present: command recording returned");
+                     const RenderCommandList *commandList = ext.presentGraphicsWorker->commandList.get();
+                     RenderCommandSemaphore *waitSemaphore = acquiredSemaphore.get();
+                     RenderCommandSemaphore *signalSemaphore = drawSemaphores[swapChainIndex].get();
++                    if (tracePresent) RT64_PRESENT_SWITCH_CHECKPOINT("rt64 present: command submission entered");
+                     ext.presentGraphicsWorker->commandQueue->executeCommandLists(&commandList, 1, &waitSemaphore, 1, &signalSemaphore, 1, ext.presentGraphicsWorker->commandFence.get());
++                    if (tracePresent) RT64_PRESENT_SWITCH_CHECKPOINT("rt64 present: command submission returned");
++                    if (tracePresent) RT64_PRESENT_SWITCH_CHECKPOINT("rt64 present: GPU wait entered");
+                     ext.presentGraphicsWorker->wait();
++                    if (tracePresent) RT64_PRESENT_SWITCH_CHECKPOINT("rt64 present: GPU wait returned");
+                 }
+             }
+ 
+@@ -386,6 +453,7 @@ namespace RT64 {
+             // As soon as we're done with the first render target, we notify the workload queue it can proceed.
+             if (i == 0) {
+                 notifyPresentId(present);
++                if (tracePresent) RT64_PRESENT_SWITCH_CHECKPOINT("rt64 present: present ID notified");
+             }
+ 
+             if (presentFrame && swapChainValid) {
+@@ -400,10 +468,15 @@ namespace RT64 {
+ 
+                 RenderCommandSemaphore *waitSemaphore = drawSemaphores[swapChainIndex].get();
+                 presentTimestamp = Timer::current();
++                if (tracePresent) RT64_PRESENT_SWITCH_CHECKPOINT("rt64 present: queue present entered");
+                 swapChainValid = ext.swapChain->present(swapChainIndex, &waitSemaphore, 1);
++                if (tracePresent) RT64_PRESENT_SWITCH_CHECKPOINT("rt64 present: queue present returned");
+                 presentProfiler.logAndRestart();
+             }
+         }
++#if defined(__SWITCH__)
++        traceFirstPresent = false;
++#endif
+     }
+ 
+     void PresentQueue::skipInterpolation() {
+@@ -431,6 +504,7 @@ namespace RT64 {
+     }
+ 
+     void PresentQueue::threadLoop() {
++        RT64_PRESENT_SWITCH_CHECKPOINT("rt64 queue: present thread entered");
+         Thread::setCurrentThreadName("RT64 Present");
+ 
+         // Create the semaphore the acquire method will use.
+@@ -449,6 +523,7 @@ namespace RT64 {
+         uint32_t displayTimingRate = UINT32_MAX;
+         const bool displayTiming = ext.device->getCapabilities().displayTiming;
+         bool swapChainValid = !ext.swapChain->needsResize();
++        bool firstPresent = true;
+         while (presentThreadRunning) {
+             {
+                 std::unique_lock<std::mutex> cursorLock(cursorMutex);
+@@ -464,6 +539,7 @@ namespace RT64 {
+             }
+ 
+             if (processCursor >= 0) {
++                if (firstPresent) RT64_PRESENT_SWITCH_CHECKPOINT("rt64 queue: first present dequeued");
+                 std::unique_lock<std::mutex> threadLock(threadMutex);
+                 const bool needsResize = ext.swapChain->needsResize() || !swapChainValid;
+                 if (needsResize) {
+@@ -505,6 +581,7 @@ namespace RT64 {
+ 
+                 Present &present = presents[processCursor];
+                 ext.workloadQueue->waitForWorkloadId(present.workloadId);
++                if (firstPresent) RT64_PRESENT_SWITCH_CHECKPOINT("rt64 queue: first present workload ready");
+ 
+                 if (!presentThreadRunning) {
+                     continue;
+@@ -515,7 +592,9 @@ namespace RT64 {
+                     notifyPresentId(present);
+                 }
+                 else {
++                    if (firstPresent) RT64_PRESENT_SWITCH_CHECKPOINT("rt64 queue: first threadPresent entered");
+                     threadPresent(present, swapChainValid);
++                    if (firstPresent) RT64_PRESENT_SWITCH_CHECKPOINT("rt64 queue: first threadPresent returned");
+                 }
+ 
+                 if (!present.paused) {
+@@ -529,6 +608,7 @@ namespace RT64 {
+                 }
+ 
+                 processCursor = -1;
++                firstPresent = false;
+             }
+         }
+ 
+diff --git a/src/hle/rt64_present_queue.h b/src/hle/rt64_present_queue.h
+index e08b02c..a93d655 100644
+--- a/src/hle/rt64_present_queue.h
++++ b/src/hle/rt64_present_queue.h
+@@ -4,6 +4,10 @@
+ 
+ #pragma once
+ 
++#if defined(__SWITCH__)
++#include <pthread.h>
++#endif
++
+ #include "common/rt64_profiling_timer.h"
+ #include "gui/rt64_inspector.h"
+ #include "render/rt64_vi_renderer.h"
+@@ -39,7 +43,13 @@ namespace RT64 {
+         uint64_t presentId;
+         std::mutex presentIdMutex;
+         std::condition_variable presentIdCondition;
++#if defined(__SWITCH__)
++        pthread_t presentThread{};
++        bool presentThreadStarted = false;
++        static void *switchPresentThreadEntry(void *argument);
++#else
+         std::thread *presentThread = nullptr;
++#endif
+         std::mutex threadMutex;
+         std::atomic<bool> presentThreadRunning = false;
+         std::recursive_mutex inspectorMutex;
+@@ -73,4 +83,4 @@ namespace RT64 {
+         void threadAdvanceBarrier();
+         void threadLoop();
+     };
+-};
+\ No newline at end of file
++};
+diff --git a/src/hle/rt64_state.cpp b/src/hle/rt64_state.cpp
+index d249a97..7df5b89 100644
+--- a/src/hle/rt64_state.cpp
++++ b/src/hle/rt64_state.cpp
+@@ -21,6 +21,14 @@
+ #include "rt64_application.h"
+ #include "rt64_interpreter.h"
+ 
++#if defined(__SWITCH__)
++void switch_log_checkpoint(const char*, bool);
++static thread_local bool rt64_trace_full_sync = false;
++#define RT64_STATE_SWITCH_CHECKPOINT(message) do { if (rt64_trace_full_sync) ::switch_log_checkpoint(message, false); } while (0)
++#else
++#define RT64_STATE_SWITCH_CHECKPOINT(message) ((void)0)
++#endif
++
+ //#define ASSERT_ON_BLENDER_EMULATION
+ #define SYNC_ON_EVERY_FB_PAIR 0
+ 
+@@ -436,14 +444,20 @@ namespace RT64 {
+     }
+ 
+     void State::flush() {
++        RT64_STATE_SWITCH_CHECKPOINT("rt64 state: flush entered");
+         if (drawCall.triangleCount == 0) {
++            RT64_STATE_SWITCH_CHECKPOINT("rt64 state: flush had no triangles");
+             return;
+         }
+ 
++        RT64_STATE_SWITCH_CHECKPOINT("rt64 state: flush has triangles");
++
+         // Assign some parameters to the draw call.
+         const int workloadCursor = ext.workloadQueue->writeCursor;
+         Workload &workload = ext.workloadQueue->workloads[workloadCursor];
++        RT64_STATE_SWITCH_CHECKPOINT("rt64 state: flush workload selected");
+         FramebufferPair &fbPair = workload.fbPairs[workload.currentFramebufferPairIndex()];
++        RT64_STATE_SWITCH_CHECKPOINT("rt64 state: flush framebuffer pair selected");
+         drawCall.cullBothMask = rsp->cullBothMask;
+         drawCall.shadingSmoothMask = rsp->shadingSmoothMask;
+         drawCall.NoN = rsp->NoN;
+@@ -454,6 +468,7 @@ namespace RT64 {
+         GameCall gameCall;
+         gameCall.callDesc = drawCall;
+         fbPair.addGameCall(gameCall);
++        RT64_STATE_SWITCH_CHECKPOINT("rt64 state: flush game call added");
+ 
+         // Assign the indices or increase the count of the active sprite command if it exists.
+         if (activeSpriteCommand.replacementHash != 0) {
+@@ -502,23 +517,29 @@ namespace RT64 {
+         drawCall.minWorldMatrix = USHRT_MAX;
+         drawCall.maxWorldMatrix = 0;
+         drawCall.triangleCount = 0;
++        RT64_STATE_SWITCH_CHECKPOINT("rt64 state: flush complete");
+     }
+     
+     void State::submitFramebufferPair(FramebufferPair::FlushReason flushReason) {
++        RT64_STATE_SWITCH_CHECKPOINT("rt64 state: framebuffer submission entered");
+         const int workloadCursor = ext.workloadQueue->writeCursor;
+         Workload &workload = ext.workloadQueue->workloads[workloadCursor];
++        RT64_STATE_SWITCH_CHECKPOINT("rt64 state: submission workload selected");
+ 
+         // Ignore if the amount of framebuffer pairs isn't bigger than the amount of framebuffer pairs submitted.
+         if (workload.fbPairCount <= workload.fbPairSubmitted) {
++            RT64_STATE_SWITCH_CHECKPOINT("rt64 state: no framebuffer pair to submit");
+             return;
+         }
+         
+         const int fbPairIndex = workload.currentFramebufferPairIndex();
+         FramebufferPair &fbPair = workload.fbPairs[fbPairIndex];
+         fbPair.flushReason = flushReason;
++        RT64_STATE_SWITCH_CHECKPOINT("rt64 state: submission framebuffer pair selected");
+ 
+         // Add all the pending framebuffer operations to the first one that was found.
+         flushFramebufferOperations(fbPair);
++        RT64_STATE_SWITCH_CHECKPOINT("rt64 state: framebuffer operations flushed");
+ 
+         if (!fbPair.drawColorRect.isEmpty()) {
+             auto &colorImg = fbPair.colorImage;
+@@ -527,6 +548,7 @@ namespace RT64 {
+             uint32_t colorWriteWidth = (colorHeight > 1) ? colorImg.width : std::min(fbPair.drawColorRect.right(true), int32_t(colorImg.width));
+             uint32_t depthWriteWidth = 0;
+             RT64::Framebuffer *colorFb = &framebufferManager.get(colorImg.address, colorImg.siz, colorImg.width, colorHeight);
++            RT64_STATE_SWITCH_CHECKPOINT("rt64 state: color framebuffer resolved");
+             colorImg.formatChanged = colorFb->widthChanged || colorFb->sizChanged || colorFb->rdramChanged;
+             colorFb->clearChanged();
+             colorFb->addDitherPatterns(fbPair.ditherPatterns);
+@@ -587,6 +609,7 @@ namespace RT64 {
+ 
+         // Increase the submitted framebuffer counter.
+         workload.fbPairSubmitted++;
++        RT64_STATE_SWITCH_CHECKPOINT("rt64 state: framebuffer submission complete");
+     }
+     
+     void State::checkRDRAM() {
+@@ -763,12 +786,20 @@ namespace RT64 {
+     }
+ 
+     void State::fullSync() {
++#if defined(__SWITCH__)
++        static bool first_full_sync = true;
++        rt64_trace_full_sync = first_full_sync;
++#endif
++        RT64_STATE_SWITCH_CHECKPOINT("rt64 state: fullSync entered");
+         flush();
++        RT64_STATE_SWITCH_CHECKPOINT("rt64 state: fullSync flush returned");
+         submitFramebufferPair(FramebufferPair::FlushReason::ProcessDisplayListsEnd);
++        RT64_STATE_SWITCH_CHECKPOINT("rt64 state: fullSync framebuffer submission returned");
+ 
+         // Append any framebuffer operations to the end of the last framebuffer pair.
+         int workloadCursor = ext.workloadQueue->writeCursor;
+         Workload &workload = ext.workloadQueue->workloads[workloadCursor];
++        RT64_STATE_SWITCH_CHECKPOINT("rt64 state: fullSync workload selected");
+         if (hasFramebufferOperationsPending()) {
+             // If no framebuffer pair is present to do this, we make a placeholder one with the current images.
+             if (workload.fbPairCount == 0) {
+@@ -782,6 +813,7 @@ namespace RT64 {
+         // Copy the current state's extended parameters into the workload.
+         workload.extended.ditherNoiseStrength = extended.ditherNoiseStrength;
+         workload.extended.texcoordWrapPoint = extended.texcoordWrapPoint;
++        RT64_STATE_SWITCH_CHECKPOINT("rt64 state: fullSync extended state copied");
+ 
+         auto emitTileWarning = [&](CommandWarning warning, size_t tileIndex) {
+             warning.indexType = CommandWarning::IndexType::TileIndex;
+@@ -911,6 +943,7 @@ namespace RT64 {
+                     "due to using a big mask or big clamp coordinates. Unable to provide a fast path for texture sampling.", t), t);
+             }
+         }
++        RT64_STATE_SWITCH_CHECKPOINT("rt64 state: fullSync tile validation complete");
+ 
+         // Fill out all the rendering data for the framebuffer pairs that will be uploaded.
+         const UserConfiguration::Upscale2D upscale2D = ext.userConfig->upscale2D;
+@@ -1092,20 +1125,25 @@ namespace RT64 {
+                 }
+             }
+         }
++        RT64_STATE_SWITCH_CHECKPOINT("rt64 state: fullSync render data prepared");
+ 
+         // Ensure there's as many GPU tiles as call tiles available in the vector.
+         workload.drawData.gpuTiles.resize(workload.drawData.callTiles.size());
++        RT64_STATE_SWITCH_CHECKPOINT("rt64 state: fullSync GPU tiles resized");
+ 
+         // Start uploading the entire draw data for all the framebuffer pairs that were processed.
+         workload.updateDrawDataRanges();
+         workload.uploadDrawData(ext.framebufferGraphicsWorker, ext.drawDataUploader);
++        RT64_STATE_SWITCH_CHECKPOINT("rt64 state: fullSync draw data upload submitted");
+         workload.updateOutputBuffers(ext.framebufferGraphicsWorker);
++        RT64_STATE_SWITCH_CHECKPOINT("rt64 state: fullSync output buffers updated");
+ 
+         // Upload the transforms directly.
+         ext.transformsUploader->submit(ext.framebufferGraphicsWorker, {
+             { workload.drawData.viewProjTransforms.data(), workload.drawRanges.viewProjTransforms, sizeof(interop::float4x4), RenderBufferFlag::STORAGE, { }, &workload.drawBuffers.viewProjTransformsBuffer},
+             { workload.drawData.worldTransforms.data(), workload.drawRanges.worldTransforms, sizeof(interop::float4x4), RenderBufferFlag::STORAGE, { }, &workload.drawBuffers.worldTransformsBuffer},
+         });
++        RT64_STATE_SWITCH_CHECKPOINT("rt64 state: fullSync transforms submitted");
+ 
+         if (renderToRDRAM) {
+             // Run RSP processor.
+@@ -1124,10 +1162,12 @@ namespace RT64 {
+         uint32_t rdpTileCursor = uint32_t(workload.drawRanges.rdpTiles.first);
+         uint32_t gpuTileCursor = rdpTileCursor;
+         workload.nextDrawDataRanges();
++        RT64_STATE_SWITCH_CHECKPOINT("rt64 state: fullSync data ranges advanced");
+ 
+         // Make sure pipelines for the ubershader have been created before rendering. This condition is executed regardless
+         // of whether rendering to RAM is active so the workload queue is guaranteed to have the pipelines ready as well.
+         ext.rasterShaderCache->shaderUber->waitForPipelineCreation();
++        RT64_STATE_SWITCH_CHECKPOINT("rt64 state: fullSync ubershader pipeline ready");
+ 
+         if (renderToRDRAM) {
+             const hlslpp::float2 resolutionScale(1.0f, 1.0f);
+@@ -1748,8 +1788,11 @@ namespace RT64 {
+         }
+         
+         // Advance the workload queue at the end of a full synchronization.
++        RT64_STATE_SWITCH_CHECKPOINT("rt64 state: fullSync workload advance entered");
+         advanceWorkload(workload, false);
++        RT64_STATE_SWITCH_CHECKPOINT("rt64 state: fullSync workload advanced");
+         ext.workloadQueue->advanceToNextWorkload();
++        RT64_STATE_SWITCH_CHECKPOINT("rt64 state: fullSync queue cursor advanced");
+ 
+         // Make sure the profiler starts after the workload is advanced to ignore any waiting time.
+         dlCpuProfiler.reset();
+@@ -1806,6 +1849,11 @@ namespace RT64 {
+         // Extended GBI must be enabled again when the display list starts.
+         disableExtendedGBI();
+         clearExtended();
++        RT64_STATE_SWITCH_CHECKPOINT("rt64 state: fullSync complete");
++#if defined(__SWITCH__)
++        first_full_sync = false;
++        rt64_trace_full_sync = false;
++#endif
+     }
+     
+     void State::updateScreen(const VI &newVI, bool fromEarlyPresent) {
+@@ -2774,4 +2822,4 @@ namespace RT64 {
+             break;
+         }
+     }
+-};
+\ No newline at end of file
++};
+diff --git a/src/hle/rt64_workload_queue.cpp b/src/hle/rt64_workload_queue.cpp
+index 5a331aa..ede2e05 100644
+--- a/src/hle/rt64_workload_queue.cpp
++++ b/src/hle/rt64_workload_queue.cpp
+@@ -4,12 +4,21 @@
+ 
+ #include "rt64_workload_queue.h"
+ 
++#include <cstdlib>
++
+ #include "common/rt64_thread.h"
+ 
+ #include "rt64_present_queue.h"
+ 
+ #define ENABLE_HIGH_RESOLUTION_RENDERER 1
+ 
++#if defined(__SWITCH__)
++void switch_log_checkpoint(const char*, bool);
++#define RT64_WORKLOAD_SWITCH_CHECKPOINT(message) ::switch_log_checkpoint(message, false)
++#else
++#define RT64_WORKLOAD_SWITCH_CHECKPOINT(message) ((void)0)
++#endif
++
+ namespace RT64 {
+     // WorkloadQueue
+ 
+@@ -22,6 +31,15 @@ namespace RT64 {
+         cursorCondition.notify_all();
+         idleCondition.notify_all();
+ 
++#if defined(__SWITCH__)
++        if (renderThreadStarted) {
++            pthread_join(renderThread, nullptr);
++        }
++
++        if (idleThreadStarted) {
++            pthread_join(idleThread, nullptr);
++        }
++#else
+         if (renderThread != nullptr) {
+             renderThread->join();
+             delete renderThread;
+@@ -31,6 +49,7 @@ namespace RT64 {
+             idleThread->join();
+             delete idleThread;
+         }
++#endif
+ 
+         workloadIdCondition.notify_all();
+     }
+@@ -110,9 +129,42 @@ namespace RT64 {
+         lookAtProcessor.setup(ext.workloadGraphicsWorker);
+ 
+         threadsRunning = true;
++#if defined(__SWITCH__)
++        constexpr size_t SwitchRenderStackSize = 8 * 1024 * 1024;
++        constexpr size_t SwitchIdleStackSize = 1 * 1024 * 1024;
++        auto createThread = [this](pthread_t &thread, size_t stackSize, void *(*entry)(void *)) {
++            pthread_attr_t attributes{};
++            int result = pthread_attr_init(&attributes);
++            const bool attributesInitialized = (result == 0);
++            if (result == 0) result = pthread_attr_setstacksize(&attributes, stackSize);
++            if (result == 0) result = pthread_create(&thread, &attributes, entry, this);
++            if (attributesInitialized) pthread_attr_destroy(&attributes);
++            return result == 0;
++        };
++        renderThreadStarted = createThread(renderThread, SwitchRenderStackSize, &WorkloadQueue::switchRenderThreadEntry);
++        idleThreadStarted = createThread(idleThread, SwitchIdleStackSize, &WorkloadQueue::switchIdleThreadEntry);
++        if (!renderThreadStarted || !idleThreadStarted) {
++            RT64_WORKLOAD_SWITCH_CHECKPOINT("rt64 queue: large-stack workload thread creation failed");
++            std::abort();
++        }
++        RT64_WORKLOAD_SWITCH_CHECKPOINT("rt64 queue: large-stack workload threads spawned");
++#else
+         renderThread = new std::thread(&WorkloadQueue::renderThreadLoop, this);
+         idleThread = new std::thread(&WorkloadQueue::idleThreadLoop, this);
++#endif
++    }
++
++#if defined(__SWITCH__)
++    void *WorkloadQueue::switchRenderThreadEntry(void *argument) {
++        static_cast<WorkloadQueue *>(argument)->renderThreadLoop();
++        return nullptr;
++    }
++
++    void *WorkloadQueue::switchIdleThreadEntry(void *argument) {
++        static_cast<WorkloadQueue *>(argument)->idleThreadLoop();
++        return nullptr;
+     }
++#endif
+ 
+     void WorkloadQueue::updateMultisampling() {
+         renderFramebufferManager->destroyAll();
+@@ -879,6 +931,7 @@ namespace RT64 {
+     }
+ 
+     void WorkloadQueue::renderThreadLoop() {
++        RT64_WORKLOAD_SWITCH_CHECKPOINT("rt64 queue: workload render thread entered");
+         Thread::setCurrentThreadName("RT64 Workload");
+ 
+         WorkloadConfiguration workloadConfig;
+@@ -888,6 +941,7 @@ namespace RT64 {
+         uint32_t displayRateForTicks = 0;
+         int processCursor = -1;
+         bool frameReduction = false;
++        bool firstWorkload = true;
+         while (threadsRunning) {
+             {
+                 std::unique_lock<std::mutex> cursorLock(cursorMutex);
+@@ -902,9 +956,11 @@ namespace RT64 {
+             }
+ 
+             if (processCursor >= 0) {
++                if (firstWorkload) RT64_WORKLOAD_SWITCH_CHECKPOINT("rt64 queue: first workload dequeued");
+                 std::unique_lock<std::mutex> threadLock(threadMutex);
+                 Workload &workload = workloads[processCursor];
+                 ext.presentQueue->waitForPresentId(workload.presentId);
++                if (firstWorkload) RT64_WORKLOAD_SWITCH_CHECKPOINT("rt64 queue: first workload present dependency ready");
+ 
+                 if (!threadsRunning) {
+                     continue;
+@@ -913,6 +969,7 @@ namespace RT64 {
+                 ElapsedTimer workloadTimer;
+                 workloadProfiler.start();
+                 threadConfigurationUpdate(workload.viFbSize, workloadConfig);
++                if (firstWorkload) RT64_WORKLOAD_SWITCH_CHECKPOINT("rt64 queue: first workload configuration ready");
+ 
+                 // FIXME: This is a very hacky way to find out if we need to advance the frame if the workload was paused for the first time.
+                 if (!workload.paused || (!gameFrames[curFrameIndex].workloads.empty() && (gameFrames[curFrameIndex].workloads[0] != (uint32_t)processCursor))) {
+@@ -925,6 +982,7 @@ namespace RT64 {
+                 const GameFrame &prevFrame = gameFrames[prevFrameIndex];
+                 uint32_t workloadIndex = processCursor;
+                 curFrame.set(*this, &workloadIndex, 1);
++                if (firstWorkload) RT64_WORKLOAD_SWITCH_CHECKPOINT("rt64 queue: first game frame prepared");
+ 
+                 // Detect the color image to interpolate for this workload.
+                 RenderTargetKey interpolationTargetKey;
+@@ -1117,8 +1175,10 @@ namespace RT64 {
+                     }
+ 
+                     int64_t renderTimeMicro = workloadTimer.elapsedMicroseconds();
++                    if (firstWorkload) RT64_WORKLOAD_SWITCH_CHECKPOINT("rt64 queue: first threadRenderFrame entered");
+                     threadRenderFrame(curFrame, prevFrame, workloadConfig, workload.debuggerRenderer, workload.debuggerCamera, curFrameWeight, prevFrameWeight, deltaTimeMs,
+                         interpolationTargetKey, interpolationTargetFbPairIndex, overrideTarget, overrideModifier, velocityUploaderUsed, uploadExtras, tileInterpolationUsed, lookAtInterpolationUsed);
++                    if (firstWorkload) RT64_WORKLOAD_SWITCH_CHECKPOINT("rt64 queue: first threadRenderFrame returned");
+ 
+                     // Add total time the frame took to render.
+                     renderTimeTotalMicro += workloadTimer.elapsedMicroseconds() - renderTimeMicro;
+@@ -1126,6 +1186,7 @@ namespace RT64 {
+                     // After one frame is rendered, we indicate the workload has been processed so the present thread can start presenting frames as soon as it can.
+                     if (frame == 0) {
+                         threadAdvanceWorkloadId(workload.workloadId);
++                        if (firstWorkload) RT64_WORKLOAD_SWITCH_CHECKPOINT("rt64 queue: first workload ID advanced");
+                     }
+ 
+                     // For every additional frame, we increase the frames available and notify the present queue.
+@@ -1172,11 +1233,13 @@ namespace RT64 {
+                 workloadProfiler.end();
+                 workloadProfiler.log();
+                 workloadProfiler.reset();
++                firstWorkload = false;
+             }
+         }
+     }
+     
+     void WorkloadQueue::idleThreadLoop() {
++        RT64_WORKLOAD_SWITCH_CHECKPOINT("rt64 queue: idle thread entered");
+         // Beware traveler as you enter the zone of dirty driver hacks. Given N64 games are not exactly a demanding thing to render
+         // nowadays for modern GPUs and due to how the plugin's cooperative multiqueue system works, it's sometimes just not possible
+         // to keep the GPU busy at all times. It is often the case that the GPU might've already rendered all the frames it needed to
+@@ -1221,4 +1284,4 @@ namespace RT64 {
+             }
+         }
+     }
+-};
+\ No newline at end of file
++};
+diff --git a/src/hle/rt64_workload_queue.h b/src/hle/rt64_workload_queue.h
+index bde2f03..224b125 100644
+--- a/src/hle/rt64_workload_queue.h
++++ b/src/hle/rt64_workload_queue.h
+@@ -5,6 +5,9 @@
+ #pragma once
+ 
+ #include <array>
++#if defined(__SWITCH__)
++#include <pthread.h>
++#endif
+ 
+ #include "common/rt64_enhancement_configuration.h"
+ #include "common/rt64_profiling_timer.h"
+@@ -71,8 +74,17 @@ namespace RT64 {
+         uint64_t lastPresentId;
+         std::mutex workloadIdMutex;
+         std::condition_variable workloadIdCondition;
++#if defined(__SWITCH__)
++        pthread_t renderThread{};
++        pthread_t idleThread{};
++        bool renderThreadStarted = false;
++        bool idleThreadStarted = false;
++        static void *switchRenderThreadEntry(void *argument);
++        static void *switchIdleThreadEntry(void *argument);
++#else
+         std::thread *renderThread = nullptr;
+         std::thread *idleThread = nullptr;
++#endif
+         bool idleActive = false;
+         std::mutex idleMutex;
+         std::condition_variable idleCondition;
+@@ -123,4 +135,4 @@ namespace RT64 {
+         void renderThreadLoop();
+         void idleThreadLoop();
+     };
+-};
+\ No newline at end of file
++};
+diff --git a/src/render/rt64_raster_shader.cpp b/src/render/rt64_raster_shader.cpp
+index 721a01e..2ac3d6f 100644
+--- a/src/render/rt64_raster_shader.cpp
++++ b/src/render/rt64_raster_shader.cpp
+@@ -4,8 +4,17 @@
+ 
+ #include "rt64_raster_shader.h"
+ 
++#include <cstdlib>
++
+ #include "xxHash/xxh3.h"
+ 
++#if defined(__SWITCH__)
++void switch_log_checkpoint(const char*, bool);
++#define RT64_RASTER_SWITCH_CHECKPOINT(message) ::switch_log_checkpoint(message, false)
++#else
++#define RT64_RASTER_SWITCH_CHECKPOINT(message) ((void)0)
++#endif
++
+ #include "shaders/RenderParams.hlsli.rw.h"
+ #include "shaders/RasterPSDynamic.hlsl.spirv.h"
+ #include "shaders/RasterPSDynamicMS.hlsl.spirv.h"
+@@ -307,6 +316,7 @@ namespace RT64 {
+     }
+     
+     std::unique_ptr<RenderPipeline> RasterShader::createPipeline(const PipelineCreation &c) {
++        RT64_RASTER_SWITCH_CHECKPOINT("rt64 raster: ubershader pipeline description entered");
+         RenderGraphicsPipelineDesc pipelineDesc;
+         pipelineDesc.renderTargetBlend[0] = RenderBlendDesc::Copy();
+         pipelineDesc.renderTargetFormat[0] = RenderTarget::colorBufferFormat(c.usesHDR);
+@@ -344,7 +354,10 @@ namespace RT64 {
+             targetBlend.dstBlendAlpha = RenderBlend::ONE;
+         }
+ 
+-        return c.device->createGraphicsPipeline(pipelineDesc);
++        RT64_RASTER_SWITCH_CHECKPOINT("rt64 raster: ubershader device pipeline creation entered");
++        auto pipeline = c.device->createGraphicsPipeline(pipelineDesc);
++        RT64_RASTER_SWITCH_CHECKPOINT("rt64 raster: ubershader device pipeline creation returned");
++        return pipeline;
+     }
+     
+     RenderMultisampling RasterShader::generateMultisamplingPattern(RenderSampleCounts sampleCount, bool sampleLocationsSupported) {
+@@ -487,8 +500,33 @@ namespace RT64 {
+         pipelineThreads.clear();
+         pipelineThreads.resize(pipelineThreadCreations.size());
+         for (uint32_t i = 0; i < uint32_t(pipelineThreads.size()); i++) {
++#if defined(__SWITCH__)
++            constexpr size_t SwitchPipelineStackSize = 8 * 1024 * 1024;
++            SwitchPipelineThread &pipelineThread = pipelineThreads[i];
++            pipelineThread.owner = this;
++            pipelineThread.index = i;
++
++            pthread_attr_t attributes{};
++            int result = pthread_attr_init(&attributes);
++            const bool attributesInitialized = (result == 0);
++            if (result == 0) {
++                result = pthread_attr_setstacksize(&attributes, SwitchPipelineStackSize);
++            }
++            if (result == 0) {
++                result = pthread_create(&pipelineThread.handle, &attributes, &RasterShaderUber::switchPipelineThreadEntry, &pipelineThread);
++            }
++            if (attributesInitialized) {
++                pthread_attr_destroy(&attributes);
++            }
++            if (result != 0) {
++                RT64_RASTER_SWITCH_CHECKPOINT("rt64 raster: large-stack worker creation failed");
++                std::abort();
++            }
++#else
+             pipelineThreads[i] = std::make_unique<std::thread>(&RasterShaderUber::threadCreatePipelines, this, i);
++#endif
+         }
++        RT64_RASTER_SWITCH_CHECKPOINT("rt64 raster: large-stack ubershader worker spawned");
+ 
+         // Create the pipelines for post blend operations.
+         std::unique_ptr<RenderShader> postBlendAddPixelShader;
+@@ -558,7 +596,16 @@ namespace RT64 {
+         waitForPipelineCreation();
+     }
+ 
++#if defined(__SWITCH__)
++    void *RasterShaderUber::switchPipelineThreadEntry(void *argument) {
++        SwitchPipelineThread *pipelineThread = static_cast<SwitchPipelineThread *>(argument);
++        pipelineThread->owner->threadCreatePipelines(pipelineThread->index);
++        return nullptr;
++    }
++#endif
++
+     void RasterShaderUber::threadCreatePipelines(uint32_t threadIndex) {
++        RT64_RASTER_SWITCH_CHECKPOINT("rt64 raster: ubershader worker entered");
+         // Delay the creation of all other pipelines until the first pipeline is created. This can help the
+         // driver reuse its shader cache between pipelines and achieve a much lower creation time than if
+         // all threads started at the same time.
+@@ -572,29 +619,49 @@ namespace RT64 {
+         for (const PipelineCreation &creation : pipelineThreadCreations[threadIndex]) {
+             uint32_t pipelineIndex = pipelineStateIndex(creation.zCmp, creation.zUpd, creation.cvgAdd);
+ 
++            char checkpoint[96]{};
++            std::snprintf(checkpoint, sizeof(checkpoint), "rt64 raster: pipeline %u creation entered", pipelineIndex);
++            RT64_RASTER_SWITCH_CHECKPOINT(checkpoint);
++
+             if (pipelineIndex == 0) {
+                 firstPipelineMutex.lock();
+                 pipelines[pipelineIndex] = RasterShader::createPipeline(creation);
+                 firstPipelineMutex.unlock();
++                RT64_RASTER_SWITCH_CHECKPOINT("rt64 raster: pipeline 0 creation returned");
+                 firstPipelineCondition.notify_all();
+             }
+             else {
+                 pipelines[pipelineIndex] = RasterShader::createPipeline(creation);
++                std::snprintf(checkpoint, sizeof(checkpoint), "rt64 raster: pipeline %u creation returned", pipelineIndex);
++                RT64_RASTER_SWITCH_CHECKPOINT(checkpoint);
+             }
+         }
++        RT64_RASTER_SWITCH_CHECKPOINT("rt64 raster: ubershader worker complete");
+     }
+ 
+     void RasterShaderUber::waitForPipelineCreation() {
+         if (!pipelinesCreated) {
++            RT64_RASTER_SWITCH_CHECKPOINT("rt64 raster: pipeline wait entered");
++#if defined(__SWITCH__)
++            for (SwitchPipelineThread &thread : pipelineThreads) {
++                RT64_RASTER_SWITCH_CHECKPOINT("rt64 raster: pipeline worker join entered");
++                pthread_join(thread.handle, nullptr);
++                RT64_RASTER_SWITCH_CHECKPOINT("rt64 raster: pipeline worker join returned");
++            }
++#else
+             for (std::unique_ptr<std::thread> &thread : pipelineThreads) {
++                RT64_RASTER_SWITCH_CHECKPOINT("rt64 raster: pipeline worker join entered");
+                 thread->join();
++                RT64_RASTER_SWITCH_CHECKPOINT("rt64 raster: pipeline worker join returned");
+             }
++#endif
+ 
+             pipelineThreads.clear();
+             pipelineThreadCreations.clear();
+             vertexShader.reset();
+             pixelShader.reset();
+             pipelinesCreated = true;
++            RT64_RASTER_SWITCH_CHECKPOINT("rt64 raster: pipeline wait returned");
+         }
+     }
+ 
+diff --git a/src/render/rt64_raster_shader.h b/src/render/rt64_raster_shader.h
+index 3b991ff..bd81288 100644
+--- a/src/render/rt64_raster_shader.h
++++ b/src/render/rt64_raster_shader.h
+@@ -9,6 +9,9 @@
+ #include <condition_variable>
+ #include <mutex>
+ #include <thread>
++#if defined(__SWITCH__)
++#include <pthread.h>
++#endif
+ 
+ #include "re-spirv/re-spirv.h"
+ 
+@@ -87,7 +90,17 @@ namespace RT64 {
+         bool pipelinesCreated = false;
+         std::unique_ptr<RenderPipelineLayout> pipelineLayout;
+         std::vector<std::vector<PipelineCreation>> pipelineThreadCreations;
++#if defined(__SWITCH__)
++        struct SwitchPipelineThread {
++            RasterShaderUber *owner = nullptr;
++            uint32_t index = 0;
++            pthread_t handle{};
++        };
++        std::vector<SwitchPipelineThread> pipelineThreads;
++        static void *switchPipelineThreadEntry(void *argument);
++#else
+         std::vector<std::unique_ptr<std::thread>> pipelineThreads;
++#endif
+         std::unique_ptr<RenderShader> vertexShader;
+         std::unique_ptr<RenderShader> pixelShader;
+ 

@@ -1,10 +1,13 @@
 #include "zelda_support.h"
 #include <SDL.h>
+#if !defined(__SWITCH__)
 #include "nfd.h"
+#endif
 #include "RmlUi/Core.h"
 
 namespace zelda64 {
     // MARK: - Internal Helpers
+#if !defined(__SWITCH__)
     void perform_file_dialog_operation(const std::function<void(bool, const std::filesystem::path&)>& callback) {
         nfdnchar_t* native_path = nullptr;
         nfdresult_t result = NFD_OpenDialogN(&native_path, nullptr, 0, nullptr);
@@ -42,11 +45,14 @@ namespace zelda64 {
 
         callback(success, paths);
     }
+#endif
 
     // MARK: - Public API
 
     std::filesystem::path get_program_path() {
-#if defined(__APPLE__)
+#if defined(__SWITCH__)
+        return "sdmc:/switch/snowboardkids2-recompiled";
+#elif defined(__APPLE__)
         return get_bundle_resource_directory();
 #elif defined(__linux__) && defined(RECOMP_FLATPAK)
         return "/app/bin";
@@ -60,7 +66,10 @@ namespace zelda64 {
     }
 
     void open_file_dialog(std::function<void(bool success, const std::filesystem::path& path)> callback) {
-#ifdef __APPLE__
+#if defined(__SWITCH__)
+        const std::filesystem::path rom_path = get_program_path() / "snowboardkids2.z64";
+        callback(std::filesystem::is_regular_file(rom_path), rom_path);
+#elif defined(__APPLE__)
         dispatch_on_ui_thread([callback]() {
             perform_file_dialog_operation(callback);
         });
@@ -70,7 +79,9 @@ namespace zelda64 {
     }
 
     void open_file_dialog_multiple(std::function<void(bool success, const std::list<std::filesystem::path>& paths)> callback) {
-#ifdef __APPLE__
+#if defined(__SWITCH__)
+        callback(false, {});
+#elif defined(__APPLE__)
         dispatch_on_ui_thread([callback]() {
             perform_file_dialog_operation_multiple(callback);
         });
