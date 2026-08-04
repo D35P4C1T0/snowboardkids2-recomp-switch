@@ -30,16 +30,29 @@ index 0789c20..07326ab 100644
  # Include directories
  target_include_directories(plume PUBLIC
      ${CMAKE_CURRENT_SOURCE_DIR}
+diff --git a/contrib/volk b/contrib/volk
+--- a/contrib/volk
++++ b/contrib/volk
+@@ -1 +1 @@
+-Subproject commit be3dbd49bf77052665e96b6c7484af855e7e5f67
++Subproject commit be3dbd49bf77052665e96b6c7484af855e7e5f67-dirty
 diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
-index f1dd503..f73de10 100644
+index f1dd503..e58a1c2 100644
 --- a/plume_vulkan.cpp
 +++ b/plume_vulkan.cpp
-@@ -15,6 +15,13 @@
+@@ -11,10 +11,20 @@
+ #include "plume_vulkan.h"
+ 
+ #include <algorithm>
++#include <atomic>
+ #include <cmath>
  #include <climits>
  #include <unordered_map>
  
 +#if defined(__SWITCH__)
 +#include <switch.h>
++
++void switch_log_checkpoint(const char*, bool);
 +
 +extern "C" VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL
 +vk_icdGetInstanceProcAddr(VkInstance instance, const char *name);
@@ -48,7 +61,34 @@ index f1dd503..f73de10 100644
  #if DLSS_ENABLED
  #   include "render/plume_dlss.h"
  #endif
-@@ -58,6 +65,8 @@ namespace plume {
+@@ -28,6 +38,10 @@
+ // - Fix resource pools.
+ 
+ namespace plume {
++#if defined(__SWITCH__)
++    static std::atomic<uint32_t> SwitchSubmitSequence{0};
++#endif
++
+     // Backend constants.
+ 
+     // Required buffer alignment for acceleration structures.
+@@ -39,7 +53,15 @@ namespace plume {
+     // Controls the maximum amount of native queues the backend will create per queue family.
+     // Command queues are created as virtual queues on top of the native queues provided by Vulkan,
+     // so they're not under the limit set by the the device or the backend.
++#if defined(__SWITCH__)
++    // switch-nvk's GM20B backend is stable with one native queue. RT64 creates
++    // many virtual workers; spreading them over multiple native queues can lose
++    // the device when WSI submits its presentation blit after render workloads.
++    // Plume already serializes virtual queues sharing one native queue.
++    static const uint32_t MaxQueuesPerFamilyCount = 1;
++#else
+     static const uint32_t MaxQueuesPerFamilyCount = 4;
++#endif
+ 
+     // Required extensions.
+ 
+@@ -58,6 +80,8 @@ namespace plume {
  #   endif
  #   elif defined(__APPLE__)
          VK_EXT_METAL_SURFACE_EXTENSION_NAME,
@@ -57,7 +97,36 @@ index f1dd503..f73de10 100644
  #   endif
      };
  
-@@ -2095,6 +2104,17 @@ namespace plume {
+@@ -909,10 +933,28 @@ namespace plume {
+             return nullptr;
+         }
+ 
++        if (readRange != nullptr) {
++            const VkDeviceSize offset = readRange->begin;
++            const VkDeviceSize size = readRange->end - readRange->begin;
++            res = vmaInvalidateAllocation(device->allocator, allocation, offset, size);
++            if (res != VK_SUCCESS) {
++                fprintf(stderr, "vmaInvalidateAllocation failed with error code 0x%X.\n", res);
++                vmaUnmapMemory(device->allocator, allocation);
++                return nullptr;
++            }
++        }
++
+         return data;
+     }
+ 
+     void VulkanBuffer::unmap(uint32_t subresource, const RenderRange *writtenRange) {
++        const VkDeviceSize offset = (writtenRange != nullptr) ? writtenRange->begin : 0;
++        const VkDeviceSize size = (writtenRange != nullptr) ? (writtenRange->end - writtenRange->begin) : VK_WHOLE_SIZE;
++        VkResult res = vmaFlushAllocation(device->allocator, allocation, offset, size);
++        if (res != VK_SUCCESS) {
++            fprintf(stderr, "vmaFlushAllocation failed with error code 0x%X.\n", res);
++        }
++
+         vmaUnmapMemory(device->allocator, allocation);
+     }
+ 
+@@ -2095,6 +2137,17 @@ namespace plume {
              fprintf(stderr, "vkCreateWin32SurfaceKHR failed with error code 0x%X.\n", res);
              return;
          }
@@ -75,7 +144,46 @@ index f1dd503..f73de10 100644
  #   elif defined(PLUME_SDL_VULKAN_ENABLED)
          VulkanInterface *renderInterface = commandQueue->device->renderInterface;
          SDL_bool sdlRes = SDL_Vulkan_CreateSurface(desc.renderWindow, renderInterface->instance, &surface);
-@@ -2464,6 +2484,12 @@ namespace plume {
+@@ -2285,6 +2338,19 @@ namespace plume {
+             const std::scoped_lock queueLock(*commandQueue->queue->mutex);
+             res = vkQueuePresentKHR(commandQueue->queue->vk, &presentInfo);
+         }
++#if defined(__SWITCH__)
++        {
++            static bool loggedFirstPresentResult = false;
++            if (!loggedFirstPresentResult) {
++                char message[96]{};
++                std::snprintf(message, sizeof(message),
++                    "plume: first vkQueuePresentKHR returned %d (0x%08X)",
++                    int(res), unsigned(res));
++                switch_log_checkpoint(message, false);
++                loggedFirstPresentResult = true;
++            }
++        }
++#endif
+ 
+ #if defined(__APPLE__)
+         // Under MoltenVK, VK_SUBOPTIMAL_KHR does not result in a valid state for rendering. We intentionally
+@@ -2401,9 +2467,18 @@ namespace plume {
+     }
+ 
+     bool VulkanSwapChain::needsResize() const {
++#   if defined(__SWITCH__)
++        // Horizon exposes one fixed application surface. Re-querying NWindow
++        // dimensions after framebuffer setup can report a transient/mismatched
++        // size and trigger a desktop-style recreation loop. Recreating a CPU-copy
++        // WSI swapchain on the same NWindow also lets old-swapchain teardown
++        // release the new framebuffer's buffers. Create it once and keep it.
++        return vk == VK_NULL_HANDLE;
++#   else
+         uint32_t windowWidth, windowHeight;
+         getWindowSize(windowWidth, windowHeight);
+         return (vk == VK_NULL_HANDLE) || (windowWidth != width) || (windowHeight != height) || (requiredPresentMode != createdPresentMode);
++#   endif
+     }
+ 
+     void VulkanSwapChain::setVsyncEnabled(bool vsyncEnabled) {
+@@ -2463,6 +2538,12 @@ namespace plume {
          GetClientRect(desc.renderWindow, &rect);
          dstWidth = rect.right - rect.left;
          dstHeight = rect.bottom - rect.top;
@@ -88,7 +196,48 @@ index f1dd503..f73de10 100644
  #   elif defined(PLUME_SDL_VULKAN_ENABLED)
          SDL_GetWindowSizeInPixels(desc.renderWindow, (int *)(&dstWidth), (int *)(&dstHeight));
  #   elif defined(__ANDROID__)
-@@ -4464,7 +4490,12 @@ namespace plume {
+@@ -3620,12 +3701,25 @@ namespace plume {
+         }
+ 
+         VkResult res;
++#if defined(__SWITCH__)
++        const uint32_t submitSequence =
++            SwitchSubmitSequence.fetch_add(1, std::memory_order_relaxed) + 1;
++#endif
+         {
+             const std::scoped_lock queueLock(*queue->mutex);
+             res = vkQueueSubmit(queue->vk, 1, &submitInfo, submitFence);
+         }
+ 
+         if (res != VK_SUCCESS) {
++#if defined(__SWITCH__)
++            char message[128]{};
++            std::snprintf(message, sizeof(message),
++                "fatal: Plume submit #%u type=%u family=%u cmds=%u waits=%u signals=%u failed: %d (0x%08X)",
++                submitSequence, unsigned(type), familyIndex, commandListCount,
++                waitSemaphoreCount, signalSemaphoreCount, int(res), unsigned(res));
++            switch_log_checkpoint(message, false);
++            std::_Exit(EXIT_FAILURE);
++#endif
+             fprintf(stderr, "vkQueueSubmit failed with error code 0x%X.\n", res);
+             return;
+         }
+@@ -3944,7 +4038,14 @@ namespace plume {
+             createDeviceChain = &layoutFeatures;
+         }
+ 
++#if defined(__SWITCH__)
++        // switch-nvk currently exposes the feature bits but its Horizon WSI
++        // present-wait path is disabled. vkWaitForPresentKHR stalls on the
++        // first frame-latency wait, so rely on FIFO presentation instead.
++        const bool presentWaitSupported = false;
++#else
+         const bool presentWaitSupported = presentIdFeatures.presentId && presentWaitFeatures.presentWait;
++#endif
+         if (presentWaitSupported) {
+             presentIdFeatures.pNext = createDeviceChain;
+             createDeviceChain = &presentIdFeatures;
+@@ -4464,7 +4565,12 @@ namespace plume {
  #else
      VulkanInterface::VulkanInterface() {
  #endif
@@ -101,7 +250,7 @@ index f1dd503..f73de10 100644
          if (res != VK_SUCCESS) {
              fprintf(stderr, "volkInitialize failed with error code 0x%X.\n", res);
              return;
-@@ -4500,7 +4531,7 @@ namespace plume {
+@@ -4500,7 +4606,7 @@ namespace plume {
          const std::unordered_set<std::string> dlssExtensions = DLSS::getRequiredInstanceExtensionsVulkan();
  #   endif
  

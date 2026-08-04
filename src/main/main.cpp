@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <stdexcept>
 #include <cinttypes>
+#include <atomic>
 #include <mutex>
 
 #if !defined(__SWITCH__)
@@ -83,6 +84,26 @@ void switch_log_checkpoint(const char* message, bool reset = false) {
     std::fprintf(log, "%s\n", message);
     std::fclose(log);
 }
+
+extern "C" {
+extern void (*g_drm_shim_log_sink)(const char* message);
+
+void dusk_switch_log(const char* message) {
+    if (message != nullptr) {
+        switch_log_checkpoint(message);
+    }
+}
+}
+
+void switch_driver_log_sink(const char* message) {
+    // NVK emits many messages per GPU submission. Retain only Mesa WSI's
+    // bounded first-present trace so SD logging cannot throttle Horizon.
+    static std::atomic<uint32_t> retained_messages{0};
+    if ((message != nullptr) && (std::strncmp(message, "[wsi] qp:", 9) == 0) &&
+        (retained_messages.fetch_add(1, std::memory_order_relaxed) < 8)) {
+        switch_log_checkpoint(message);
+    }
+}
 #else
 void switch_log_checkpoint(const char*, bool = false) {
 }
@@ -106,7 +127,13 @@ template <typename... Ts> void exit_error(const char* str, Ts... args) {
 ultramodern::gfx_callbacks_t::gfx_data_t create_gfx() {
     switch_log_checkpoint("gfx: create_gfx entered");
     SDL_SetHint(SDL_HINT_WINDOWS_DPI_AWARENESS, "permonitorv2");
+#if defined(__SWITCH__)
+    // Keep Nintendo face-button labels: A/B and X/Y are opposite the Xbox
+    // positional layout used by the desktop builds.
+    SDL_SetHint(SDL_HINT_GAMECONTROLLER_USE_BUTTON_LABELS, "1");
+#else
     SDL_SetHint(SDL_HINT_GAMECONTROLLER_USE_BUTTON_LABELS, "0");
+#endif
     SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_PS4_RUMBLE, "1");
     SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_PS5_RUMBLE, "1");
     SDL_SetHint(SDL_HINT_MOUSE_FOCUS_CLICKTHROUGH, "1");
@@ -682,6 +709,7 @@ int main(int argc, char** argv) {
     std::filesystem::create_directories(switch_root / "saves", switch_path_error);
     std::filesystem::create_directories(switch_root / "config", switch_path_error);
     switch_log_checkpoint("startup: entered main", true);
+    g_drm_shim_log_sink = switch_driver_log_sink;
 
     // NVK does not advertise the non-conformant GM20B device unless the
     // application opts in explicitly.

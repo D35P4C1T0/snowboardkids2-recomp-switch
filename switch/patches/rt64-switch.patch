@@ -249,7 +249,7 @@ index 72faede..fd3cc2a 100644
 +#endif
 +};
 diff --git a/src/hle/rt64_application.cpp b/src/hle/rt64_application.cpp
-index 785de27..8e7316f 100644
+index 785de27..a70fe69 100644
 --- a/src/hle/rt64_application.cpp
 +++ b/src/hle/rt64_application.cpp
 @@ -12,6 +12,13 @@
@@ -350,17 +350,36 @@ index 785de27..8e7316f 100644
  
          // Create the swap chain with the texture count specified from the configuration.
          RenderSwapChainDesc swapChainDesc;
-@@ -331,7 +352,9 @@ namespace RT64 {
+@@ -326,12 +347,28 @@ namespace RT64 {
+         // updating to using plume, this was corrected, but it exposed an issue with NVIDIA drivers (since 580.105.08 only on Linux)
+         // where the wait() will take far more time than expected and cause stuttering. While this seems to work fine everywhere else,
+         // we stick to the pre-plume approach to be safe.
++#if defined(__SWITCH__)
++        RT64_SWITCH_CHECKPOINT("rt64 setup: present wait disabled; FIFO pacing active");
++#endif
+         if (device->getCapabilities().presentWait) {
+             swapChainDesc.maxFrameLatency = (chosenGraphicsAPI == UserConfiguration::GraphicsAPI::Vulkan) ? 2 : 1;
              swapChainDesc.enablePresentWait = true;
          }
  
 +        RT64_SWITCH_CHECKPOINT("rt64 setup: swapchain creation entered");
          swapChain = presentGraphicsWorker->commandQueue->createSwapChain(swapChainDesc);
 +        RT64_SWITCH_CHECKPOINT("rt64 setup: swapchain creation returned");
++#if defined(__SWITCH__)
++        // Match the proven core probe: allocate and configure WSI images before
++        // shader caches, texture pools, and game upload buffers consume NVK
++        // memory. Deferred first-frame creation loses GM20B during presentation.
++        RT64_SWITCH_CHECKPOINT("rt64 setup: eager Switch swapchain resize entered");
++        if (!swapChain->resize()) {
++            RT64_SWITCH_CHECKPOINT("fatal: eager Switch swapchain resize failed");
++            std::abort();
++        }
++        RT64_SWITCH_CHECKPOINT("rt64 setup: eager Switch swapchain resize returned");
++#endif
  
          // Before configuring multisampling, make sure the device actually supports it for the formats we'll use. If it doesn't, turn off antialiasing in the configuration.
          const RenderSampleCounts colorSampleCounts = device->getSampleCountsSupported(RenderTarget::colorBufferFormat(usesHDR));
-@@ -346,6 +369,7 @@ namespace RT64 {
+@@ -346,6 +383,7 @@ namespace RT64 {
          shaderLibrary = std::make_unique<ShaderLibrary>(usesHDR, usesHardwareResolve);
          shaderLibrary->setupCommonShaders(renderInterface.get(), device.get());
          shaderLibrary->setupMultisamplingShaders(renderInterface.get(), device.get(), multisampling);
@@ -368,7 +387,7 @@ index 785de27..8e7316f 100644
  
          // Create the shader caches.
          // Estimate the amount of shader compiler threads by trying to use about half of the system's available threads.
-@@ -354,6 +378,7 @@ namespace RT64 {
+@@ -354,6 +392,7 @@ namespace RT64 {
          const uint32_t ubershaderThreads = uint32_t(std::max(int(threadsAvailable) - 2, 1));
          rasterShaderCache = std::make_unique<RasterShaderCache>(rasterShaderThreads, ubershaderThreads);
          rasterShaderCache->setup(device.get(), renderInterface->getCapabilities().shaderFormat, shaderLibrary.get(), multisampling);
@@ -376,7 +395,7 @@ index 785de27..8e7316f 100644
  
  #   if RT_ENABLED
          if (device->getCapabilities().raytracing) {
-@@ -369,6 +394,7 @@ namespace RT64 {
+@@ -369,6 +408,7 @@ namespace RT64 {
          const uint64_t MinimumTexturePoolSize = 512 * 1024 * 1024;
          uint64_t texturePoolSize = std::max((deviceDescription.dedicatedVideoMemory * 2) / 3, MinimumTexturePoolSize);
          textureCache->setReplacementPoolMaxSize(texturePoolSize);
@@ -384,7 +403,7 @@ index 785de27..8e7316f 100644
  
  #   if RT_ENABLED
          // Create the blue noise texture, upload it and wait for it to finish.
-@@ -423,6 +449,7 @@ namespace RT64 {
+@@ -423,6 +463,7 @@ namespace RT64 {
          presentExt.shaderLibrary = shaderLibrary.get();
          presentExt.createdGraphicsAPI = chosenGraphicsAPI;
          presentQueue->setup(presentExt);
@@ -392,7 +411,7 @@ index 785de27..8e7316f 100644
  
          // Configure the state to use all the created components.
          State::External stateExt;
-@@ -451,9 +478,11 @@ namespace RT64 {
+@@ -451,9 +492,11 @@ namespace RT64 {
          stateExt.rtConfig = &rtConfig;
  #   endif
          state->setup(stateExt);
@@ -495,14 +514,18 @@ index 08f83e5..c77bf74 100755
          SDL_GetWindowPosition(windowHandle, &newWindowLeft, &newWindowTop);
  #   elif defined(__linux__)
 diff --git a/src/hle/rt64_present_queue.cpp b/src/hle/rt64_present_queue.cpp
-index 3227ab1..7c3e584 100644
+index 3227ab1..8220ebf 100644
 --- a/src/hle/rt64_present_queue.cpp
 +++ b/src/hle/rt64_present_queue.cpp
-@@ -4,11 +4,20 @@
+@@ -4,11 +4,24 @@
  
  #include "rt64_present_queue.h"
  
 +#include <cstdlib>
++
++#if defined(__SWITCH__)
++#include <switch.h>
++#endif
 +
  #include "common/rt64_thread.h"
  #include "rhi/rt64_render_hooks.h"
@@ -519,7 +542,7 @@ index 3227ab1..7c3e584 100644
  namespace RT64 {
      // PresentQueue
  
-@@ -20,10 +29,16 @@ namespace RT64 {
+@@ -20,10 +33,16 @@ namespace RT64 {
          presentThreadRunning = false;
          cursorCondition.notify_all();
  
@@ -536,7 +559,7 @@ index 3227ab1..7c3e584 100644
  
          presentIdCondition.notify_all();
      }
-@@ -89,10 +104,39 @@ namespace RT64 {
+@@ -89,10 +108,40 @@ namespace RT64 {
          viRenderer = std::make_unique<VIRenderer>();
  
          presentThreadRunning = true;
@@ -557,26 +580,27 @@ index 3227ab1..7c3e584 100644
 +#else
          presentThread = new std::thread(&PresentQueue::threadLoop, this);
 +#endif
-     }
- 
++    }
++
 +#if defined(__SWITCH__)
 +    void *PresentQueue::switchPresentThreadEntry(void *argument) {
 +        static_cast<PresentQueue *>(argument)->threadLoop();
 +        return nullptr;
-+    }
+     }
 +#endif
-+
+ 
      void PresentQueue::threadPresent(const Present &present, bool &swapChainValid) {
 +#if defined(__SWITCH__)
-+        static bool traceFirstPresent = true;
-+        const bool tracePresent = traceFirstPresent;
++        static uint32_t tracedPresentCount = 0;
++        constexpr uint32_t SwitchTracePresentLimit = 1;
++        const bool tracePresent = tracedPresentCount < SwitchTracePresentLimit;
 +#else
 +        constexpr bool tracePresent = false;
 +#endif
          FramebufferManager &fbManager = ext.sharedResources->framebufferManager;
          RenderTargetManager &targetManager = ext.sharedResources->renderTargetManager;
          const bool usingMSAA = (targetManager.multisampling.sampleCount > 1);
-@@ -113,6 +157,7 @@ namespace RT64 {
+@@ -113,6 +162,7 @@ namespace RT64 {
              viOriginalRate = ext.sharedResources->viOriginalRate;
              targetRate = ext.sharedResources->targetRate;
          }
@@ -584,7 +608,7 @@ index 3227ab1..7c3e584 100644
  
          RenderTarget *colorTarget = nullptr;
          int32_t framesToPresent = 1;
-@@ -127,18 +172,21 @@ namespace RT64 {
+@@ -127,18 +177,21 @@ namespace RT64 {
          
          // Perform any external write operations indicated by the event.
          if (!present.fbOperations.empty()) {
@@ -606,7 +630,7 @@ index 3227ab1..7c3e584 100644
              Framebuffer *viFb = nullptr;
              if (!viewRDRAM) {
                  viFb = fbManager.find(present.screenVI.fbAddress());
-@@ -254,16 +302,22 @@ namespace RT64 {
+@@ -254,16 +307,22 @@ namespace RT64 {
                      viHistory.pushVI(present.screenVI, fbSize.x);
                  }
              }
@@ -629,7 +653,7 @@ index 3227ab1..7c3e584 100644
          }
          
          for (int32_t i = 0; i < framesToPresent; i++) {
-@@ -300,10 +354,13 @@ namespace RT64 {
+@@ -300,10 +359,13 @@ namespace RT64 {
              uint32_t swapChainIndex = 0;
              const bool presentFrame = (i < framesToPresent) && swapChainValid;
              if (presentFrame) {
@@ -643,16 +667,31 @@ index 3227ab1..7c3e584 100644
                  // Draw the framebuffer with the VI renderer.
                  RenderTexture *swapChainTexture = ext.swapChain->getTexture(swapChainIndex);
                  RenderFramebuffer *swapChainFramebuffer = swapChainFramebuffers[swapChainIndex].get();
-@@ -339,18 +396,23 @@ namespace RT64 {
+@@ -339,18 +401,36 @@ namespace RT64 {
                          renderParams.textureHeight = colorTarget->height;
                      }
                  }
 +                if (tracePresent) RT64_PRESENT_SWITCH_CHECKPOINT("rt64 present: VI render parameters ready");
                  
                  commandList->setFramebuffer(swapChainFramebuffer);
++#if defined(__SWITCH__)
++                commandList->setViewports(RenderViewport(
++                    0.0f, 0.0f, float(ext.swapChain->getWidth()), float(ext.swapChain->getHeight())));
++                commandList->setScissors(RenderRect(
++                    0, 0, ext.swapChain->getWidth(), ext.swapChain->getHeight()));
++                commandList->clearColor(0, RenderColor(0.04f, 0.10f, 0.30f, 1.0f));
++#else
                  commandList->clearColor();
- 
-                 if (renderParams.texture != nullptr) {
+-
+-                if (renderParams.texture != nullptr) {
++#endif
++
++#if defined(__SWITCH__)
++                constexpr bool bypassDiagnosticVI = false;
++#else
++                constexpr bool bypassDiagnosticVI = false;
++#endif
++                if ((renderParams.texture != nullptr) && !bypassDiagnosticVI) {
 +                    if (tracePresent) RT64_PRESENT_SWITCH_CHECKPOINT("rt64 present: VI renderer entered");
                      commandList->barriers(RenderBarrierStage::GRAPHICS, RenderTextureBarrier(renderParams.texture, RenderTextureLayout::SHADER_READ));
                      viRenderer->render(renderParams);
@@ -660,14 +699,15 @@ index 3227ab1..7c3e584 100644
                  }
  
                  RenderHookDraw *drawHook = GetRenderHookDraw();
-                 if (drawHook != nullptr) {
+-                if (drawHook != nullptr) {
++                if ((drawHook != nullptr) && !bypassDiagnosticVI) {
 +                    if (tracePresent) RT64_PRESENT_SWITCH_CHECKPOINT("rt64 present: frontend draw hook entered");
                      drawHook(commandList, swapChainFramebuffer);
 +                    if (tracePresent) RT64_PRESENT_SWITCH_CHECKPOINT("rt64 present: frontend draw hook returned");
                  }
  
                  {
-@@ -361,11 +423,16 @@ namespace RT64 {
+@@ -361,11 +441,20 @@ namespace RT64 {
                      
                      commandList->barriers(RenderBarrierStage::NONE, RenderTextureBarrier(swapChainTexture, RenderTextureLayout::PRESENT));
                      commandList->end();
@@ -678,13 +718,17 @@ index 3227ab1..7c3e584 100644
 +                    if (tracePresent) RT64_PRESENT_SWITCH_CHECKPOINT("rt64 present: command submission entered");
                      ext.presentGraphicsWorker->commandQueue->executeCommandLists(&commandList, 1, &waitSemaphore, 1, &signalSemaphore, 1, ext.presentGraphicsWorker->commandFence.get());
 +                    if (tracePresent) RT64_PRESENT_SWITCH_CHECKPOINT("rt64 present: command submission returned");
++#if !defined(__SWITCH__)
 +                    if (tracePresent) RT64_PRESENT_SWITCH_CHECKPOINT("rt64 present: GPU wait entered");
                      ext.presentGraphicsWorker->wait();
 +                    if (tracePresent) RT64_PRESENT_SWITCH_CHECKPOINT("rt64 present: GPU wait returned");
++#else
++                    if (tracePresent) RT64_PRESENT_SWITCH_CHECKPOINT("rt64 present: GPU wait deferred until after present");
++#endif
                  }
              }
  
-@@ -386,6 +453,7 @@ namespace RT64 {
+@@ -386,13 +475,32 @@ namespace RT64 {
              // As soon as we're done with the first render target, we notify the workload queue it can proceed.
              if (i == 0) {
                  notifyPresentId(present);
@@ -692,23 +736,65 @@ index 3227ab1..7c3e584 100644
              }
  
              if (presentFrame && swapChainValid) {
-@@ -400,10 +468,15 @@ namespace RT64 {
+                 // Wait until the approximate time the next present should be at the current intended rate.
++#if defined(__SWITCH__)
++                // switch-nvk's CPU-copy WSI can return from FIFO presentation
++                // without throttling this producer. Cap submissions to 60 Hz
++                // so the app cannot flood nvservices and soft-lock Horizon.
++                if (presentTimestamp != Timestamp()) {
++                    constexpr int64_t SwitchPresentIntervalNanoseconds = 16'666'667;
++                    const Timestamp nextPresent =
++                        presentTimestamp + std::chrono::nanoseconds(SwitchPresentIntervalNanoseconds);
++                    const int64_t remainingNanoseconds =
++                        std::chrono::duration_cast<std::chrono::nanoseconds>(nextPresent - Timer::current()).count();
++                    if (remainingNanoseconds > 0) {
++                        if (tracePresent) RT64_PRESENT_SWITCH_CHECKPOINT("rt64 present: Horizon pacing sleep entered");
++                        svcSleepThread(remainingNanoseconds);
++                        if (tracePresent) RT64_PRESENT_SWITCH_CHECKPOINT("rt64 present: Horizon pacing sleep returned");
++                    }
++                }
++#else
+                 if ((presentTimestamp != Timestamp()) && (targetRate > 0) && (targetRate > viOriginalRate)) {
+                     Timer::preciseSleepUntil(presentTimestamp + std::chrono::nanoseconds(1'000'000'000 / targetRate));
+                 }
++#endif
+ 
+                 if (presentWaitEnabled) {
+                     ext.swapChain->wait();
+@@ -400,10 +508,32 @@ namespace RT64 {
  
                  RenderCommandSemaphore *waitSemaphore = drawSemaphores[swapChainIndex].get();
                  presentTimestamp = Timer::current();
 +                if (tracePresent) RT64_PRESENT_SWITCH_CHECKPOINT("rt64 present: queue present entered");
                  swapChainValid = ext.swapChain->present(swapChainIndex, &waitSemaphore, 1);
-+                if (tracePresent) RT64_PRESENT_SWITCH_CHECKPOINT("rt64 present: queue present returned");
++                if (tracePresent) {
++                    RT64_PRESENT_SWITCH_CHECKPOINT(swapChainValid
++                        ? "rt64 present: queue present returned valid"
++                        : "rt64 present: queue present returned invalid");
++                }
++#if defined(__SWITCH__)
++                if (!swapChainValid) {
++                    RT64_PRESENT_SWITCH_CHECKPOINT(
++                        "fatal: invalid Switch present; stopping before swapchain recreation");
++                    std::_Exit(EXIT_FAILURE);
++                }
++                if (tracePresent) RT64_PRESENT_SWITCH_CHECKPOINT("rt64 present: deferred GPU wait entered");
++                ext.presentGraphicsWorker->wait();
++                if (tracePresent) RT64_PRESENT_SWITCH_CHECKPOINT("rt64 present: deferred GPU wait returned");
++#endif
                  presentProfiler.logAndRestart();
              }
          }
 +#if defined(__SWITCH__)
-+        traceFirstPresent = false;
++        tracedPresentCount++;
++        if ((tracedPresentCount % 120) == 0) {
++            RT64_PRESENT_SWITCH_CHECKPOINT("rt64 present: 120-frame heartbeat");
++        }
 +#endif
      }
  
      void PresentQueue::skipInterpolation() {
-@@ -431,6 +504,7 @@ namespace RT64 {
+@@ -431,6 +561,7 @@ namespace RT64 {
      }
  
      void PresentQueue::threadLoop() {
@@ -716,15 +802,18 @@ index 3227ab1..7c3e584 100644
          Thread::setCurrentThreadName("RT64 Present");
  
          // Create the semaphore the acquire method will use.
-@@ -449,6 +523,7 @@ namespace RT64 {
+@@ -449,6 +580,10 @@ namespace RT64 {
          uint32_t displayTimingRate = UINT32_MAX;
          const bool displayTiming = ext.device->getCapabilities().displayTiming;
          bool swapChainValid = !ext.swapChain->needsResize();
 +        bool firstPresent = true;
++#if defined(__SWITCH__)
++        uint32_t tracedPresentLoops = 0;
++#endif
          while (presentThreadRunning) {
              {
                  std::unique_lock<std::mutex> cursorLock(cursorMutex);
-@@ -464,6 +539,7 @@ namespace RT64 {
+@@ -464,6 +599,7 @@ namespace RT64 {
              }
  
              if (processCursor >= 0) {
@@ -732,7 +821,7 @@ index 3227ab1..7c3e584 100644
                  std::unique_lock<std::mutex> threadLock(threadMutex);
                  const bool needsResize = ext.swapChain->needsResize() || !swapChainValid;
                  if (needsResize) {
-@@ -505,6 +581,7 @@ namespace RT64 {
+@@ -505,6 +641,7 @@ namespace RT64 {
  
                  Present &present = presents[processCursor];
                  ext.workloadQueue->waitForWorkloadId(present.workloadId);
@@ -740,7 +829,7 @@ index 3227ab1..7c3e584 100644
  
                  if (!presentThreadRunning) {
                      continue;
-@@ -515,7 +592,9 @@ namespace RT64 {
+@@ -515,20 +652,43 @@ namespace RT64 {
                      notifyPresentId(present);
                  }
                  else {
@@ -749,12 +838,38 @@ index 3227ab1..7c3e584 100644
 +                    if (firstPresent) RT64_PRESENT_SWITCH_CHECKPOINT("rt64 queue: first threadPresent returned");
                  }
  
++#if defined(__SWITCH__)
++                const bool tracePresentCleanup = tracedPresentLoops < 8;
++                if (tracePresentCleanup) RT64_PRESENT_SWITCH_CHECKPOINT("rt64 queue: present cleanup entered");
++#endif
                  if (!present.paused) {
-@@ -529,6 +608,7 @@ namespace RT64 {
+                     if (!present.fbOperations.empty()) {
++#if defined(__SWITCH__)
++                        if (tracePresentCleanup) RT64_PRESENT_SWITCH_CHECKPOINT("rt64 queue: framebuffer operation release entered");
++#endif
+                         const std::scoped_lock lock(screenFbChangePoolMutex);
+                         screenFbChangePool.release(present.fbOperations.front().writeChanges.id);
+                         present.fbOperations.clear();
++#if defined(__SWITCH__)
++                        if (tracePresentCleanup) RT64_PRESENT_SWITCH_CHECKPOINT("rt64 queue: framebuffer operation release returned");
++#endif
+                     }
+ 
++#if defined(__SWITCH__)
++                    if (tracePresentCleanup) RT64_PRESENT_SWITCH_CHECKPOINT("rt64 queue: present barrier advance entered");
++#endif
+                     threadAdvanceBarrier();
++#if defined(__SWITCH__)
++                    if (tracePresentCleanup) RT64_PRESENT_SWITCH_CHECKPOINT("rt64 queue: present barrier advance returned");
++#endif
                  }
  
                  processCursor = -1;
 +                firstPresent = false;
++#if defined(__SWITCH__)
++                if (tracePresentCleanup) RT64_PRESENT_SWITCH_CHECKPOINT("rt64 queue: present cleanup returned");
++                tracedPresentLoops++;
++#endif
              }
          }
  
@@ -996,7 +1111,7 @@ index d249a97..7df5b89 100644
 \ No newline at end of file
 +};
 diff --git a/src/hle/rt64_workload_queue.cpp b/src/hle/rt64_workload_queue.cpp
-index 5a331aa..ede2e05 100644
+index 5a331aa..5d87179 100644
 --- a/src/hle/rt64_workload_queue.cpp
 +++ b/src/hle/rt64_workload_queue.cpp
 @@ -4,12 +4,21 @@
@@ -1088,7 +1203,24 @@ index 5a331aa..ede2e05 100644
  
      void WorkloadQueue::updateMultisampling() {
          renderFramebufferManager->destroyAll();
-@@ -879,6 +931,7 @@ namespace RT64 {
+@@ -275,7 +327,16 @@ namespace RT64 {
+ 
+         if (ext.sharedResources->userConfigChanged) {
+             idleMutex.lock();
++#if defined(__SWITCH__)
++            // Desktop drivers may downclock aggressively between workloads, so
++            // RT64 dispatches a compute shader every millisecond as idle work.
++            // switch-nvk/GM20B loses the device on this synthetic dispatch and
++            // Horizon does not need the desktop power-state workaround.
++            idleActive = false;
++            RT64_WORKLOAD_SWITCH_CHECKPOINT("rt64 queue: Switch idle GPU work disabled");
++#else
+             idleActive = ext.sharedResources->userConfig.idleWorkActive;
++#endif
+             idleMutex.unlock();
+             idleCondition.notify_all();
+         }
+@@ -879,6 +940,7 @@ namespace RT64 {
      }
  
      void WorkloadQueue::renderThreadLoop() {
@@ -1096,7 +1228,7 @@ index 5a331aa..ede2e05 100644
          Thread::setCurrentThreadName("RT64 Workload");
  
          WorkloadConfiguration workloadConfig;
-@@ -888,6 +941,7 @@ namespace RT64 {
+@@ -888,6 +950,7 @@ namespace RT64 {
          uint32_t displayRateForTicks = 0;
          int processCursor = -1;
          bool frameReduction = false;
@@ -1104,7 +1236,7 @@ index 5a331aa..ede2e05 100644
          while (threadsRunning) {
              {
                  std::unique_lock<std::mutex> cursorLock(cursorMutex);
-@@ -902,9 +956,11 @@ namespace RT64 {
+@@ -902,9 +965,11 @@ namespace RT64 {
              }
  
              if (processCursor >= 0) {
@@ -1116,7 +1248,7 @@ index 5a331aa..ede2e05 100644
  
                  if (!threadsRunning) {
                      continue;
-@@ -913,6 +969,7 @@ namespace RT64 {
+@@ -913,6 +978,7 @@ namespace RT64 {
                  ElapsedTimer workloadTimer;
                  workloadProfiler.start();
                  threadConfigurationUpdate(workload.viFbSize, workloadConfig);
@@ -1124,7 +1256,7 @@ index 5a331aa..ede2e05 100644
  
                  // FIXME: This is a very hacky way to find out if we need to advance the frame if the workload was paused for the first time.
                  if (!workload.paused || (!gameFrames[curFrameIndex].workloads.empty() && (gameFrames[curFrameIndex].workloads[0] != (uint32_t)processCursor))) {
-@@ -925,6 +982,7 @@ namespace RT64 {
+@@ -925,6 +991,7 @@ namespace RT64 {
                  const GameFrame &prevFrame = gameFrames[prevFrameIndex];
                  uint32_t workloadIndex = processCursor;
                  curFrame.set(*this, &workloadIndex, 1);
@@ -1132,7 +1264,7 @@ index 5a331aa..ede2e05 100644
  
                  // Detect the color image to interpolate for this workload.
                  RenderTargetKey interpolationTargetKey;
-@@ -1117,8 +1175,10 @@ namespace RT64 {
+@@ -1117,8 +1184,10 @@ namespace RT64 {
                      }
  
                      int64_t renderTimeMicro = workloadTimer.elapsedMicroseconds();
@@ -1143,7 +1275,7 @@ index 5a331aa..ede2e05 100644
  
                      // Add total time the frame took to render.
                      renderTimeTotalMicro += workloadTimer.elapsedMicroseconds() - renderTimeMicro;
-@@ -1126,6 +1186,7 @@ namespace RT64 {
+@@ -1126,6 +1195,7 @@ namespace RT64 {
                      // After one frame is rendered, we indicate the workload has been processed so the present thread can start presenting frames as soon as it can.
                      if (frame == 0) {
                          threadAdvanceWorkloadId(workload.workloadId);
@@ -1151,7 +1283,7 @@ index 5a331aa..ede2e05 100644
                      }
  
                      // For every additional frame, we increase the frames available and notify the present queue.
-@@ -1172,11 +1233,13 @@ namespace RT64 {
+@@ -1172,11 +1242,13 @@ namespace RT64 {
                  workloadProfiler.end();
                  workloadProfiler.log();
                  workloadProfiler.reset();
@@ -1165,7 +1297,7 @@ index 5a331aa..ede2e05 100644
          // Beware traveler as you enter the zone of dirty driver hacks. Given N64 games are not exactly a demanding thing to render
          // nowadays for modern GPUs and due to how the plugin's cooperative multiqueue system works, it's sometimes just not possible
          // to keep the GPU busy at all times. It is often the case that the GPU might've already rendered all the frames it needed to
-@@ -1221,4 +1284,4 @@ namespace RT64 {
+@@ -1221,4 +1293,4 @@ namespace RT64 {
              }
          }
      }

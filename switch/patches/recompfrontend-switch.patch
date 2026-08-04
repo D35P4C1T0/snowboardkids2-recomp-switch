@@ -31,7 +31,7 @@ diff --git a/recompui/lib/lunasvg b/recompui/lib/lunasvg
 -Subproject commit 83c58df8103dc7dca423dfd824992af94d49bed6
 +Subproject commit 83c58df8103dc7dca423dfd824992af94d49bed6-dirty
 diff --git a/recompui/src/base/ui_state.cpp b/recompui/src/base/ui_state.cpp
-index d23eafa..5c02af9 100644
+index d23eafa..236fa02 100644
 --- a/recompui/src/base/ui_state.cpp
 +++ b/recompui/src/base/ui_state.cpp
 @@ -33,6 +33,13 @@
@@ -150,6 +150,85 @@ index d23eafa..5c02af9 100644
  }
  
  moodycamel::ConcurrentQueue<SDL_Event> ui_event_queue{};
+@@ -683,6 +721,9 @@ void recompui::activate_mouse() {
+ }
+ 
+ void draw_hook(plume::RenderCommandList* command_list, plume::RenderFramebuffer* swap_chain_framebuffer) {
++#if defined(__SWITCH__)
++    static bool trace_first_draw = true;
++#endif
+ 
+     apply_background_input_mode();
+ 
+@@ -693,7 +734,13 @@ void draw_hook(plume::RenderCommandList* command_list, plume::RenderFramebuffer*
+ 
+     // Return to the launcher if no menu is open and the game isn't started.
+     if (!recompui::is_any_context_shown() && !ultramodern::is_game_started()) {
++#if defined(__SWITCH__)
++        if (trace_first_draw) RECOMPUI_SWITCH_CHECKPOINT("ui draw: launcher show entered");
++#endif
+         recompui::show_context(recompui::get_launcher_context_id(), "");
++#if defined(__SWITCH__)
++        if (trace_first_draw) RECOMPUI_SWITCH_CHECKPOINT("ui draw: launcher show returned");
++#endif
+     }
+ 
+     std::lock_guard lock{ ui_state_mutex };
+@@ -918,6 +965,9 @@ void draw_hook(plume::RenderCommandList* command_list, plume::RenderFramebuffer*
+     ui_state->update_focus(mouse_moved, non_mouse_interacted);
+ 
+     if (recompui::is_any_context_shown()) {
++#if defined(__SWITCH__)
++        if (trace_first_draw) RECOMPUI_SWITCH_CHECKPOINT("ui draw: visible context entered");
++#endif
+         int width = swap_chain_framebuffer->getWidth();
+         int height = swap_chain_framebuffer->getHeight();
+ 
+@@ -934,17 +984,44 @@ void draw_hook(plume::RenderCommandList* command_list, plume::RenderFramebuffer*
+         prev_height = height;
+ 
+         if (recompui::is_context_shown(recompui::get_launcher_context_id())) {
++#if defined(__SWITCH__)
++            if (trace_first_draw) RECOMPUI_SWITCH_CHECKPOINT("ui draw: launcher update entered");
++#endif
+             recompui::update_launcher_menu();
++#if defined(__SWITCH__)
++            if (trace_first_draw) RECOMPUI_SWITCH_CHECKPOINT("ui draw: launcher update returned");
++#endif
+         }
+ 
+         ui_state->update_contexts();
++#if defined(__SWITCH__)
++        if (trace_first_draw) RECOMPUI_SWITCH_CHECKPOINT("ui draw: contexts updated");
++#endif
+ 
+         ui_state->render_interface.start(command_list, width, height);
++#if defined(__SWITCH__)
++        if (trace_first_draw) RECOMPUI_SWITCH_CHECKPOINT("ui draw: render interface started");
++#endif
+ 
+         ui_state->context->Update();
++#if defined(__SWITCH__)
++        if (trace_first_draw) RECOMPUI_SWITCH_CHECKPOINT("ui draw: RmlUi update returned");
++#endif
+         ui_state->context->Render();
++#if defined(__SWITCH__)
++        if (trace_first_draw) RECOMPUI_SWITCH_CHECKPOINT("ui draw: RmlUi render returned");
++#endif
+         ui_state->render_interface.end(command_list, swap_chain_framebuffer);
++#if defined(__SWITCH__)
++        if (trace_first_draw) RECOMPUI_SWITCH_CHECKPOINT("ui draw: render interface ended");
++#endif
+     }
++#if defined(__SWITCH__)
++    else if (trace_first_draw) {
++        RECOMPUI_SWITCH_CHECKPOINT("ui draw: no visible context");
++    }
++    trace_first_draw = false;
++#endif
+ }
+ 
+ void deinit_hook() {
 diff --git a/recompui/src/composites/ui_mod_installer.cpp b/recompui/src/composites/ui_mod_installer.cpp
 index 1f98b3c..3024b9f 100644
 --- a/recompui/src/composites/ui_mod_installer.cpp
@@ -329,6 +408,63 @@ index a7954c7..75eaa90 100644
  }
  
  void renderer::RT64Context::shutdown() {
+diff --git a/recompui/src/renderer/ui_renderer.cpp b/recompui/src/renderer/ui_renderer.cpp
+index 5ca5349..fea0190 100644
+--- a/recompui/src/renderer/ui_renderer.cpp
++++ b/recompui/src/renderer/ui_renderer.cpp
+@@ -32,6 +32,10 @@
+ #   include "InterfacePS.hlsl.metal.h"
+ #endif
+ 
++#if defined(__SWITCH__)
++extern "C" void dusk_switch_log(const char* message);
++#endif
++
+ #ifdef _WIN32
+ #    define GET_SHADER_BLOB(name, format) \
+         ((format) == plume::RenderShaderFormat::SPIRV ? name##BlobSPIRV : \
+@@ -484,7 +488,21 @@ public:
+         }
+ 
+         texture_handle = texture_count_++;
+-        return create_texture(texture_handle, source, source_dimensions);
++        const bool created = create_texture(texture_handle, source, source_dimensions);
++#if defined(__SWITCH__)
++        static uint32_t logged_generated_textures = 0;
++        if (logged_generated_textures < 24) {
++            char message[128]{};
++            std::snprintf(message, sizeof(message),
++                "ui texture: generated #%u handle=%llu size=%dx%d result=%d",
++                logged_generated_textures + 1,
++                static_cast<unsigned long long>(texture_handle),
++                source_dimensions.x, source_dimensions.y, int(created));
++            dusk_switch_log(message);
++            logged_generated_textures++;
++        }
++#endif
++        return created;
+     }
+ 
+     bool create_texture(Rml::TextureHandle texture_handle, const Rml::byte* source, const Rml::Vector2i& source_dimensions, bool flip_y = false, bool bgra = false) {
+@@ -568,6 +586,18 @@ public:
+ 
+ 	void ReleaseTexture(Rml::TextureHandle texture) override {
+         if (texture > 1) {
++#if defined(__SWITCH__)
++            static uint32_t logged_released_textures = 0;
++            if (logged_released_textures < 24) {
++                char message[96]{};
++                std::snprintf(message, sizeof(message),
++                    "ui texture: released #%u handle=%llu",
++                    logged_released_textures + 1,
++                    static_cast<unsigned long long>(texture));
++                dusk_switch_log(message);
++                logged_released_textures++;
++            }
++#endif
+             // Textures #0 and #1 are reserved and should never be released.
+             textures_.erase(texture);
+         }
 diff --git a/recompui/src/util/file.cpp b/recompui/src/util/file.cpp
 index 7ee84ed..3463cce 100644
 --- a/recompui/src/util/file.cpp
