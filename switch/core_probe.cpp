@@ -62,6 +62,12 @@ void driver_log_sink(const char* message) {
 }
 }
 
+void switch_log_checkpoint(const char* message, bool) {
+    if (message != nullptr) {
+        checkpoint(message);
+    }
+}
+
 extern "C" void dusk_switch_log(const char* message) {
     if (message == nullptr) {
         return;

@@ -37,16 +37,17 @@ diff --git a/contrib/volk b/contrib/volk
 -Subproject commit be3dbd49bf77052665e96b6c7484af855e7e5f67
 +Subproject commit be3dbd49bf77052665e96b6c7484af855e7e5f67-dirty
 diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
-index f1dd503..e58a1c2 100644
+index f1dd503..311a134 100644
 --- a/plume_vulkan.cpp
 +++ b/plume_vulkan.cpp
-@@ -11,10 +11,20 @@
+@@ -11,10 +11,21 @@
  #include "plume_vulkan.h"
  
  #include <algorithm>
 +#include <atomic>
  #include <cmath>
  #include <climits>
++#include <cstdio>
  #include <unordered_map>
  
 +#if defined(__SWITCH__)
@@ -61,18 +62,24 @@ index f1dd503..e58a1c2 100644
  #if DLSS_ENABLED
  #   include "render/plume_dlss.h"
  #endif
-@@ -28,6 +38,10 @@
+@@ -28,6 +39,16 @@
  // - Fix resource pools.
  
  namespace plume {
 +#if defined(__SWITCH__)
 +    static std::atomic<uint32_t> SwitchSubmitSequence{0};
++    static thread_local char SwitchSubmitContext[256] = "unlabeled";
++
++    extern "C" void plume_switch_set_submit_context(const char *context) {
++        std::snprintf(SwitchSubmitContext, sizeof(SwitchSubmitContext), "%s",
++            context != nullptr ? context : "unlabeled");
++    }
 +#endif
 +
      // Backend constants.
  
      // Required buffer alignment for acceleration structures.
-@@ -39,7 +53,15 @@ namespace plume {
+@@ -39,7 +60,15 @@ namespace plume {
      // Controls the maximum amount of native queues the backend will create per queue family.
      // Command queues are created as virtual queues on top of the native queues provided by Vulkan,
      // so they're not under the limit set by the the device or the backend.
@@ -88,7 +95,7 @@ index f1dd503..e58a1c2 100644
  
      // Required extensions.
  
-@@ -58,6 +80,8 @@ namespace plume {
+@@ -58,6 +87,8 @@ namespace plume {
  #   endif
  #   elif defined(__APPLE__)
          VK_EXT_METAL_SURFACE_EXTENSION_NAME,
@@ -97,7 +104,7 @@ index f1dd503..e58a1c2 100644
  #   endif
      };
  
-@@ -909,10 +933,28 @@ namespace plume {
+@@ -909,10 +940,28 @@ namespace plume {
              return nullptr;
          }
  
@@ -126,7 +133,37 @@ index f1dd503..e58a1c2 100644
          vmaUnmapMemory(device->allocator, allocation);
      }
  
-@@ -2095,6 +2137,17 @@ namespace plume {
+@@ -1390,7 +1439,13 @@ namespace plume {
+         pipelineInfo.layout = pipelineLayout->vk;
+         pipelineInfo.stage = stageInfo;
+ 
+-        VkResult res = vkCreateComputePipelines(device->vk, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &vk);
++        VkResult res = vkCreateComputePipelines(device->vk,
++#if defined(__SWITCH__)
++            device->pipelineCache,
++#else
++            VK_NULL_HANDLE,
++#endif
++            1, &pipelineInfo, nullptr, &vk);
+         if (res != VK_SUCCESS) {
+             fprintf(stderr, "vkCreateComputePipelines failed with error code 0x%X.\n", res);
+             return;
+@@ -1649,7 +1704,13 @@ namespace plume {
+         pipelineInfo.layout = pipelineLayout->vk;
+         pipelineInfo.renderPass = renderPass;
+ 
+-        VkResult res = vkCreateGraphicsPipelines(device->vk, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &vk);
++        VkResult res = vkCreateGraphicsPipelines(device->vk,
++#if defined(__SWITCH__)
++            device->pipelineCache,
++#else
++            VK_NULL_HANDLE,
++#endif
++            1, &pipelineInfo, nullptr, &vk);
+         if (res != VK_SUCCESS) {
+             fprintf(stderr, "vkCreateGraphicsPipelines failed with error code 0x%X.\n", res);
+             return;
+@@ -2095,6 +2156,17 @@ namespace plume {
              fprintf(stderr, "vkCreateWin32SurfaceKHR failed with error code 0x%X.\n", res);
              return;
          }
@@ -144,7 +181,7 @@ index f1dd503..e58a1c2 100644
  #   elif defined(PLUME_SDL_VULKAN_ENABLED)
          VulkanInterface *renderInterface = commandQueue->device->renderInterface;
          SDL_bool sdlRes = SDL_Vulkan_CreateSurface(desc.renderWindow, renderInterface->instance, &surface);
-@@ -2285,6 +2338,19 @@ namespace plume {
+@@ -2285,6 +2357,19 @@ namespace plume {
              const std::scoped_lock queueLock(*commandQueue->queue->mutex);
              res = vkQueuePresentKHR(commandQueue->queue->vk, &presentInfo);
          }
@@ -164,7 +201,7 @@ index f1dd503..e58a1c2 100644
  
  #if defined(__APPLE__)
          // Under MoltenVK, VK_SUBOPTIMAL_KHR does not result in a valid state for rendering. We intentionally
-@@ -2401,9 +2467,18 @@ namespace plume {
+@@ -2401,9 +2486,18 @@ namespace plume {
      }
  
      bool VulkanSwapChain::needsResize() const {
@@ -183,7 +220,7 @@ index f1dd503..e58a1c2 100644
      }
  
      void VulkanSwapChain::setVsyncEnabled(bool vsyncEnabled) {
-@@ -2463,6 +2538,12 @@ namespace plume {
+@@ -2463,6 +2557,12 @@ namespace plume {
          GetClientRect(desc.renderWindow, &rect);
          dstWidth = rect.right - rect.left;
          dstHeight = rect.bottom - rect.top;
@@ -196,7 +233,44 @@ index f1dd503..e58a1c2 100644
  #   elif defined(PLUME_SDL_VULKAN_ENABLED)
          SDL_GetWindowSizeInPixels(desc.renderWindow, (int *)(&dstWidth), (int *)(&dstHeight));
  #   elif defined(__ANDROID__)
-@@ -3620,12 +3701,25 @@ namespace plume {
+@@ -3575,9 +3675,11 @@ namespace plume {
+         thread_local std::vector<VkSemaphore> waitSemaphoreVector;
+         thread_local std::vector<VkSemaphore> signalSemaphoreVector;
+         thread_local std::vector<VkCommandBuffer> commandBuffers;
++        thread_local std::vector<VkPipelineStageFlags> waitStageVector;
+         waitSemaphoreVector.clear();
+         signalSemaphoreVector.clear();
+         commandBuffers.clear();
++        waitStageVector.clear();
+ 
+         for (uint32_t i = 0; i < waitSemaphoreCount; i++) {
+             VulkanCommandSemaphore *interfaceSemaphore = static_cast<VulkanCommandSemaphore *>(waitSemaphores[i]);
+@@ -3601,11 +3703,22 @@ namespace plume {
+         submitInfo.pCommandBuffers = commandBuffers.data();
+         submitInfo.commandBufferCount = uint32_t(commandBuffers.size());
+ 
+-        const VkPipelineStageFlags waitStages = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+         if (!waitSemaphoreVector.empty()) {
++#if defined(__SWITCH__)
++            // Texture uploads signal without a follow-up signal semaphore. Their
++            // consumer starts with compute work, so COLOR_ATTACHMENT_OUTPUT is
++            // too late. Present submissions keep the narrow WSI stage.
++            const VkPipelineStageFlags waitStage = signalSemaphoreVector.empty()
++                ? VK_PIPELINE_STAGE_ALL_COMMANDS_BIT
++                : VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
++            waitStageVector.assign(waitSemaphoreVector.size(), waitStage);
++#else
++            waitStageVector.assign(waitSemaphoreVector.size(), VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
++#endif
+             submitInfo.pWaitSemaphores = waitSemaphoreVector.data();
+             submitInfo.waitSemaphoreCount = uint32_t(waitSemaphoreVector.size());
+-            submitInfo.pWaitDstStageMask = &waitStages;
++            // Vulkan requires one destination-stage entry per wait semaphore.
++            submitInfo.pWaitDstStageMask = waitStageVector.data();
+         }
+ 
+         if (!signalSemaphoreVector.empty()) {
+@@ -3620,12 +3733,61 @@ namespace plume {
          }
  
          VkResult res;
@@ -209,20 +283,81 @@ index f1dd503..e58a1c2 100644
              res = vkQueueSubmit(queue->vk, 1, &submitInfo, submitFence);
          }
  
++#if defined(__SWITCH__)
++        if ((res == VK_SUCCESS) && ((submitSequence % 1024U) == 0U) && (device->allocator != VK_NULL_HANDLE)) {
++            VmaBudget heapBudgets[VK_MAX_MEMORY_HEAPS]{};
++            vmaGetHeapBudgets(device->allocator, heapBudgets);
++
++            const VkPhysicalDeviceMemoryProperties *memoryProperties = nullptr;
++            vmaGetMemoryProperties(device->allocator, &memoryProperties);
++            uint64_t usageBytes = 0;
++            uint64_t budgetBytes = 0;
++            uint64_t allocationBytes = 0;
++            uint64_t blockBytes = 0;
++            uint64_t allocationCount = 0;
++            for (uint32_t i = 0; i < memoryProperties->memoryHeapCount; i++) {
++                if ((memoryProperties->memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) != 0) {
++                    usageBytes += heapBudgets[i].usage;
++                    budgetBytes += heapBudgets[i].budget;
++                    allocationBytes += heapBudgets[i].statistics.allocationBytes;
++                    blockBytes += heapBudgets[i].statistics.blockBytes;
++                    allocationCount += heapBudgets[i].statistics.allocationCount;
++                }
++            }
++
++            char memoryMessage[320]{};
++            std::snprintf(memoryMessage, sizeof(memoryMessage),
++                "plume memory: submit=%u usage=%llu MiB budget=%llu MiB allocations=%llu MiB blocks=%llu MiB count=%llu",
++                submitSequence,
++                static_cast<unsigned long long>(usageBytes >> 20),
++                static_cast<unsigned long long>(budgetBytes >> 20),
++                static_cast<unsigned long long>(allocationBytes >> 20),
++                static_cast<unsigned long long>(blockBytes >> 20),
++                static_cast<unsigned long long>(allocationCount));
++            switch_log_checkpoint(memoryMessage, false);
++        }
++#endif
++
          if (res != VK_SUCCESS) {
 +#if defined(__SWITCH__)
-+            char message[128]{};
++            char message[512]{};
 +            std::snprintf(message, sizeof(message),
-+                "fatal: Plume submit #%u type=%u family=%u cmds=%u waits=%u signals=%u failed: %d (0x%08X)",
++                "fatal: Plume submit #%u type=%u family=%u cmds=%u waits=%u signals=%u context='%s' failed: %d (0x%08X)",
 +                submitSequence, unsigned(type), familyIndex, commandListCount,
-+                waitSemaphoreCount, signalSemaphoreCount, int(res), unsigned(res));
++                waitSemaphoreCount, signalSemaphoreCount, SwitchSubmitContext,
++                int(res), unsigned(res));
 +            switch_log_checkpoint(message, false);
 +            std::_Exit(EXIT_FAILURE);
 +#endif
              fprintf(stderr, "vkQueueSubmit failed with error code 0x%X.\n", res);
              return;
          }
-@@ -3944,7 +4038,14 @@ namespace plume {
+@@ -3635,8 +3797,24 @@ namespace plume {
+         assert(fence != nullptr);
+ 
+         VulkanCommandFence *interfaceFence = static_cast<VulkanCommandFence *>(fence);
++#if defined(__SWITCH__)
++        // Do not let one wedged GM20B workload block forever and take Horizon
++        // down with it. A normal frame is far below this diagnostic ceiling.
++        constexpr uint64_t SwitchFenceTimeoutNanoseconds = 250'000'000ULL;
++        VkResult res = vkWaitForFences(device->vk, 1, &interfaceFence->vk,
++            VK_TRUE, SwitchFenceTimeoutNanoseconds);
++#else
+         VkResult res = vkWaitForFences(device->vk, 1, &interfaceFence->vk, VK_TRUE, UINT64_MAX);
++#endif
+         if (res != VK_SUCCESS) {
++#if defined(__SWITCH__)
++            char message[384]{};
++            std::snprintf(message, sizeof(message),
++                "fatal: Plume fence wait context='%s' failed: %d (0x%08X)",
++                SwitchSubmitContext, int(res), unsigned(res));
++            switch_log_checkpoint(message, false);
++            std::_Exit(EXIT_FAILURE);
++#endif
+             fprintf(stderr, "vkWaitForFences failed with error code 0x%X.\n", res);
+             return;
+         }
+@@ -3944,7 +4122,14 @@ namespace plume {
              createDeviceChain = &layoutFeatures;
          }
  
@@ -237,7 +372,65 @@ index f1dd503..e58a1c2 100644
          if (presentWaitSupported) {
              presentIdFeatures.pNext = createDeviceChain;
              createDeviceChain = &presentIdFeatures;
-@@ -4464,7 +4565,12 @@ namespace plume {
+@@ -4055,6 +4240,20 @@ namespace plume {
+             return;
+         }
+ 
++#if defined(__SWITCH__)
++        VkPipelineCacheCreateInfo pipelineCacheInfo{};
++        pipelineCacheInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
++        res = vkCreatePipelineCache(vk, &pipelineCacheInfo, nullptr, &pipelineCache);
++
++        if (res == VK_SUCCESS) {
++            switch_log_checkpoint("plume: transient Vulkan pipeline cache ready", false);
++        }
++        else {
++            pipelineCache = VK_NULL_HANDLE;
++            switch_log_checkpoint("plume: Vulkan pipeline cache unavailable", false);
++        }
++#endif
++
+         for (uint32_t i = 0; i < queueFamilyCount; i++) {
+             for (uint32_t j = 0; j < queueFamilies[i].queues.size(); j++) {
+                 vkGetDeviceQueue(vk, i, j, &queueFamilies[i].queues[j].vk);
+@@ -4173,14 +4372,23 @@ namespace plume {
+     }
+ 
+     std::unique_ptr<RenderPipeline> VulkanDevice::createComputePipeline(const RenderComputePipelineDesc &desc) {
++#if defined(__SWITCH__)
++        const std::lock_guard<std::mutex> lock(pipelineCreationMutex);
++#endif
+         return std::make_unique<VulkanComputePipeline>(this, desc);
+     }
+ 
+     std::unique_ptr<RenderPipeline> VulkanDevice::createGraphicsPipeline(const RenderGraphicsPipelineDesc &desc) {
++#if defined(__SWITCH__)
++        const std::lock_guard<std::mutex> lock(pipelineCreationMutex);
++#endif
+         return std::make_unique<VulkanGraphicsPipeline>(this, desc);
+     }
+ 
+     std::unique_ptr<RenderPipeline> VulkanDevice::createRaytracingPipeline(const RenderRaytracingPipelineDesc &desc, const RenderPipeline *previousPipeline) {
++#if defined(__SWITCH__)
++        const std::lock_guard<std::mutex> lock(pipelineCreationMutex);
++#endif
+         return std::make_unique<VulkanRaytracingPipeline>(this, desc, previousPipeline);
+     }
+ 
+@@ -4438,6 +4646,12 @@ namespace plume {
+         }
+ 
+         if (vk != VK_NULL_HANDLE) {
++#if defined(__SWITCH__)
++            if (pipelineCache != VK_NULL_HANDLE) {
++                vkDestroyPipelineCache(vk, pipelineCache, nullptr);
++                pipelineCache = VK_NULL_HANDLE;
++            }
++#endif
+             vkDestroyDevice(vk, nullptr);
+             vk = VK_NULL_HANDLE;
+         }
+@@ -4464,7 +4678,12 @@ namespace plume {
  #else
      VulkanInterface::VulkanInterface() {
  #endif
@@ -250,7 +443,7 @@ index f1dd503..e58a1c2 100644
          if (res != VK_SUCCESS) {
              fprintf(stderr, "volkInitialize failed with error code 0x%X.\n", res);
              return;
-@@ -4500,7 +4606,7 @@ namespace plume {
+@@ -4500,7 +4719,7 @@ namespace plume {
          const std::unordered_set<std::string> dlssExtensions = DLSS::getRequiredInstanceExtensionsVulkan();
  #   endif
  
@@ -259,3 +452,26 @@ index f1dd503..e58a1c2 100644
          // Push the extensions specified by SDL as required.
          // SDL2 has this awkward requirement for the window to pull the extensions from. 
          // This can be removed when upgrading to SDL3.
+diff --git a/plume_vulkan.h b/plume_vulkan.h
+index 0a1edbe..4e5e295 100644
+--- a/plume_vulkan.h
++++ b/plume_vulkan.h
+@@ -9,6 +9,7 @@
+ 
+ #include "plume_render_interface.h"
+ 
++#include <atomic>
+ #include <mutex>
+ #include <set>
+ #include <unordered_map>
+@@ -417,6 +418,10 @@ namespace plume {
+         std::unique_ptr<RenderBuffer> nullBuffer;
+         bool loadStoreOpNoneSupported = false;
+         bool nullDescriptorSupported = false;
++#if defined(__SWITCH__)
++        VkPipelineCache pipelineCache = VK_NULL_HANDLE;
++        std::mutex pipelineCreationMutex;
++#endif
+ 
+         VulkanDevice(VulkanInterface *renderInterface, const std::string &preferredDeviceName);
+         ~VulkanDevice() override;

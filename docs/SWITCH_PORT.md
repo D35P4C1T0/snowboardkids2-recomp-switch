@@ -75,7 +75,7 @@ full core stack without generated game code.
 - Load the NVK Vulkan entry points without desktop `dlopen` assumptions.
 - Audit RT64's required formats, descriptor limits, synchronization, compute shaders, specialization constants, and memory budget against NVK on Tegra X1.
 - Precompile HLSL to SPIR-V on the host and embed the results. Target-side shader compilation is not part of the NRO build.
-- Start at 1280x720, FIFO presentation, one frame in flight, no MSAA, no ray tracing, and conservative texture cache sizes.
+- Start with a 1280x720 output surface, 480p internal render targets, RGBA8, FIFO presentation, double buffering, no MSAA, no ray tracing, and conservative texture cache sizes.
 
 Exit gate: launcher and an in-game scene render correctly for 30 minutes on both handheld and docked displays without validation errors, GPU faults, or unbounded memory growth.
 
@@ -93,9 +93,14 @@ Exit gate: the base game is completable with saves, menus, audio, rumble, and su
 ### M4 — Performance and release parity
 
 - Profile CPU, GPU, memory, SD I/O, and shader/pipeline creation on Erista and Mariko.
-- Add persistent pipeline caches and remove first-use stutter.
+- Add persistent pipeline caches and remove first-use stutter only after NVK
+  cross-process cache reuse is stable. Current builds use a transient in-memory
+  Vulkan pipeline cache: no pipeline data is loaded from or saved to SD.
+  Optimized raster shaders remain enabled, with one Switch compiler worker.
 - Offer 30 fps as the safe baseline; expose 60 fps only after frame pacing and thermal testing.
-- Test 720p handheld and 1080p docked scaling. Keep expensive RT64 enhancements off by default.
+- Test 720p handheld and 1080p docked scaling. Current Switch baseline renders
+  the game at 2x/480p and uses the VI pass for final scaling; native 1x currently
+  loses the NVK device on RT64's first workload.
 - Produce a release zip containing only the NRO, open-source assets, controller database, README, and licenses.
 - Add CI using the devkitPro image and a hardware smoke-test checklist for releases.
 
@@ -170,15 +175,59 @@ ROM to that directory as `snowboardkids2.z64` before copying it to the SD card.
 The same payload is also emitted as `build-switch-full/snowboardkids2-switch-sdcard.zip`
 for extraction directly at the SD-card root.
 
-The full game writes crash-surviving startup checkpoints to
-`sdmc:/switch/snowboardkids2-recompiled/startup.log`. If the first hardware
-boot fails, copy that file back with the probe log before rebuilding.
+## Live hardware logging
+
+Use Atmosphere title takeover to enter hbmenu, press Y to start NetLoader, then
+upload and stream the full build:
+
+```sh
+export SWITCH_IP=192.168.1.123
+./scripts/switch-run.sh
+```
+
+`nxlink -s` receives an explicit checkpoint stream; stdout/stderr are not
+redirected because libnx's blocking stdio socket can freeze a render thread
+when the host backpressures or disconnects. Network writes are nonblocking and
+may drop messages instead. The helper writes each session to
+`build-switch-logs/full-YYYYMMDD-HHMMSS.log`. Checkpoints include millisecond
+timestamps, and RT64 emits a two-second performance sample containing effective
+FPS plus average frame, swapchain acquire, presentation, and GPU-wait times.
+On macOS the helper runs nxlink through a PTY, preventing its host-side 16 KiB
+buffer from hiding the final lines while a frozen target remains connected.
+
+The NRO does not create or write `startup.log`. Switch diagnostics are emitted
+only through the nonblocking nxlink checkpoint stream, so logging performs no
+SD-card I/O during either network or normal launches.
+
+To diagnose the native-resolution NVK loss without changing the safe default,
+create this empty marker and launch through nxlink:
+
+```text
+sdmc:/switch/snowboardkids2-recompiled/config/diagnostic-native-resolution
+```
+
+This selects 1x and splits only the first workload into setup/RSP and
+framebuffer submissions. The live log identifies which half loses the device.
+Remove the marker to return to the normal 2x/480p path.
+
+The full build attempts NVK zero-copy scanout by default. If that path crashes
+on a particular firmware/libnx combination, create this empty recovery marker
+and relaunch without rebuilding:
+
+```text
+sdmc:/switch/snowboardkids2-recompiled/config/force-cpu-copy
+```
+
+Remove the marker to retry zero-copy. CPU-copy is a diagnostic fallback, not a
+playable-performance target.
 
 ## Current gates before a playable build
 
 1. Boot the generated full target and validate the first real RT64 game frame.
 2. Exercise audio, EEPROM saves, controller mappings, suspend/resume, and memory use in a long gameplay session.
-3. Profile the CPU-copy presentation fallback and re-enable zero-copy only after its native buffer registration is stable.
+3. Validate zero-copy native-buffer registration through races, menus,
+   suspend/resume, and dock changes. Keep CPU-copy marker testing as recovery
+   coverage.
 4. Runtime code mods remain intentionally unavailable until a safe Horizon W^X policy is implemented; embedded and data-only mods are the first playable target.
 
 These are engineering gates, not reasons to fork the game logic. The recompiled ARM64 code, SDL audio/input model, assets, configuration system, and most UI/game features remain reusable.

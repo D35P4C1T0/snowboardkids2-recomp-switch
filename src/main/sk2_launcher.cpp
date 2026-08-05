@@ -22,6 +22,13 @@
 
 #include "../../lib/rt64/src/contrib/stb/stb_image.h"
 
+#if defined(__SWITCH__)
+void switch_log_checkpoint(const char*, bool);
+#define SK2_LAUNCHER_SWITCH_CHECKPOINT(message) ::switch_log_checkpoint(message, false)
+#else
+#define SK2_LAUNCHER_SWITCH_CHECKPOINT(message) ((void)0)
+#endif
+
 namespace {
 
 class Sk2LauncherOption;
@@ -228,9 +235,13 @@ void open_config_tab(std::string_view tab_id) {
 
 void start_or_select_rom() {
     if (rom_valid) {
+        SK2_LAUNCHER_SWITCH_CHECKPOINT("launcher: Start Game selected");
         recompui::update_game_mod_id(mod_game_id);
+        SK2_LAUNCHER_SWITCH_CHECKPOINT("launcher: game mod ID updated");
         recomp::start_game(game_id, {});
+        SK2_LAUNCHER_SWITCH_CHECKPOINT("launcher: start_game returned");
         recompui::hide_all_contexts();
+        SK2_LAUNCHER_SWITCH_CHECKPOINT("launcher: contexts hidden");
         return;
     }
 

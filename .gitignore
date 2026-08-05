@@ -65,6 +65,7 @@ imgui.ini
 rt64.log
 startup.log
 core-probe.log
+build-switch-logs/
 
 node_modules/
 

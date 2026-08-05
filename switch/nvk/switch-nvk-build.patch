@@ -67,11 +67,121 @@ index 9692eb5..bccae6d 100644
 diff --git a/rustc-switch.sh b/rustc-switch.sh
 old mode 100644
 new mode 100755
+diff --git a/winsys/drm_shim.c b/winsys/drm_shim.c
+index 5f53f36..113c8fd 100644
+--- a/winsys/drm_shim.c
++++ b/winsys/drm_shim.c
+@@ -101,6 +101,7 @@ struct shim_bo {
+    uint64_t gpu_va;       /* GPU VA: auto (internal) or VM_BIND addr (NVK BOs) */
+    uint64_t gpu_bo_offset;/* VM_BIND bo_offset, for VA->CPU back-translation   */
+    NvKind   kind;         /* the BO's PTE kind (from GEM_NEW tile_flags)       */
++   NvKind   mapped_kind;  /* effective PTE kind from the successful VM_BIND    */
+ };
+ 
+ struct shim_syncobj {
+@@ -539,17 +540,21 @@ static int nouveau_gem_info(struct drm_nouveau_gem_info *info)
+  * (kills the ~9.4ms memcpy the present profiling found). Returns false if no
+  * bound BO covers the VA. Thread-safe (takes the device lock).               */
+ bool drm_shim_bo_nvmap_by_va(uint64_t gpu_va, uint32_t *out_nvmap_id,
+-                             uint64_t *out_size, uint32_t *out_kind)
++                             uint64_t *out_size, uint64_t *out_bind_offset,
++                             uint32_t *out_mapped_kind)
+ {
+    bool found = false;
+    mutexLock(&g_dev.lock);
+    for (int b = 0; b < SHIM_MAX_BOS; b++) {
+       struct shim_bo *bo = &g_dev.bos[b];
+-      if (bo->used && bo->gpu_va && gpu_va >= bo->gpu_va &&
+-          gpu_va < bo->gpu_va + bo->size) {
+-         if (out_nvmap_id) *out_nvmap_id = nvMapGetId(&bo->map);
+-         if (out_size)     *out_size     = bo->size;
+-         if (out_kind)     *out_kind     = (uint32_t)bo->kind;
++      if (bo->used && bo->gpu_va && bo->gpu_bo_offset <= bo->size &&
++          gpu_va >= bo->gpu_va &&
++          gpu_va - bo->gpu_va < bo->size - bo->gpu_bo_offset) {
++         if (out_nvmap_id)    *out_nvmap_id = nvMapGetId(&bo->map);
++         if (out_size)        *out_size = bo->size;
++         if (out_bind_offset) *out_bind_offset =
++            bo->gpu_bo_offset + (gpu_va - bo->gpu_va);
++         if (out_mapped_kind) *out_mapped_kind = (uint32_t)bo->mapped_kind;
+          found = true;
+          break;
+       }
+@@ -816,6 +821,7 @@ static int vm_bind_op(const struct drm_nouveau_vm_bind_op *op)
+    if (R_SUCCEEDED(rc)) {
+       bo->gpu_va = op->addr;
+       bo->gpu_bo_offset = op->bo_offset;
++      bo->mapped_kind = map_kind;
+    } else {
+       return -EINVAL;
+    }
 diff --git a/winsys/wsi/wsi_common_switch.c b/winsys/wsi/wsi_common_switch.c
-index 5136fe3..f8fd675 100644
+index 5136fe3..597350c 100644
 --- a/winsys/wsi/wsi_common_switch.c
 +++ b/winsys/wsi/wsi_common_switch.c
-@@ -524,10 +524,28 @@ wsi_switch_surface_create_swapchain(VkIcdSurfaceBase *icd_surface,
+@@ -46,7 +46,8 @@ __attribute__((weak)) void dusk_switch_log(const char *msg) { (void)msg; }
+  * nwindowQueueBuffer, no per-frame CPU copy/swizzle. Recipe = Dan-RE
+  * FUN_71000f2c00 + dan-re/RE_NOTES.md §131-178. */
+ extern bool drm_shim_bo_nvmap_by_va(uint64_t gpu_va, uint32_t *out_nvmap_id,
+-                                    uint64_t *out_size, uint32_t *out_kind);
++                                    uint64_t *out_size, uint64_t *out_bind_offset,
++                                    uint32_t *out_mapped_kind);
+ extern bool nvk_switch_image_layout(VkImage image, uint32_t *row_stride_B,
+                                     uint32_t *block_height_log2, uint64_t *offset_B,
+                                     uint64_t *size_B, uint8_t *pte_kind,
+@@ -60,15 +61,27 @@ static bool
+ wsi_switch_build_graphic_buffer(NvGraphicBuffer *gb, VkImage image,
+                                 VkFormat vk_format, VkExtent2D extent)
+ {
+-   uint32_t row_stride_B = 0, block_height_log2 = 0, bo_kind = 0, nvmap_id = 0;
++   uint32_t row_stride_B = 0, block_height_log2 = 0, mapped_kind = 0, nvmap_id = 0;
+    uint64_t offset_B = 0, nil_size_B = 0, gpu_va = 0, bo_size = 0;
++   uint64_t bind_offset_B = 0;
+    uint8_t  pte_kind = 0;
+ 
+    if (!nvk_switch_image_layout(image, &row_stride_B, &block_height_log2,
+                                 &offset_B, &nil_size_B, &pte_kind, &gpu_va))
+       return false;
+-   if (!drm_shim_bo_nvmap_by_va(gpu_va, &nvmap_id, &bo_size, &bo_kind))
++   if (!drm_shim_bo_nvmap_by_va(gpu_va, &nvmap_id, &bo_size,
++                                &bind_offset_B, &mapped_kind))
+       return false;
++   if (pte_kind != NvKind_Generic_16BX2 ||
++       mapped_kind != NvKind_Generic_16BX2)
++      return false;
++   if (bind_offset_B > bo_size || offset_B > bo_size - bind_offset_B ||
++       nil_size_B > bo_size - bind_offset_B - offset_B ||
++       bind_offset_B > UINT32_MAX || offset_B > UINT32_MAX - bind_offset_B ||
++       nil_size_B > UINT32_MAX)
++      return false;
++
++   const uint64_t plane_offset_B = bind_offset_B + offset_B;
+ 
+    const bool bgra = (vk_format == VK_FORMAT_B8G8R8A8_UNORM);
+    memset(gb, 0, sizeof(*gb));
+@@ -93,7 +106,7 @@ wsi_switch_build_graphic_buffer(NvGraphicBuffer *gb, VkImage image,
+    gb->planes[0].color_format      = bgra ? NvColorFormat_A8R8G8B8 : NvColorFormat_A8B8G8R8;
+    gb->planes[0].layout            = NvLayout_BlockLinear;    /* = 3                  */
+    gb->planes[0].pitch             = row_stride_B;
+-   gb->planes[0].offset            = (u32)offset_B;
++   gb->planes[0].offset            = (u32)plane_offset_B;
+    gb->planes[0].kind              = NvKind_Generic_16BX2;    /* = 0xfe, display kind */
+    gb->planes[0].block_height_log2 = block_height_log2;
+    gb->planes[0].scan              = NvDisplayScanFormat_Progressive;
+@@ -325,7 +338,11 @@ wsi_switch_swapchain_acquire_next_image(struct wsi_swapchain *wsi_chain,
+          nwindowCancelBuffer(chain->window, slot, NULL);
+          return VK_ERROR_OUT_OF_DATE_KHR;
+       }
+-      nvMultiFenceWait(&mf, 1000000 /* 1s */);
++      Result wait_rc = nvMultiFenceWait(&mf, 1000000000 /* 1s */);
++      if (R_FAILED(wait_rc)) {
++         nwindowCancelBuffer(chain->window, slot, NULL);
++         return VK_TIMEOUT;
++      }
+       if (trace) { printf("[wsi-zc] acquire: fence waited, slot=%d ready\n", slot); fflush(stdout); }
+       chain->images[slot].acquire_fence = mf;
+       chain->images[slot].busy = true;
+@@ -524,10 +541,28 @@ wsi_switch_surface_create_swapchain(VkIcdSurfaceBase *icd_surface,
      * scanout buffer (build the NvGraphicBuffer with kind=0xfe + the image's NIL
      * layout, then nwindowConfigureBuffer). slot == image index (identity). If any
      * image can't be wrapped, fall back to the libnx-framebuffer CPU-copy path. */
@@ -104,7 +214,8 @@ index 5136fe3..f8fd675 100644
        if (!wsi_switch_build_graphic_buffer(&chain->images[i].gb,
                                             chain->images[i].base.image,
                                             chain->vk_format, chain->extent)) {
-@@ -545,18 +563,20 @@ wsi_switch_surface_create_swapchain(VkIcdSurfaceBase *icd_surface,
+@@ -544,19 +579,21 @@ wsi_switch_surface_create_swapchain(VkIcdSurfaceBase *icd_surface,
+       printf("[wsi-zc] zero-copy ENABLED (block-linear scanout, kind=0xfe)\n"); fflush(stdout);
        dusk_switch_log("[wsi] zero-copy ENABLED (block-linear nwindow scanout, kind=0xfe)\n");
     } else {
 -      printf("[wsi-zc] zero-copy FAILED -> CPU-copy fallback\n"); fflush(stdout);

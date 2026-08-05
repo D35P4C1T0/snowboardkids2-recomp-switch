@@ -122,3 +122,18 @@ directory to `sdmc:/switch/`, then add your own ROM as `snowboardkids2.z64`.
 The `assets/` directory is required by the launcher and must accompany the NRO.
 Alternatively, extract `build-switch-full/snowboardkids2-switch-sdcard.zip`
 directly at the SD-card root; it contains the exact `switch/` hierarchy.
+
+For fast hardware iteration, enter hbmenu through Atmosphere title takeover
+(hold R while launching a game), press Y to start NetLoader, then run:
+
+```bash
+export SWITCH_IP=192.168.1.123
+./scripts/switch-run.sh
+```
+
+The NRO is uploaded without removing the SD-card payload or ROM. Timestamped
+application, RT64, and Plume checkpoints stream to the terminal and are
+retained under `build-switch-logs/`, so normal testing no longer requires
+copying a log from the SD card. The network writes are nonblocking: a lost or
+slow nxlink receiver drops messages instead of freezing a game thread. The NRO
+does not create or write `startup.log`; hardware diagnostics are nxlink-only.

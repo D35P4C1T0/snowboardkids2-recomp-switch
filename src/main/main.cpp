@@ -1,12 +1,15 @@
 #include <cstdio>
+#include <algorithm>
 #include <cassert>
 #include <cstring>
 #include <vector>
 #include <array>
 #include <filesystem>
 #include <stdexcept>
+#include <exception>
 #include <cinttypes>
 #include <atomic>
+#include <cerrno>
 #include <mutex>
 
 #if !defined(__SWITCH__)
@@ -30,7 +33,11 @@
 #undef Always
 #else
 #include <SDL2/SDL.h>
+#include <arpa/inet.h>
+#include <fcntl.h>
+#include <sys/socket.h>
 #include <switch.h>
+#include <unistd.h>
 #endif
 
 #include "zelda_config.h"
@@ -70,19 +77,86 @@ const std::string version_string = sk2_game_version;
 constexpr int sk2_max_players = 4;
 
 #if defined(__SWITCH__)
-constexpr const char* switch_startup_log_path =
-    "sdmc:/switch/snowboardkids2-recompiled/startup.log";
+namespace {
+std::mutex switch_log_mutex;
+u64 switch_log_start_tick = 0;
+int switch_nxlink_socket = -1;
+bool switch_socket_initialized = false;
+
+void switch_initialize_logging() {
+    const std::lock_guard<std::mutex> lock(switch_log_mutex);
+    switch_log_start_tick = armGetSystemTick();
+
+    // hbloader provides this address only when nxlink uploaded the NRO. Normal
+    // SD-card launches avoid all socket setup and its timeout path.
+    if (__nxlink_host.s_addr != 0 && R_SUCCEEDED(socketInitializeDefault())) {
+        switch_socket_initialized = true;
+        // Keep stdout/stderr untouched. nxlink's stdio redirection performs
+        // blocking writes; when its receiver disappears or backpressures, a
+        // render-thread checkpoint can freeze the whole process. Checkpoints
+        // use explicit nonblocking sends below and may be dropped safely.
+        switch_nxlink_socket = nxlinkConnectToHost(false, false);
+        if (switch_nxlink_socket < 0) {
+            socketExit();
+            switch_socket_initialized = false;
+        }
+        else {
+            const int socket_flags = fcntl(switch_nxlink_socket, F_GETFL, 0);
+            if (socket_flags >= 0) {
+                fcntl(switch_nxlink_socket, F_SETFL, socket_flags | O_NONBLOCK);
+            }
+        }
+    }
+}
+
+void switch_shutdown_logging() {
+    {
+        const std::lock_guard<std::mutex> lock(switch_log_mutex);
+        if (switch_nxlink_socket >= 0) {
+            close(switch_nxlink_socket);
+            switch_nxlink_socket = -1;
+        }
+    }
+
+    if (switch_socket_initialized) {
+        socketExit();
+        switch_socket_initialized = false;
+    }
+}
+}
 
 void switch_log_checkpoint(const char* message, bool reset = false) {
-    static std::mutex log_mutex;
-    const std::lock_guard<std::mutex> lock(log_mutex);
-    FILE* log = std::fopen(switch_startup_log_path, reset ? "w" : "a");
-    if (log == nullptr) {
+    if (message == nullptr) {
         return;
     }
 
-    std::fprintf(log, "%s\n", message);
-    std::fclose(log);
+    const std::lock_guard<std::mutex> lock(switch_log_mutex);
+    if (reset) {
+        switch_log_start_tick = armGetSystemTick();
+    }
+
+    const u64 now = armGetSystemTick();
+    const u64 elapsed_ms = armTicksToNs(now - switch_log_start_tick) / 1'000'000ULL;
+    const size_t message_length = std::strlen(message);
+    const bool has_newline = message_length > 0 && message[message_length - 1] == '\n';
+
+    if (switch_nxlink_socket >= 0) {
+        char live_line[1024]{};
+        const int formatted_length = std::snprintf(
+            live_line, sizeof(live_line), "[%8" PRIu64 " ms] %s%s",
+            elapsed_ms, message, has_newline ? "" : "\n");
+        if (formatted_length > 0) {
+            const size_t live_length = std::min(
+                size_t(formatted_length), sizeof(live_line) - 1);
+            const ssize_t sent = send(switch_nxlink_socket, live_line,
+                live_length, MSG_DONTWAIT | MSG_NOSIGNAL);
+            if (sent < 0 && errno != EAGAIN && errno != EWOULDBLOCK &&
+                errno != EINTR) {
+                close(switch_nxlink_socket);
+                switch_nxlink_socket = -1;
+            }
+        }
+    }
 }
 
 extern "C" {
@@ -97,7 +171,7 @@ void dusk_switch_log(const char* message) {
 
 void switch_driver_log_sink(const char* message) {
     // NVK emits many messages per GPU submission. Retain only Mesa WSI's
-    // bounded first-present trace so SD logging cannot throttle Horizon.
+    // bounded first-present trace so network logging stays low-volume.
     static std::atomic<uint32_t> retained_messages{0};
     if ((message != nullptr) && (std::strncmp(message, "[wsi] qp:", 9) == 0) &&
         (retained_messages.fetch_add(1, std::memory_order_relaxed) < 8)) {
@@ -127,13 +201,9 @@ template <typename... Ts> void exit_error(const char* str, Ts... args) {
 ultramodern::gfx_callbacks_t::gfx_data_t create_gfx() {
     switch_log_checkpoint("gfx: create_gfx entered");
     SDL_SetHint(SDL_HINT_WINDOWS_DPI_AWARENESS, "permonitorv2");
-#if defined(__SWITCH__)
-    // Keep Nintendo face-button labels: A/B and X/Y are opposite the Xbox
-    // positional layout used by the desktop builds.
-    SDL_SetHint(SDL_HINT_GAMECONTROLLER_USE_BUTTON_LABELS, "1");
-#else
+    // RecompFrontend uses SDL's positional layout. The Switch input layer
+    // explicitly translates its Nintendo face-button labels after polling.
     SDL_SetHint(SDL_HINT_GAMECONTROLLER_USE_BUTTON_LABELS, "0");
-#endif
     SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_PS4_RUMBLE, "1");
     SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_PS5_RUMBLE, "1");
     SDL_SetHint(SDL_HINT_MOUSE_FOCUS_CLICKTHROUGH, "1");
@@ -358,7 +428,19 @@ void queue_samples(int16_t* audio_data, size_t sample_count) {
     // Queue the swapped audio data.
     // Offset the data start by only half the discarded frame count as the other half of the discarded frames are at the
     // end of the buffer.
-    SDL_QueueAudio(audio_device, samples_to_queue, num_bytes_to_queue);
+    const int queue_result = SDL_QueueAudio(audio_device, samples_to_queue, num_bytes_to_queue);
+#if defined(__SWITCH__)
+    static std::atomic<bool> logged_first_audio_queue{false};
+    if (!logged_first_audio_queue.exchange(true, std::memory_order_relaxed)) {
+        char message[320]{};
+        std::snprintf(message, sizeof(message),
+            "audio: first queue samples=%zu input_rate=%u output_rate=%u bytes=%u result=%d status=%d queued=%u volume=%.2f error='%s'",
+            sample_count, sample_rate, output_sample_rate, num_bytes_to_queue,
+            queue_result, int(SDL_GetAudioDeviceStatus(audio_device)),
+            SDL_GetQueuedAudioSize(audio_device), double(cur_main_volume), SDL_GetError());
+        switch_log_checkpoint(message);
+    }
+#endif
 }
 
 size_t get_frames_remaining() {
@@ -414,7 +496,8 @@ bool reset_audio(uint32_t output_freq) {
                                 .callback = nullptr,
                                 .userdata = nullptr };
 
-    audio_device = SDL_OpenAudioDevice(nullptr, false, &spec_desired, nullptr, 0);
+    SDL_AudioSpec spec_obtained{};
+    audio_device = SDL_OpenAudioDevice(nullptr, false, &spec_desired, &spec_obtained, 0);
     if (audio_device == 0) {
         std::string audio_error =
             std::string("No audio device could be found. Please make sure an audio device is available.\n"
@@ -425,8 +508,21 @@ bool reset_audio(uint32_t output_freq) {
     }
     SDL_PauseAudioDevice(audio_device, 0);
 
-    output_sample_rate = output_freq;
+    output_sample_rate = uint32_t(spec_obtained.freq);
+    output_channels = uint32_t(spec_obtained.channels);
     update_audio_converter();
+
+#if defined(__SWITCH__)
+    char message[320]{};
+    std::snprintf(message, sizeof(message),
+        "audio: device opened driver='%s' id=%u requested=%dHz/%u/0x%04X obtained=%dHz/%u/0x%04X samples=%u status=%d",
+        SDL_GetCurrentAudioDriver() != nullptr ? SDL_GetCurrentAudioDriver() : "none",
+        unsigned(audio_device), spec_desired.freq, unsigned(spec_desired.channels),
+        unsigned(spec_desired.format), spec_obtained.freq, unsigned(spec_obtained.channels),
+        unsigned(spec_obtained.format), unsigned(spec_obtained.samples),
+        int(SDL_GetAudioDeviceStatus(audio_device)));
+    switch_log_checkpoint(message);
+#endif
 
     return true;
 }
@@ -699,7 +795,25 @@ int main(int argc, char** argv) {
     (void) argv;
 #if defined(__SWITCH__)
     std::set_terminate([]() {
-        switch_log_checkpoint("fatal: std::terminate invoked");
+        const std::exception_ptr active_exception = std::current_exception();
+        if (active_exception != nullptr) {
+            try {
+                std::rethrow_exception(active_exception);
+            }
+            catch (const std::exception& exception) {
+                char message[1024]{};
+                std::snprintf(message, sizeof(message),
+                    "fatal: unhandled C++ exception: %s", exception.what());
+                switch_log_checkpoint(message);
+            }
+            catch (...) {
+                switch_log_checkpoint("fatal: unhandled non-standard C++ exception");
+            }
+        }
+        else {
+            switch_log_checkpoint("fatal: std::terminate without active exception");
+        }
+        switch_shutdown_logging();
         std::_Exit(EXIT_FAILURE);
     });
     const std::filesystem::path switch_root = "sdmc:/switch/snowboardkids2-recompiled";
@@ -708,17 +822,30 @@ int main(int argc, char** argv) {
     std::filesystem::create_directories(switch_root / "mods", switch_path_error);
     std::filesystem::create_directories(switch_root / "saves", switch_path_error);
     std::filesystem::create_directories(switch_root / "config", switch_path_error);
+    switch_initialize_logging();
     switch_log_checkpoint("startup: entered main", true);
+    switch_log_checkpoint("startup: nonblocking nxlink checkpoints enabled");
     g_drm_shim_log_sink = switch_driver_log_sink;
 
     // NVK does not advertise the non-conformant GM20B device unless the
     // application opts in explicitly.
     SDL_setenv("NVK_I_WANT_A_BROKEN_VULKAN_DRIVER", "1", 1);
-    // The driver's zero-copy NvGraphicBuffer path is still experimental on
-    // Horizon. Prefer the stable linear framebuffer path until it has been
-    // validated across supported firmware/libnx combinations.
-    SDL_setenv("NVK_SWITCH_WSI_CPU_COPY", "1", 1);
-    switch_log_checkpoint("startup: NVK environment configured");
+    // Zero-copy scanout is required for playable performance. Keep CPU-copy as
+    // a recovery mode selectable from the SD card without rebuilding the NRO.
+    const bool force_cpu_copy =
+        std::filesystem::exists(switch_root / "config" / "force-cpu-copy", switch_path_error);
+    SDL_setenv("NVK_SWITCH_WSI_CPU_COPY", force_cpu_copy ? "1" : "0", 1);
+    switch_log_checkpoint(force_cpu_copy
+        ? "startup: NVK CPU-copy recovery mode selected"
+        : "startup: NVK zero-copy presentation selected");
+
+    const bool diagnostic_native_resolution = std::filesystem::exists(
+        switch_root / "config" / "diagnostic-native-resolution", switch_path_error);
+    SDL_setenv("SK2_SWITCH_DIAGNOSTIC_NATIVE_RESOLUTION",
+        diagnostic_native_resolution ? "1" : "0", 1);
+    if (diagnostic_native_resolution) {
+        switch_log_checkpoint("startup: native-resolution split-submit diagnostic enabled");
+    }
 #endif
     recomp::Version project_version{};
     if (!recomp::Version::from_string(version_string, project_version)) {
@@ -927,6 +1054,10 @@ int main(int argc, char** argv) {
     if (preloaded) {
         release_preload(preload_context);
     }
+
+#if defined(__SWITCH__)
+    switch_shutdown_logging();
+#endif
 
 #ifdef _WIN32
     // End high resolution timing period.
