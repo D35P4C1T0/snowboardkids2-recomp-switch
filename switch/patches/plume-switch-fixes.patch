@@ -1,0 +1,60 @@
+diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
+index 311a134..ee3db65 100644
+--- a/plume_vulkan.cpp
++++ b/plume_vulkan.cpp
+@@ -2409,6 +2409,20 @@ namespace plume {
+         VkSurfaceCapabilitiesKHR surfaceCapabilities = {};
+         vkGetPhysicalDeviceSurfaceCapabilitiesKHR(commandQueue->device->physicalDevice, surface, &surfaceCapabilities);
+ 
++#if defined(__SWITCH__)
++        {
++            char message[256]{};
++            std::snprintf(message, sizeof(message),
++                "plume swapchain: requested=%ux%u current=%ux%u min=%ux%u max=%ux%u images=%u",
++                width, height,
++                surfaceCapabilities.currentExtent.width, surfaceCapabilities.currentExtent.height,
++                surfaceCapabilities.minImageExtent.width, surfaceCapabilities.minImageExtent.height,
++                surfaceCapabilities.maxImageExtent.width, surfaceCapabilities.maxImageExtent.height,
++                desc.textureCount);
++            switch_log_checkpoint(message, false);
++        }
++#endif
++
+         // Clamp the extent to the surface capabilities' min/max bounds.
+         // This is required because the window size may differ from the valid surface extent
+         // (e.g., due to window decorations, compositor behavior, or timing issues).
+@@ -2482,6 +2496,16 @@ namespace plume {
+             textures[i].createImageView(pickedSurfaceFormat.format);
+         }
+ 
++#if defined(__SWITCH__)
++        {
++            char message[128]{};
++            std::snprintf(message, sizeof(message),
++                "plume swapchain: created=%ux%u images=%u mode=FIFO",
++                width, height, desc.textureCount);
++            switch_log_checkpoint(message, false);
++        }
++#endif
++
+         return true;
+     }
+ 
+@@ -2558,11 +2582,12 @@ namespace plume {
+         dstWidth = rect.right - rect.left;
+         dstHeight = rect.bottom - rect.top;
+ #   elif defined(__SWITCH__)
+-        NWindow *window = nwindowGetDefault();
+-        if (R_FAILED(nwindowGetDimensions(window, &dstWidth, &dstHeight))) {
+-            dstWidth = 1280;
+-            dstHeight = 720;
+-        }
++        // Horizon's application output is fixed for this port. Do not inherit
++        // transient NWindow dimensions during startup or dock transitions.
++        // The VI pass scales the lower-resolution N64 render target into this
++        // exact 16:9 output surface.
++        dstWidth = 1280;
++        dstHeight = 720;
+ #   elif defined(PLUME_SDL_VULKAN_ENABLED)
+         SDL_GetWindowSizeInPixels(desc.renderWindow, (int *)(&dstWidth), (int *)(&dstHeight));
+ #   elif defined(__ANDROID__)

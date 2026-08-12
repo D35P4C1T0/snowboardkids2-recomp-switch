@@ -1,0 +1,332 @@
+#!/usr/bin/env python3
+"""Summarize Snowboard Kids 2 Switch nxlink performance logs."""
+
+from __future__ import annotations
+
+import argparse
+import csv
+import re
+import statistics
+from dataclasses import dataclass
+from pathlib import Path
+
+
+TIMESTAMP_RE = re.compile(r"\[\s*(?P<ms>\d+) ms\]\s*(?P<message>.*)")
+PERF_RE = re.compile(
+    r"perf: (?P<fps>[\d.]+) fps, frame (?P<frame>[\d.]+) ms, "
+    r"acquire (?P<acquire>[\d.]+) ms, present (?P<present>[\d.]+) ms, "
+    r"GPU wait (?P<gpu>[\d.]+) ms"
+    r"(?:, max frame (?P<max_frame>[\d.]+) ms, max GPU wait (?P<max_gpu>[\d.]+) ms, samples (?P<samples>\d+))?"
+)
+SLOW_FB_RE = re.compile(r"slow: (?P<context>FB RDRAM .*) wait=(?P<wait>[\d.]+) ms")
+MEMORY_RE = re.compile(
+    r"plume memory: submit=(?P<submit>\d+) usage=(?P<usage>\d+) MiB "
+    r"budget=(?P<budget>\d+) MiB allocations=(?P<allocations>\d+) MiB "
+    r"blocks=(?P<blocks>\d+) MiB count=(?P<count>\d+)"
+)
+UNKNOWN_GBI_RE = re.compile(
+    r"warning: unknown GBI opcode type=(?P<type>\d+) opcode=(?P<opcode>0x[0-9A-Fa-f]+) "
+    r"dl=(?P<dl>0x[0-9A-Fa-f]+)(?P<detail>.*?)(?: count=(?P<count>\d+))?$"
+)
+AUDIO_FIRST_RE = re.compile(
+    r"audio: first queue .* result=(?P<result>-?\d+) status=(?P<status>\d+) "
+    r"queued=(?P<queued>\d+)(?: peak=(?P<peak>\d+))?"
+)
+AUDIO_HEALTH_RE = re.compile(
+    r"audio: health queues=(?P<queues>\d+) empty_before=(?P<empty>\d+) "
+    r"failures=(?P<failures>\d+) queued=(?P<queued>\d+) status=(?P<status>\d+) "
+    r"peak=(?P<peak>\d+)"
+)
+
+
+@dataclass
+class PerfSample:
+    timestamp_ms: int
+    fps: float
+    frame_ms: float
+    acquire_ms: float
+    present_ms: float
+    gpu_wait_ms: float
+    max_frame_ms: float | None
+    max_gpu_wait_ms: float | None
+    samples: int | None
+
+
+def percentile(values: list[float], fraction: float) -> float:
+    ordered = sorted(values)
+    if not ordered:
+        return 0.0
+    index = round((len(ordered) - 1) * fraction)
+    return ordered[index]
+
+
+def parse_log(path: Path) -> dict[str, object]:
+    perf: list[PerfSample] = []
+    slow_framebuffers: list[tuple[float, str]] = []
+    pipeline_times: list[int] = []
+    pipeline_start_ms: int | None = None
+    memory: list[dict[str, int]] = []
+    fatals: list[str] = []
+    warnings: list[str] = []
+    modes: list[str] = []
+    swapchains: list[str] = []
+    ucodes: list[str] = []
+    audio_first: dict[str, int] | None = None
+    audio_health: list[dict[str, int]] = []
+    game_start_ms: int | None = None
+    duration_ms = 0
+
+    for raw_line in path.read_text(errors="replace").splitlines():
+        timestamp_match = TIMESTAMP_RE.search(raw_line)
+        if timestamp_match is None:
+            continue
+
+        timestamp_ms = int(timestamp_match.group("ms"))
+        duration_ms = max(duration_ms, timestamp_ms)
+        message = timestamp_match.group("message")
+
+        if message == "launcher: Start Game selected":
+            game_start_ms = timestamp_ms
+
+        perf_match = PERF_RE.search(message)
+        if perf_match is not None:
+            perf.append(
+                PerfSample(
+                    timestamp_ms=timestamp_ms,
+                    fps=float(perf_match.group("fps")),
+                    frame_ms=float(perf_match.group("frame")),
+                    acquire_ms=float(perf_match.group("acquire")),
+                    present_ms=float(perf_match.group("present")),
+                    gpu_wait_ms=float(perf_match.group("gpu")),
+                    max_frame_ms=float(perf_match.group("max_frame")) if perf_match.group("max_frame") else None,
+                    max_gpu_wait_ms=float(perf_match.group("max_gpu")) if perf_match.group("max_gpu") else None,
+                    samples=int(perf_match.group("samples")) if perf_match.group("samples") else None,
+                )
+            )
+
+        slow_match = SLOW_FB_RE.search(message)
+        if slow_match is not None:
+            slow_framebuffers.append((float(slow_match.group("wait")), slow_match.group("context")))
+
+        if message == "rt64 raster: device pipeline creation entered":
+            pipeline_start_ms = timestamp_ms
+        elif message == "rt64 raster: device pipeline creation returned" and pipeline_start_ms is not None:
+            pipeline_times.append(timestamp_ms - pipeline_start_ms)
+            pipeline_start_ms = None
+
+        memory_match = MEMORY_RE.search(message)
+        if memory_match is not None:
+            memory.append({key: int(value) for key, value in memory_match.groupdict().items()})
+
+        if message.startswith("fatal:"):
+            fatals.append(message)
+        elif message.startswith("warning:"):
+            warnings.append(message)
+
+        if message.startswith("startup: NVK") or "ubershaders only" in message:
+            modes.append(message)
+        if message.startswith("plume swapchain:"):
+            swapchains.append(message)
+        if message.startswith("rt64 gbi:"):
+            ucodes.append(message)
+
+        audio_first_match = AUDIO_FIRST_RE.search(message)
+        if audio_first_match is not None:
+            audio_first = {
+                key: int(value)
+                for key, value in audio_first_match.groupdict().items()
+                if value is not None
+            }
+        audio_health_match = AUDIO_HEALTH_RE.search(message)
+        if audio_health_match is not None:
+            audio_health.append({key: int(value) for key, value in audio_health_match.groupdict().items()})
+
+    return {
+        "duration_ms": duration_ms,
+        "perf": perf,
+        "slow_framebuffers": slow_framebuffers,
+        "pipeline_times": pipeline_times,
+        "memory": memory,
+        "fatals": fatals,
+        "warnings": warnings,
+        "modes": list(dict.fromkeys(modes)),
+        "swapchains": list(dict.fromkeys(swapchains)),
+        "ucodes": list(dict.fromkeys(ucodes)),
+        "audio_first": audio_first,
+        "audio_health": audio_health,
+        "game_start_ms": game_start_ms,
+    }
+
+
+def print_summary(path: Path, data: dict[str, object]) -> None:
+    perf: list[PerfSample] = data["perf"]  # type: ignore[assignment]
+    slow_framebuffers: list[tuple[float, str]] = data["slow_framebuffers"]  # type: ignore[assignment]
+    pipeline_times: list[int] = data["pipeline_times"]  # type: ignore[assignment]
+    memory: list[dict[str, int]] = data["memory"]  # type: ignore[assignment]
+
+    print(f"Log: {path}")
+    print(f"Duration: {data['duration_ms'] / 1000:.1f} s")
+    for mode in data["modes"]:  # type: ignore[union-attr]
+        print(f"Mode: {mode}")
+    for swapchain in data["swapchains"]:  # type: ignore[union-attr]
+        print(f"Output: {swapchain}")
+    for ucode in data["ucodes"]:  # type: ignore[union-attr]
+        print(f"Microcode: {ucode}")
+
+    audio_first: dict[str, int] | None = data["audio_first"]  # type: ignore[assignment]
+    audio_health: list[dict[str, int]] = data["audio_health"]  # type: ignore[assignment]
+    if audio_first is None:
+        print("Audio: no game samples queued")
+    else:
+        peak = f" peak={audio_first['peak']}" if "peak" in audio_first else ""
+        print(
+            "Audio first queue: "
+            f"result={audio_first['result']} status={audio_first['status']} "
+            f"queued={audio_first['queued']} bytes{peak}"
+        )
+    if audio_health:
+        latest_audio = audio_health[-1]
+        print(
+            "Audio health: "
+            f"queues={latest_audio['queues']} empty-before={latest_audio['empty']} "
+            f"failures={latest_audio['failures']} queued={latest_audio['queued']} bytes "
+            f"status={latest_audio['status']} peak={latest_audio['peak']}"
+        )
+
+    if perf:
+        fps_values = [sample.fps for sample in perf]
+        frame_values = [sample.frame_ms for sample in perf]
+        gpu_values = [sample.gpu_wait_ms for sample in perf]
+        worst = min(perf, key=lambda sample: sample.fps)
+        print(
+            "Performance: "
+            f"{len(perf)} windows, FPS median={statistics.median(fps_values):.2f} "
+            f"p10={percentile(fps_values, 0.10):.2f} min={min(fps_values):.2f} "
+            f"max={max(fps_values):.2f}"
+        )
+        print(
+            "Frame/GPU: "
+            f"frame median={statistics.median(frame_values):.2f} ms "
+            f"p95={percentile(frame_values, 0.95):.2f} ms; "
+            f"GPU-wait median={statistics.median(gpu_values):.2f} ms "
+            f"p95={percentile(gpu_values, 0.95):.2f} ms"
+        )
+        print(
+            f"Worst window: t={worst.timestamp_ms / 1000:.1f}s, "
+            f"{worst.fps:.2f} FPS, frame={worst.frame_ms:.2f} ms, "
+            f"GPU-wait={worst.gpu_wait_ms:.2f} ms"
+        )
+        game_start_ms: int | None = data["game_start_ms"]  # type: ignore[assignment]
+        gameplay_perf = (
+            [sample for sample in perf if sample.timestamp_ms >= game_start_ms]
+            if game_start_ms is not None
+            else []
+        )
+        if gameplay_perf:
+            gameplay_fps = [sample.fps for sample in gameplay_perf]
+            gameplay_gpu = [sample.gpu_wait_ms for sample in gameplay_perf]
+            print(
+                "Gameplay: "
+                f"{len(gameplay_perf)} windows, FPS median={statistics.median(gameplay_fps):.2f} "
+                f"p10={percentile(gameplay_fps, 0.10):.2f} min={min(gameplay_fps):.2f}; "
+                f"GPU-wait p95={percentile(gameplay_gpu, 0.95):.2f} ms"
+            )
+    else:
+        print("Performance: no samples")
+
+    if pipeline_times:
+        print(
+            "Pipeline initialization: "
+            f"count={len(pipeline_times)}, total={sum(pipeline_times) / 1000:.2f}s, "
+            f"median={statistics.median(pipeline_times):.0f} ms, "
+            f"p95={percentile([float(value) for value in pipeline_times], 0.95):.0f} ms, "
+            f"max={max(pipeline_times)} ms"
+        )
+    else:
+        print("Pipeline initialization: no samples")
+
+    if slow_framebuffers:
+        worst_wait, worst_context = max(slow_framebuffers, key=lambda item: item[0])
+        print(f"Slow framebuffer submits: count={len(slow_framebuffers)}, max={worst_wait:.2f} ms")
+        print(f"Worst framebuffer: {worst_context}")
+
+    if memory:
+        peak = max(memory, key=lambda sample: sample["usage"])
+        print(
+            f"Device memory: peak={peak['usage']} MiB / {peak['budget']} MiB, "
+            f"allocation peak={max(sample['allocations'] for sample in memory)} MiB"
+        )
+
+    grouped_unknown: dict[tuple[str, str, str, str, str], dict[str, object]] = {}
+    other_warnings: list[str] = []
+    for warning in data["warnings"]:  # type: ignore[union-attr]
+        unknown_match = UNKNOWN_GBI_RE.fullmatch(warning)
+        if unknown_match is None:
+            other_warnings.append(warning)
+            continue
+
+        detail_match = re.search(
+            r"cmd=(0x[0-9A-Fa-f]+) w0=(0x[0-9A-Fa-f]+) w1=(0x[0-9A-Fa-f]+)",
+            unknown_match.group("detail"),
+        )
+        w0 = detail_match.group(2) if detail_match is not None else ""
+        w1 = detail_match.group(3) if detail_match is not None else ""
+        key = (
+            unknown_match.group("type"),
+            unknown_match.group("opcode"),
+            unknown_match.group("dl"),
+            w0,
+            w1,
+        )
+        group = grouped_unknown.setdefault(key, {"lines": 0, "latest": warning})
+        group["lines"] = int(group["lines"]) + 1
+        group["latest"] = warning
+
+    extended_command_names = {
+        7: "RT64 viewport-align while extended GBI was disabled",
+        8: "RT64 scissor-align while extended GBI was disabled",
+    }
+    for (ucode_type, opcode, dl, w0, _w1), group in grouped_unknown.items():
+        latest = str(group["latest"])
+        detail_match = re.search(r" (cmd=0x[0-9A-Fa-f]+ w0=0x[0-9A-Fa-f]+ w1=0x[0-9A-Fa-f]+)", latest)
+        detail = f" {detail_match.group(1)}" if detail_match is not None else ""
+        occurrence_match = re.search(r" occurrences=(\d+)", latest)
+        occurrences = occurrence_match.group(1) if occurrence_match is not None else str(group["lines"])
+        annotation = ""
+        if opcode.lower() == "0x64" and w0:
+            command_id = int(w0, 16) & 0xFFFFFF
+            if command_id in extended_command_names:
+                annotation = f" ({extended_command_names[command_id]})"
+        print(
+            "Warning: unknown GBI opcode "
+            f"type={ucode_type} opcode={opcode} dl={dl}{detail} occurrences={occurrences}{annotation}"
+        )
+    for warning in other_warnings:
+        print(f"Warning: {warning}")
+    for fatal in data["fatals"]:  # type: ignore[union-attr]
+        print(f"Fatal: {fatal}")
+
+
+def write_csv(path: Path, samples: list[PerfSample]) -> None:
+    with path.open("w", newline="") as output:
+        writer = csv.DictWriter(output, fieldnames=list(PerfSample.__annotations__))
+        writer.writeheader()
+        for sample in samples:
+            writer.writerow(sample.__dict__)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("log", type=Path, help="nxlink log produced by scripts/switch-run.sh")
+    parser.add_argument("--csv", type=Path, help="write parsed performance windows as CSV")
+    args = parser.parse_args()
+
+    data = parse_log(args.log)
+    print_summary(args.log, data)
+    if args.csv is not None:
+        write_csv(args.csv, data["perf"])  # type: ignore[arg-type]
+        print(f"CSV: {args.csv}")
+
+
+if __name__ == "__main__":
+    main()

@@ -8,13 +8,25 @@ apply_patch_set() {
     dependency_path=$1
     patch_path=$2
     dependency_name=$3
+    followup_patch=${4:-}
+    latest_patch=${5:-}
 
     if [ ! -d "${dependency_path}/.git" ] && [ ! -f "${dependency_path}/.git" ]; then
         echo "${dependency_name} is not initialized; run git submodule update --init --recursive." >&2
         exit 1
     fi
 
-    if git -C "${dependency_path}" apply --check "${patch_path}" >/dev/null 2>&1; then
+    # A follow-up patch may intentionally edit lines introduced by this base
+    # patch, which makes a full reverse-check of the base fail even though the
+    # complete series is present. A reversible follow-up proves its base was
+    # applied first, so the base can be skipped safely.
+    if [ -n "${latest_patch}" ] &&
+       git -C "${dependency_path}" apply --reverse --check "${latest_patch}" >/dev/null 2>&1; then
+        echo "${dependency_name} Switch patch is already applied (with latest follow-up)."
+    elif [ -n "${followup_patch}" ] &&
+       git -C "${dependency_path}" apply --reverse --check "${followup_patch}" >/dev/null 2>&1; then
+        echo "${dependency_name} Switch patch is already applied (with follow-up)."
+    elif git -C "${dependency_path}" apply --check "${patch_path}" >/dev/null 2>&1; then
         git -C "${dependency_path}" apply "${patch_path}"
         echo "Applied ${dependency_name} Switch patch."
     elif git -C "${dependency_path}" apply --reverse --check "${patch_path}" >/dev/null 2>&1; then
@@ -34,7 +46,20 @@ apply_patch_set \
 apply_patch_set \
     "${REPO_ROOT}/lib/RecompFrontend" \
     "${REPO_ROOT}/switch/patches/recompfrontend-switch.patch" \
-    "RecompFrontend"
+    "RecompFrontend" \
+    "${REPO_ROOT}/switch/patches/recompfrontend-switch-fixes.patch" \
+    "${REPO_ROOT}/switch/patches/recompfrontend-switch-menu-fixes.patch"
+
+apply_patch_set \
+    "${REPO_ROOT}/lib/RecompFrontend" \
+    "${REPO_ROOT}/switch/patches/recompfrontend-switch-fixes.patch" \
+    "RecompFrontend stability fixes" \
+    "${REPO_ROOT}/switch/patches/recompfrontend-switch-menu-fixes.patch"
+
+apply_patch_set \
+    "${REPO_ROOT}/lib/RecompFrontend" \
+    "${REPO_ROOT}/switch/patches/recompfrontend-switch-menu-fixes.patch" \
+    "RecompFrontend menu fixes"
 
 apply_patch_set \
     "${REPO_ROOT}/lib/RecompFrontend/recompui/lib/lunasvg" \
@@ -44,7 +69,20 @@ apply_patch_set \
 apply_patch_set \
     "${REPO_ROOT}/lib/rt64" \
     "${REPO_ROOT}/switch/patches/rt64-switch.patch" \
-    "RT64"
+    "RT64" \
+    "${REPO_ROOT}/switch/patches/rt64-switch-fixes.patch" \
+    "${REPO_ROOT}/switch/patches/rt64-switch-crash-fixes.patch"
+
+apply_patch_set \
+    "${REPO_ROOT}/lib/rt64" \
+    "${REPO_ROOT}/switch/patches/rt64-switch-fixes.patch" \
+    "RT64 stability fixes" \
+    "${REPO_ROOT}/switch/patches/rt64-switch-crash-fixes.patch"
+
+apply_patch_set \
+    "${REPO_ROOT}/lib/rt64" \
+    "${REPO_ROOT}/switch/patches/rt64-switch-crash-fixes.patch" \
+    "RT64 crash fixes"
 
 apply_patch_set \
     "${REPO_ROOT}/lib/rt64/src/contrib/implot" \
@@ -54,7 +92,13 @@ apply_patch_set \
 apply_patch_set \
     "${REPO_ROOT}/lib/rt64/src/contrib/plume" \
     "${REPO_ROOT}/switch/patches/plume-switch.patch" \
-    "Plume"
+    "Plume" \
+    "${REPO_ROOT}/switch/patches/plume-switch-fixes.patch"
+
+apply_patch_set \
+    "${REPO_ROOT}/lib/rt64/src/contrib/plume" \
+    "${REPO_ROOT}/switch/patches/plume-switch-fixes.patch" \
+    "Plume stability fixes"
 
 apply_patch_set \
     "${REPO_ROOT}/lib/rt64/src/contrib/plume/contrib/volk" \

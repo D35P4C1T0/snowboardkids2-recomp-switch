@@ -365,6 +365,9 @@ void queue_samples(int16_t* audio_data, size_t sample_count) {
     // calls to reduce runtime allocations.
     static std::vector<float> swap_buffer;
     static std::array<float, duplicated_input_frames * input_channels> duplicated_sample_buffer;
+#if defined(__SWITCH__)
+    uint32_t chunk_peak = 0;
+#endif
 
     // Make sure the swap buffer is large enough to hold the audio data, including any extra space needed for
     // resampling.
@@ -383,6 +386,11 @@ void queue_samples(int16_t* audio_data, size_t sample_count) {
     // swap buffer to correct for the address xor caused by endianness handling.
     float cur_main_volume = zelda64::get_main_volume() / 100.0f; // Get the current main volume, normalized to 0.0-1.0.
     for (size_t i = 0; i < sample_count; i += input_channels) {
+#if defined(__SWITCH__)
+        const int32_t left = audio_data[i + 0];
+        const int32_t right = audio_data[i + 1];
+        chunk_peak = std::max(chunk_peak, uint32_t(std::max(std::abs(left), std::abs(right))));
+#endif
         swap_buffer[i + 0 + duplicated_input_frames * input_channels] =
             audio_data[i + 1] * (0.5f / 32768.0f) * cur_main_volume;
         swap_buffer[i + 1 + duplicated_input_frames * input_channels] =
@@ -430,15 +438,45 @@ void queue_samples(int16_t* audio_data, size_t sample_count) {
     // end of the buffer.
     const int queue_result = SDL_QueueAudio(audio_device, samples_to_queue, num_bytes_to_queue);
 #if defined(__SWITCH__)
+    static uint64_t queue_count = 0;
+    static uint64_t empty_queue_count = 0;
+    static uint64_t queue_failure_count = 0;
+    static uint32_t interval_peak = 0;
+    const uint32_t queued_bytes = SDL_GetQueuedAudioSize(audio_device);
+
+    queue_count++;
+    interval_peak = std::max(interval_peak, chunk_peak);
+    if ((cur_queued_microseconds == 0) && (queue_count > 1)) {
+        empty_queue_count++;
+    }
+    if (queue_result != 0) {
+        queue_failure_count++;
+    }
+
     static std::atomic<bool> logged_first_audio_queue{false};
     if (!logged_first_audio_queue.exchange(true, std::memory_order_relaxed)) {
         char message[320]{};
         std::snprintf(message, sizeof(message),
-            "audio: first queue samples=%zu input_rate=%u output_rate=%u bytes=%u result=%d status=%d queued=%u volume=%.2f error='%s'",
+            "audio: first queue samples=%zu input_rate=%u output_rate=%u bytes=%u result=%d status=%d queued=%u peak=%u volume=%.2f error='%s'",
             sample_count, sample_rate, output_sample_rate, num_bytes_to_queue,
             queue_result, int(SDL_GetAudioDeviceStatus(audio_device)),
-            SDL_GetQueuedAudioSize(audio_device), double(cur_main_volume), SDL_GetError());
+            queued_bytes, chunk_peak, double(cur_main_volume), SDL_GetError());
         switch_log_checkpoint(message);
+    }
+
+    // Audio callbacks normally arrive about thirty times per second. Keep this
+    // diagnostic infrequent so nxlink logging cannot become a source of
+    // underruns itself.
+    if ((queue_count % 120) == 0) {
+        char message[320]{};
+        std::snprintf(message, sizeof(message),
+            "audio: health queues=%llu empty_before=%llu failures=%llu queued=%u status=%d peak=%u volume=%.2f",
+            static_cast<unsigned long long>(queue_count),
+            static_cast<unsigned long long>(empty_queue_count),
+            static_cast<unsigned long long>(queue_failure_count), queued_bytes,
+            int(SDL_GetAudioDeviceStatus(audio_device)), interval_peak, double(cur_main_volume));
+        switch_log_checkpoint(message);
+        interval_peak = 0;
     }
 #endif
 }
@@ -839,13 +877,17 @@ int main(int argc, char** argv) {
         ? "startup: NVK CPU-copy recovery mode selected"
         : "startup: NVK zero-copy presentation selected");
 
-    const bool diagnostic_native_resolution = std::filesystem::exists(
-        switch_root / "config" / "diagnostic-native-resolution", switch_path_error);
+    // Render the N64 scene at its native resolution and let the VI pass scale
+    // it to the fixed 1280x720 swapchain. The 480p internal target overloads
+    // GM20B/NVK once gameplay begins and eventually loses the device. Keep a
+    // recovery marker for comparing driver behavior without rebuilding.
+    const bool force_480p = std::filesystem::exists(
+        switch_root / "config" / "force-480p", switch_path_error);
     SDL_setenv("SK2_SWITCH_DIAGNOSTIC_NATIVE_RESOLUTION",
-        diagnostic_native_resolution ? "1" : "0", 1);
-    if (diagnostic_native_resolution) {
-        switch_log_checkpoint("startup: native-resolution split-submit diagnostic enabled");
-    }
+        force_480p ? "0" : "1", 1);
+    switch_log_checkpoint(force_480p
+        ? "startup: 480p internal-resolution recovery mode selected"
+        : "startup: native internal resolution selected; 720p output retained");
 #endif
     recomp::Version project_version{};
     if (!recomp::Version::from_string(version_string, project_version)) {

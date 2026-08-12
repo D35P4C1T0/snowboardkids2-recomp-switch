@@ -1,0 +1,266 @@
+diff --git a/src/hle/rt64_interpreter.cpp b/src/hle/rt64_interpreter.cpp
+index ec9f304..5c39ddb 100644
+--- a/src/hle/rt64_interpreter.cpp
++++ b/src/hle/rt64_interpreter.cpp
+@@ -4,6 +4,7 @@
+ 
+ #include "rt64_interpreter.h"
+ 
++#include <array>
+ #include <cassert>
+ #include <cstdio>
+ 
+@@ -192,16 +193,51 @@ namespace RT64 {
+                 }
+                 else {
+ #if defined(__SWITCH__)
+-                    static uint32_t unknownOpcodeCount = 0;
+-                    if (unknownOpcodeCount < 32) {
++                    struct UnknownOpcodeSample {
++                        uint32_t ucode = 0;
++                        uint32_t w0 = 0;
++                        uint32_t w1 = 0;
++                        uint32_t occurrences = 0;
++                    };
++                    static std::array<UnknownOpcodeSample, 16> unknownOpcodeSamples{};
++                    static uint32_t unknownOpcodeSampleCount = 0;
++                    UnknownOpcodeSample *sample = nullptr;
++                    for (uint32_t i = 0; i < unknownOpcodeSampleCount; i++) {
++                        UnknownOpcodeSample &candidate = unknownOpcodeSamples[i];
++                        if ((candidate.ucode == uint32_t(hleGBI->ucode)) &&
++                            (candidate.w0 == dl->w0) && (candidate.w1 == dl->w1))
++                        {
++                            sample = &candidate;
++                            break;
++                        }
++                    }
++
++                    if ((sample == nullptr) && (unknownOpcodeSampleCount < unknownOpcodeSamples.size())) {
++                        sample = &unknownOpcodeSamples[unknownOpcodeSampleCount++];
++                        sample->ucode = uint32_t(hleGBI->ucode);
++                        sample->w0 = dl->w0;
++                        sample->w1 = dl->w1;
++                    }
++
++                    if (sample != nullptr) {
++                        sample->occurrences++;
++                    }
++
++                    // Log every distinct command once, then only powers of two
++                    // after 64 occurrences. This preserves useful S2DEX words
++                    // without letting one repeated opcode consume the log.
++                    const uint32_t occurrences = (sample != nullptr) ? sample->occurrences : 0;
++                    const bool periodicSample = (occurrences >= 64) && ((occurrences & (occurrences - 1)) == 0);
++                    if ((occurrences == 1) || periodicSample) {
+                         char message[192]{};
++                        const uint32_t commandOffset = uint32_t(dl - dlStart) * sizeof(DisplayList);
+                         std::snprintf(message, sizeof(message),
+-                            "warning: unknown GBI opcode type=%u opcode=0x%02X dl=0x%08X count=%u",
++                            "warning: unknown GBI opcode type=%u opcode=0x%02X dl=0x%08X cmd=0x%08X w0=0x%08X w1=0x%08X occurrences=%u",
+                             uint32_t(hleGBI->ucode), opCode, state->displayListAddress,
+-                            unknownOpcodeCount + 1);
++                            state->displayListAddress + commandOffset, dl->w0, dl->w1,
++                            occurrences);
+                         switch_log_checkpoint(message, false);
+                     }
+-                    unknownOpcodeCount++;
+ #endif
+                     RT64_LOG_PRINTF("DL Parser ran into an unknown opCode (GBI %u): %u / 0x%X", uint32_t(hleGBI->ucode), opCode, opCode);
+                 }
+diff --git a/src/hle/rt64_state.cpp b/src/hle/rt64_state.cpp
+index a953dbb..aad56e0 100644
+--- a/src/hle/rt64_state.cpp
++++ b/src/hle/rt64_state.cpp
+@@ -1516,9 +1516,13 @@ namespace RT64 {
+                 uint32_t switchStartOperations = 0;
+                 uint32_t switchEndOperations = 0;
+                 bool switchDepthActive = false;
++                bool switchTestZAtStart = false;
++                bool switchTestZAtEnd = false;
++                uint32_t switchTestZMarkers = 0;
+                 for (uint32_t pairIndex = framebufferPairCursor; pairIndex < maxFramebufferPair; pairIndex++) {
+                     const FramebufferPair &diagnosticPair = workload.fbPairs[pairIndex];
+                     uint32_t diagnosticCallIndex = 0;
++                    bool diagnosticTestZActive = false;
+                     for (uint32_t projectionIndex = 0; projectionIndex < diagnosticPair.projectionCount; projectionIndex++) {
+                         const Projection &diagnosticProjection = diagnosticPair.projections[projectionIndex];
+                         if (diagnosticProjection.scissorRect.isNull()) {
+@@ -1527,12 +1531,31 @@ namespace RT64 {
+ 
+                         for (uint32_t drawIndex = 0; drawIndex < diagnosticProjection.gameCallCount; drawIndex++) {
+                             const GameCall &diagnosticCall = diagnosticProjection.gameCalls[drawIndex];
++                            if (diagnosticCallIndex == minGameCall) {
++                                switchTestZAtStart = switchTestZAtStart || diagnosticTestZActive;
++                            }
++
+                             if ((diagnosticCallIndex >= minGameCall) && (diagnosticCallIndex < maxGameCall)) {
+                                 switchSliceCalls++;
+                                 switchSliceIndices += diagnosticCall.callDesc.triangleCount * 3;
++                                if ((diagnosticCall.callDesc.extendedType == DrawExtendedType::VertexTestZ) ||
++                                    (diagnosticCall.callDesc.extendedType == DrawExtendedType::EndVertexTestZ))
++                                {
++                                    switchTestZMarkers++;
++                                }
++                            }
++
++                            if (diagnosticCall.callDesc.extendedType == DrawExtendedType::VertexTestZ) {
++                                diagnosticTestZActive = true;
++                            }
++                            else if (diagnosticCall.callDesc.extendedType == DrawExtendedType::EndVertexTestZ) {
++                                diagnosticTestZActive = false;
+                             }
+ 
+                             diagnosticCallIndex++;
++                            if (diagnosticCallIndex == maxGameCall) {
++                                switchTestZAtEnd = switchTestZAtEnd || diagnosticTestZActive;
++                            }
+                         }
+                     }
+ 
+@@ -1549,13 +1572,17 @@ namespace RT64 {
+                 const FramebufferPair *switchFirstPair = (framebufferPairCursor < maxFramebufferPair)
+                     ? &workload.fbPairs[framebufferPairCursor]
+                     : nullptr;
++                const char *switchSubmitPhase = (lastPairChunk && (minGameCall == maxGameCall))
++                    ? "copyback"
++                    : "draw";
+                 std::snprintf(switchSubmitContext, sizeof(switchSubmitContext),
+-                    "FB RDRAM frame=%" PRIu64 " pair=%u calls=[%u,%u) sliceCalls=%u indices=%u color=%ux%u depth=%u ops=%u/%u",
+-                    workload.submissionFrame, framebufferPairCursor, minGameCall, maxGameCall,
++                    "FB RDRAM %s frame=%" PRIu64 " pair=%u calls=[%u,%u) sliceCalls=%u indices=%u color=%ux%u depth=%u ops=%u/%u tz=%u/%u/%u",
++                    switchSubmitPhase, workload.submissionFrame, framebufferPairCursor, minGameCall, maxGameCall,
+                     switchSliceCalls, switchSliceIndices,
+                     (switchFirstPair != nullptr) ? uint32_t(switchFirstPair->colorImage.width) : 0U,
+                     (switchFirstPair != nullptr) ? uint32_t(std::max(switchFirstPair->drawColorRect.bottom(true), 0)) : 0U,
+-                    switchDepthActive ? 1U : 0U, switchStartOperations, switchEndOperations);
++                    switchDepthActive ? 1U : 0U, switchStartOperations, switchEndOperations,
++                    switchTestZAtStart ? 1U : 0U, switchTestZMarkers, switchTestZAtEnd ? 1U : 0U);
+                 ElapsedTimer switchFramebufferTimer;
+                 ext.framebufferGraphicsWorker->execute(switchSubmitContext);
+ #else
+@@ -1709,6 +1736,15 @@ namespace RT64 {
+                 if (switchCallRanges.empty()) {
+                     switchCallRanges.emplace_back(0, 0);
+                 }
++                else {
++                    // Keep the final render-to-native compute/copy operations
++                    // out of the last draw command buffer. Besides reducing
++                    // command-buffer complexity on NVK, a timeout now reports
++                    // an unambiguous copyback phase instead of blaming the
++                    // final handful of draw calls.
++                    const uint32_t terminalCall = uint32_t(switchPairCalls.size());
++                    switchCallRanges.emplace_back(terminalCall, terminalCall);
++                }
+ 
+                 for (uint32_t rangeIndex = 0; rangeIndex < switchCallRanges.size(); rangeIndex++) {
+                     const bool firstPairChunk = (rangeIndex == 0);
+diff --git a/src/render/rt64_framebuffer_renderer.cpp b/src/render/rt64_framebuffer_renderer.cpp
+index 5abd535..76802e5 100644
+--- a/src/render/rt64_framebuffer_renderer.cpp
++++ b/src/render/rt64_framebuffer_renderer.cpp
+@@ -1450,6 +1450,7 @@ namespace RT64 {
+         uint32_t vertexTestZFaceIndicesStart = 0;
+         int32_t vertexTestZCallIndex = -1;
+         bool skippedVertexTestZActive = false;
++        uint32_t skippedVertexTestZVertexIndex = 0;
+         RenderViewport viewportClip;
+         for (uint32_t pr = 0; (pr < fbPair.projectionCount) && (globalCallIndex < p.maxGameCall); pr++) {
+             const Projection &proj = fbPair.projections[pr];
+@@ -1512,6 +1513,7 @@ namespace RT64 {
+                 if (globalCallIndex < p.minGameCall) {
+                     if (call.callDesc.extendedType == DrawExtendedType::VertexTestZ) {
+                         skippedVertexTestZActive = true;
++                        skippedVertexTestZVertexIndex = call.callDesc.extendedData.vertexTestZ.vertexIndex;
+                     }
+                     else if (call.callDesc.extendedType == DrawExtendedType::EndVertexTestZ) {
+                         skippedVertexTestZActive = false;
+@@ -1526,6 +1528,37 @@ namespace RT64 {
+                     continue;
+                 }
+ 
++                // A Switch framebuffer slice may begin in the middle of a
++                // VertexTestZ range. Recreate the compute prepass for the part
++                // contained in this slice; merely carrying the destination
++                // index offset would make the continuation read stale indices
++                // from testZIndexBuffer.
++                const bool indexedProjection = (proj.type == Projection::Type::Perspective) ||
++                    (proj.type == Projection::Type::Orthographic);
++                const bool recreateSkippedVertexTestZ = skippedVertexTestZActive && indexedProjection &&
++                    (vertexTestZCallIndex < 0) &&
++                    (call.callDesc.extendedType == DrawExtendedType::None);
++                if (recreateSkippedVertexTestZ) {
++                    interop::RenderIndices syntheticRenderIndices{};
++                    syntheticRenderIndices.instanceIndex = call.callDesc.callIndex;
++                    syntheticRenderIndices.faceIndicesStart = call.meshDesc.faceIndicesStart;
++                    syntheticRenderIndices.rdpTileIndex = call.callDesc.tileIndex;
++                    syntheticRenderIndices.rdpTileCount = call.callDesc.tileCount;
++                    syntheticRenderIndices.highlightColor = 0;
++                    renderIndicesVector.push_back(syntheticRenderIndices);
++
++                    InstanceDrawCall syntheticVertexTestZ;
++                    syntheticVertexTestZ.type = InstanceDrawCall::Type::VertexTestZ;
++                    syntheticVertexTestZ.vertexTestZ.vertexIndex = skippedVertexTestZVertexIndex;
++                    syntheticVertexTestZ.vertexTestZ.resolutionScale = p.resolutionScale;
++                    syntheticVertexTestZ.vertexTestZ.srcIndexStart = call.meshDesc.faceIndicesStart;
++                    syntheticVertexTestZ.vertexTestZ.dstIndexStart = vertexTestZFaceIndicesStart;
++                    syntheticVertexTestZ.vertexTestZ.indexCount = 0;
++                    vertexTestZCallIndex = int32_t(instanceDrawCallVector.size());
++                    rasterScene.instanceIndices.push_back(uint32_t(vertexTestZCallIndex));
++                    instanceDrawCallVector.push_back(syntheticVertexTestZ);
++                }
++
+                 renderIndices.instanceIndex = call.callDesc.callIndex;
+                 renderIndices.faceIndicesStart = call.meshDesc.faceIndicesStart;
+                 renderIndices.rdpTileIndex = call.callDesc.tileIndex;
+@@ -1577,10 +1610,13 @@ namespace RT64 {
+                         instanceDrawCall.vertexTestZ.dstIndexStart = vertexTestZFaceIndicesStart;
+                         instanceDrawCall.vertexTestZ.indexCount = 0;
+                         vertexTestZCallIndex = int32_t(instanceDrawCallVector.size());
++                        skippedVertexTestZActive = true;
++                        skippedVertexTestZVertexIndex = call.callDesc.extendedData.vertexTestZ.vertexIndex;
+                         break;
+                     case DrawExtendedType::EndVertexTestZ:
+                         instanceDrawCall.type = InstanceDrawCall::Type::Unknown;
+                         vertexTestZCallIndex = -1;
++                        skippedVertexTestZActive = false;
+                         break;
+                     default:
+                         assert(false && "Unknown extended type.");
+diff --git a/src/shaders/RSPVertexTestZCS.hlsl b/src/shaders/RSPVertexTestZCS.hlsl
+index 71fcaed..aa0b3dc 100644
+--- a/src/shaders/RSPVertexTestZCS.hlsl
++++ b/src/shaders/RSPVertexTestZCS.hlsl
+@@ -27,7 +27,25 @@ float sampleBackgroundDepth(int2 pixelPos, uint sampleIndex) {
+ void CSMain() {
+     float4 pixelPos = screenPos[gConstants.vertexIndex];
+     int2 pixelPosInt = pixelPos.xy * gConstants.resolutionScale;
+-    float pixelDepth = sampleBackgroundDepth(pixelPosInt, 0);
++    uint depthWidth = 0;
++    uint depthHeight = 0;
++#if defined(MULTISAMPLING)
++    uint depthSamples = 0;
++    gBackgroundDepth.GetDimensions(depthWidth, depthHeight, depthSamples);
++#else
++    gBackgroundDepth.GetDimensions(depthWidth, depthHeight);
++#endif
++
++    // Off-screen test vertices are legal for N64 display lists. Do not issue
++    // an out-of-range image load: desktop drivers commonly make it benign,
++    // while GM20B/NVK can wedge the queue on the invalid access.
++    float pixelDepth = 0.0f;
++    if ((pixelPosInt.x >= 0) && (pixelPosInt.y >= 0) &&
++        (pixelPosInt.x < int(depthWidth)) && (pixelPosInt.y < int(depthHeight)))
++    {
++        pixelDepth = sampleBackgroundDepth(pixelPosInt, 0);
++    }
++
+     if (pixelDepth <= pixelPos.z) {
+         for (uint i = 0; i < gConstants.indexCount; i++) {
+             dstFaceIndices[gConstants.dstIndexStart + i] = gConstants.vertexIndex;
+@@ -38,4 +56,4 @@ void CSMain() {
+             dstFaceIndices[gConstants.dstIndexStart + i] = srcFaceIndices[gConstants.srcIndexStart + i];
+         }
+     }
+-}
+\ No newline at end of file
++}

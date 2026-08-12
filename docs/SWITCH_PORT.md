@@ -75,7 +75,10 @@ full core stack without generated game code.
 - Load the NVK Vulkan entry points without desktop `dlopen` assumptions.
 - Audit RT64's required formats, descriptor limits, synchronization, compute shaders, specialization constants, and memory budget against NVK on Tegra X1.
 - Precompile HLSL to SPIR-V on the host and embed the results. Target-side shader compilation is not part of the NRO build.
-- Start with a 1280x720 output surface, 480p internal render targets, RGBA8, FIFO presentation, double buffering, no MSAA, no ray tracing, and conservative texture cache sizes.
+- Use a fixed 1280x720 output surface, native-resolution game render targets
+  scaled by the VI pass, RGBA8, FIFO presentation, double buffering, and no MSAA. Both
+  the game and RmlUi paths are single-sampled; the frontend no longer creates
+  an independent 8x-MSAA 720p target.
 
 Exit gate: launcher and an in-game scene render correctly for 30 minutes on both handheld and docked displays without validation errors, GPU faults, or unbounded memory growth.
 
@@ -93,14 +96,18 @@ Exit gate: the base game is completable with saves, menus, audio, rumble, and su
 ### M4 — Performance and release parity
 
 - Profile CPU, GPU, memory, SD I/O, and shader/pipeline creation on Erista and Mariko.
-- Add persistent pipeline caches and remove first-use stutter only after NVK
-  cross-process cache reuse is stable. Current builds use a transient in-memory
-  Vulkan pipeline cache: no pipeline data is loaded from or saved to SD.
-  Optimized raster shaders remain enabled, with one Switch compiler worker.
+- Add persistent pipeline caches only after NVK cross-process cache reuse is
+  stable. Current builds use a transient in-memory Vulkan pipeline cache: no
+  pipeline data is loaded from or saved to SD. Runtime-specialized raster
+  shaders are disabled on Switch because hardware traces measured 40 seconds
+  of pipeline creation in a 72-second run, including a 30.7-second compile.
+  Rendering uses the precompiled ubershader instead.
 - Offer 30 fps as the safe baseline; expose 60 fps only after frame pacing and thermal testing.
-- Test 720p handheld and 1080p docked scaling. Current Switch baseline renders
-  the game at 2x/480p and uses the VI pass for final scaling; native 1x currently
-  loses the NVK device on RT64's first workload.
+- Test 720p handheld and 1080p docked scaling. The Switch baseline renders the
+  game at native N64 resolution and uses the VI pass for the fixed 720p output.
+  The first workload is split into guarded setup/framebuffer submissions. A
+  `config/force-480p` marker restores the former 2x internal target for driver
+  comparison, but hardware traces show it saturating GM20B/NVK during gameplay.
 - Produce a release zip containing only the NRO, open-source assets, controller database, README, and licenses.
 - Add CI using the devkitPro image and a hardware smoke-test checklist for releases.
 
@@ -191,9 +198,57 @@ when the host backpressures or disconnects. Network writes are nonblocking and
 may drop messages instead. The helper writes each session to
 `build-switch-logs/full-YYYYMMDD-HHMMSS.log`. Checkpoints include millisecond
 timestamps, and RT64 emits a two-second performance sample containing effective
-FPS plus average frame, swapchain acquire, presentation, and GPU-wait times.
+FPS; average and maximum frame/GPU-wait times; sample count; swapchain extent;
+detected F3DEX/S2DEX microcodes; bounded unknown-opcode warnings; framebuffer
+batch timings; and periodic Vulkan memory budgets.
 On macOS the helper runs nxlink through a PTY, preventing its host-side 16 KiB
 buffer from hiding the final lines while a frozen target remains connected.
+
+Summarize a captured run, or export its performance windows for plotting, with:
+
+```sh
+./scripts/analyze-switch-log.py build-switch-logs/full-YYYYMMDD-HHMMSS.log
+./scripts/analyze-switch-log.py build-switch-logs/full-YYYYMMDD-HHMMSS.log \
+  --csv build-switch-logs/perf.csv
+```
+
+The summary reports FPS distribution, frame/GPU wait percentiles, pipeline
+creation cost, slow render-to-RDRAM submissions, peak device memory, detected
+microcodes, audio queue health, warnings, and the final fatal context. Audio
+health includes the number of empty queues and failed SDL submissions, current
+buffer size/device status, and the peak generated sample value. Older logs
+without the new maximum-time or audio-peak fields remain supported.
+
+The 2026-08-11 hardware trace confirmed the fixed 1280x720 FIFO swapchain and
+55.53 FPS median after startup, but timed out in the final slice of a
+VertexTestZ-heavy render-to-RDRAM pair. The follow-up renderer now recreates the
+VertexTestZ compute prepass when a bounded slice begins inside an active range,
+bounds-checks off-screen depth probes before loading the depth image, and emits
+the final framebuffer copy-back as a separate `FB RDRAM copyback` submission.
+Framebuffer contexts include `tz=start/markers/end`, so another timeout can be
+attributed to drawing or native copy-back without guessing.
+
+Unknown GBI diagnostics are deduplicated by command words. Each distinct
+S2DEX/F3DEX command logs its command address, `w0`, and `w1` once, with sparse
+power-of-two occurrence updates. The analyzer groups older repeated warnings,
+keeping the summary readable while preserving the words needed to identify the
+observed S2DEX2 opcode `0x64`.
+
+The later 2026-08-11 trace identified those `0x64` words as RT64 extended GBI
+commands: IDs 7 and 8 are viewport and scissor alignment. RT64 clears the
+extended dispatcher at a full sync, while the frame-merging patch previously
+re-enabled it only on multi-group frames. Standalone S2DEX/F3DEX tasks now get
+their own `gEXEnable` wrapper. A corrected hardware run should therefore have
+no unknown `opcode=0x64` warnings; their absence is the validation signal for
+the missing menu/sprite fix.
+
+The 2026-08-12 trace validated that dispatcher change—there were no unknown GBI
+warnings—and showed healthy continuous audio (`960` queues, no empty queues or
+SDL failures, active device, nonzero sample peaks). Gameplay nevertheless fell
+to a 3.64 FPS median at the 2x/480p internal target: workload GPU waits reached
+165 ms while presentation remained cheap, followed by `VK_ERROR_DEVICE_LOST`.
+The default was therefore changed to native-resolution scene rendering while
+retaining the 1280x720 swapchain and VI output upscale.
 
 The NRO does not create or write `startup.log`. Switch diagnostics are emitted
 only through the nonblocking nxlink checkpoint stream, so logging performs no
@@ -223,9 +278,12 @@ playable-performance target.
 
 ## Current gates before a playable build
 
-1. Boot the generated full target and validate the first real RT64 game frame.
+1. Hardware-validate the fixed 720p swapchain, single-sampled UI glyphs,
+   deduplicated controller hints, and ubershader-only renderer through every
+   frontend and in-game menu.
 2. Exercise audio, EEPROM saves, controller mappings, suspend/resume, and memory use in a long gameplay session.
-3. Validate zero-copy native-buffer registration through races, menus,
+3. Validate the reconstructed VertexTestZ continuation slices, isolated
+   render-to-RDRAM copy-back, and zero-copy native-buffer registration through races, menus,
    suspend/resume, and dock changes. Keep CPU-copy marker testing as recovery
    coverage.
 4. Runtime code mods remain intentionally unavailable until a safe Horizon W^X policy is implemented; embedded and data-only mods are the first playable target.

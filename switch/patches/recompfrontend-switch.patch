@@ -408,14 +408,15 @@ index a7954c7..9ff84f8 100644
  using namespace recompui;
  
  static RT64::UserConfiguration::Antialiasing device_max_msaa = RT64::UserConfiguration::Antialiasing::None;
-@@ -177,6 +181,30 @@ void set_application_user_config(RT64::Application* application, const ultramode
+@@ -177,6 +181,31 @@ void set_application_user_config(RT64::Application* application, const ultramode
      application->userConfig.refreshRateTarget = config.rr_manual_value;
      application->userConfig.internalColorFormat = to_rt64(config.hpfb_option);
      application->userConfig.displayBuffering = RT64::UserConfiguration::DisplayBuffering::Triple;
 +
 +#if defined(__SWITCH__)
-+    // Native 1x currently loses the NVK device on RT64's first real workload.
-+    // Keep the proven 480p target and leave final 720p scaling to the VI pass.
++    // Native resolution is the Switch baseline. The output remains 1280x720;
++    // RT64's VI pass performs the final upscale. A 480p internal target causes
++    // long GM20B/NVK workload waits and eventually loses the device.
 +    const char *nativeDiagnosticValue = SDL_getenv("SK2_SWITCH_DIAGNOSTIC_NATIVE_RESOLUTION");
 +    const bool nativeDiagnostic = nativeDiagnosticValue != nullptr &&
 +        std::strcmp(nativeDiagnosticValue, "1") == 0;
@@ -424,7 +425,7 @@ index a7954c7..9ff84f8 100644
 +        application->userConfig.resolutionMultiplier = 1.0;
 +        application->userConfig.downsampleMultiplier = 1;
 +    }
-+    else if (config.res_option == ultramodern::renderer::Resolution::Auto) {
++    else {
 +        application->userConfig.resolution = RT64::UserConfiguration::Resolution::Manual;
 +        application->userConfig.resolutionMultiplier = 2.0;
 +        application->userConfig.downsampleMultiplier = 1;
@@ -433,8 +434,8 @@ index a7954c7..9ff84f8 100644
 +    application->userConfig.internalColorFormat = RT64::UserConfiguration::InternalColorFormat::Standard;
 +    application->userConfig.displayBuffering = RT64::UserConfiguration::DisplayBuffering::Double;
 +    switch_log_checkpoint(nativeDiagnostic
-+        ? "renderer: Switch diagnostic native resolution, split submit"
-+        : "renderer: Switch baseline 480p, RGBA8, no MSAA, double-buffered", false);
++        ? "renderer: Switch native internal resolution, guarded first submit, 720p output"
++        : "renderer: Switch 480p recovery mode, RGBA8, no MSAA, double-buffered", false);
 +#endif
  }
  

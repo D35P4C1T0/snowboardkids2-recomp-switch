@@ -1,0 +1,25 @@
+diff --git a/recompui/src/renderer/ui_renderer.cpp b/recompui/src/renderer/ui_renderer.cpp
+index fea0190..4de7a32 100644
+--- a/recompui/src/renderer/ui_renderer.cpp
++++ b/recompui/src/renderer/ui_renderer.cpp
+@@ -165,11 +165,19 @@ public:
+         interface_ = interface;
+         device_ = device;
+ 
+-        // Enable 4X MSAA if supported by the device.
++        // Enable UI MSAA if supported by the device. The Switch game renderer
++        // deliberately runs without MSAA, so do not silently create a separate
++        // 8x multisampled 720p UI target here. Besides the large bandwidth cost,
++        // the extra NVK resolve path has caused missing glyphs on hardware.
+         const plume::RenderSampleCounts desired_sample_count = plume::RenderSampleCount::COUNT_8;
++#if !defined(__SWITCH__)
+         if (device_->getSampleCountsSupported(SwapChainFormat) & desired_sample_count) {
+             multisampling_.sampleCount = desired_sample_count;
+         }
++#else
++        (void)desired_sample_count;
++        dusk_switch_log("ui renderer: 1280x720, single-sampled");
++#endif
+ 
+         vertex_buffer_.flags_ = plume::RenderBufferFlag::VERTEX;
+         index_buffer_.flags_ = plume::RenderBufferFlag::INDEX;

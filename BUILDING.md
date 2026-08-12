@@ -26,7 +26,7 @@ xcodebuild -downloadComponent MetalToolchain
 Along with the following dependencies:
 
 ```bash
-brew install cmake ninja sdl2 gtk+3 lld
+brew install cmake ninja sdl2 gtk+3 llvm lld
 ```
 
 ### Linux
@@ -137,3 +137,20 @@ retained under `build-switch-logs/`, so normal testing no longer requires
 copying a log from the SD card. The network writes are nonblocking: a lost or
 slow nxlink receiver drops messages instead of freezing a game thread. The NRO
 does not create or write `startup.log`; hardware diagnostics are nxlink-only.
+
+The full Switch build always presents at 1280x720. Game render targets default
+to native N64 resolution for GM20B/NVK stability and are scaled by RT64's VI
+pass. To compare the older 480p internal path, create the empty file
+`sdmc:/switch/snowboardkids2-recompiled/config/force-480p` before launch.
+
+After a run, generate a compact performance and failure summary with:
+
+```bash
+./scripts/analyze-switch-log.py build-switch-logs/full-YYYYMMDD-HHMMSS.log
+```
+
+Add `--csv build-switch-logs/perf.csv` to export the two-second performance
+windows for plotting or comparison between builds. Switch builds also report
+the first audio queue and periodic audio health (queue underruns, SDL failures,
+device status, buffered bytes, and sample peak), so a silent run can be
+distinguished from renderer starvation without enabling verbose SDL logging.

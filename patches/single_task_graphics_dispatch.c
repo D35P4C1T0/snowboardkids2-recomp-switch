@@ -190,8 +190,24 @@ RECOMP_PATCH void processDisplayFrameUpdate(void) {
                     mergedGfx = gfx;
                     gFrameBufferFlags[gCurrentDoubleBufferIndex] = 1;
                 } else {
+                    FrameCallbackMsg* msg = node->frameCallbackMsg;
+                    Gfx* enabledDL = (Gfx*) arenaAlloc16(3 * (s32) sizeof(Gfx));
+                    Gfx* enabledGfx = enabledDL;
+
+                    // RT64 disables its extended opcode at every full sync.
+                    // Single-group frames previously submitted the game's
+                    // wrapper directly, so the following viewport/scissor
+                    // alignment commands (opcode 0x64) were discarded under
+                    // S2DEX2. Re-enable the dispatcher for every standalone
+                    // graphics task, just as the merged path does above.
+                    gEXEnable(enabledGfx++);
+                    gSPDisplayList(enabledGfx++, msg->t.t.data_ptr);
+                    gSPEndDisplayList(enabledGfx++);
+                    msg->t.t.data_ptr = (u64*) enabledDL;
+                    msg->t.t.data_size = (u32) ((u8*) enabledGfx - (u8*) enabledDL);
+
                     gFrameBufferFlags[gCurrentDoubleBufferIndex] = 1;
-                    submitDisplayTask((OSMesg) node->frameCallbackMsg);
+                    submitDisplayTask((OSMesg) msg);
                 }
             }
             node = node->list3_next;
