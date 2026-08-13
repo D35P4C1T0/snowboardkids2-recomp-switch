@@ -96,12 +96,14 @@ Exit gate: the base game is completable with saves, menus, audio, rumble, and su
 ### M4 — Performance and release parity
 
 - Profile CPU, GPU, memory, SD I/O, and shader/pipeline creation on Erista and Mariko.
-- Add persistent pipeline caches only after NVK cross-process cache reuse is
-  stable. Current builds use a transient in-memory Vulkan pipeline cache: no
-  pipeline data is loaded from or saved to SD. Runtime-specialized raster
-  shaders are disabled on Switch because hardware traces measured 40 seconds
-  of pipeline creation in a 72-second run, including a 30.7-second compile.
-  Rendering uses the precompiled ubershader instead.
+- Persistent NVK pipeline data is loaded from SD at startup. A cold cache is
+  saved atomically only after all eight precompiled ubershader pipelines finish,
+  avoiding per-pipeline SD writes while compilation is active.
+  Runtime-specialized raster shaders compile serially on one low-priority,
+  large-stack worker while rendering falls back to the precompiled ubershader.
+  Hardware runs reached roughly 37--40 FPS after specialization. NVK currently
+  serializes a fixed 4,896-byte cache for this workload, so first-use specialized
+  pipeline compilation can still cause visible hitches after every launch.
 - Offer 30 fps as the safe baseline; expose 60 fps only after frame pacing and thermal testing.
 - Test 720p handheld and 1080p docked scaling. The Switch baseline renders the
   game at native N64 resolution and uses the VI pass for the fixed 720p output.
@@ -192,6 +194,14 @@ export SWITCH_IP=192.168.1.123
 ./scripts/switch-run.sh
 ```
 
+The equivalent explicit form is `./scripts/switch-run.sh 192.168.1.123 full`.
+
+To upload a specific diagnostic or candidate NRO without renaming it:
+
+```sh
+./scripts/switch-run.sh build-switch-full/candidate.nro 192.168.1.123
+```
+
 `nxlink -s` receives an explicit checkpoint stream; stdout/stderr are not
 redirected because libnx's blocking stdio socket can freeze a render thread
 when the host backpressures or disconnects. Network writes are nonblocking and
@@ -203,6 +213,16 @@ detected F3DEX/S2DEX microcodes; bounded unknown-opcode warnings; framebuffer
 batch timings; and periodic Vulkan memory budgets.
 On macOS the helper runs nxlink through a PTY, preventing its host-side 16 KiB
 buffer from hiding the final lines while a frozen target remains connected.
+
+While the game is running, fetch the composed 1280x720 frame (including UI)
+for visual-regression or texture-glitch inspection with:
+
+```sh
+./scripts/switch-screenshot.sh 192.168.1.123 build-switch-logs/capture.jpg
+```
+
+The target serves a synchronized renderer readback on TCP port 47474. Omitting
+the output argument creates a timestamped JPEG under `build-switch-logs/`.
 
 Summarize a captured run, or export its performance windows for plotting, with:
 
@@ -224,9 +244,15 @@ The 2026-08-11 hardware trace confirmed the fixed 1280x720 FIFO swapchain and
 VertexTestZ-heavy render-to-RDRAM pair. The follow-up renderer now recreates the
 VertexTestZ compute prepass when a bounded slice begins inside an active range,
 bounds-checks off-screen depth probes before loading the depth image, and emits
-the final framebuffer copy-back as a separate `FB RDRAM copyback` submission.
-Framebuffer contexts include `tz=start/markers/end`, so another timeout can be
-attributed to drawing or native copy-back without guessing.
+the final framebuffer copy-back separately from drawing. Color and depth now
+use distinct `FB RDRAM color copyback` and `FB RDRAM depth copyback`
+submissions when depth is active; color-only work keeps one submission. Switch
+copyback avoids the unstable framebuffer compute encoders: color uses direct
+image readback plus CPU RGBA16 packing, while depth is first encoded by the
+existing graphics shader into a single-sample RGBA8 target and then follows
+the same direct readback path.
+Framebuffer contexts include `tz=start/markers/end`, so another timeout names
+the exact draw or native copy-back half that hung.
 
 Unknown GBI diagnostics are deduplicated by command words. Each distinct
 S2DEX/F3DEX command logs its command address, `w0`, and `w1` once, with sparse
@@ -282,10 +308,11 @@ playable-performance target.
    deduplicated controller hints, and ubershader-only renderer through every
    frontend and in-game menu.
 2. Exercise audio, EEPROM saves, controller mappings, suspend/resume, and memory use in a long gameplay session.
-3. Validate the reconstructed VertexTestZ continuation slices, isolated
-   render-to-RDRAM copy-back, and zero-copy native-buffer registration through races, menus,
-   suspend/resume, and dock changes. Keep CPU-copy marker testing as recovery
-   coverage.
+3. Validate the reconstructed VertexTestZ continuation slices, split color/depth
+   render-to-RDRAM copy-back, and zero-copy native-buffer registration through
+   races, menus, suspend/resume, and dock changes. Keep CPU-copy marker testing
+   as recovery coverage. Compare gameplay against the measured 39.17 FPS median
+   baseline and require zero audio empty queues or submission failures.
 4. Runtime code mods remain intentionally unavailable until a safe Horizon W^X policy is implemented; embedded and data-only mods are the first playable target.
 
 These are engineering gates, not reasons to fork the game logic. The recompiled ARM64 code, SDL audio/input model, assets, configuration system, and most UI/game features remain reusable.

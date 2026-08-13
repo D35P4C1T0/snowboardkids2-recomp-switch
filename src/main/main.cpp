@@ -11,6 +11,8 @@
 #include <atomic>
 #include <cerrno>
 #include <mutex>
+#include <thread>
+#include <condition_variable>
 
 #if !defined(__SWITCH__)
 #include "nfd.h"
@@ -72,16 +74,164 @@
 #endif
 
 #include "../../lib/rt64/src/contrib/stb/stb_image.h"
+#if defined(__SWITCH__)
+#include "../../lib/RecompFrontend/recompui/lib/lunasvg/plutovg/include/plutovg.h"
+#endif
 
 const std::string version_string = sk2_game_version;
 constexpr int sk2_max_players = 4;
 
 #if defined(__SWITCH__)
+void switch_log_checkpoint(const char* message, bool reset);
+
 namespace {
 std::mutex switch_log_mutex;
 u64 switch_log_start_tick = 0;
 int switch_nxlink_socket = -1;
 bool switch_socket_initialized = false;
+constexpr uint16_t switch_screenshot_port = 47474;
+std::atomic<bool> switch_screenshot_running{false};
+std::thread switch_screenshot_thread;
+std::atomic<bool> switch_screenshot_requested{false};
+std::mutex switch_screenshot_mutex;
+std::condition_variable switch_screenshot_condition;
+std::vector<uint8_t> switch_screenshot_pixels;
+uint32_t switch_screenshot_width = 0;
+uint32_t switch_screenshot_height = 0;
+bool switch_screenshot_ready = false;
+
+bool switch_send_all(int socket_fd, const void *data, size_t size) {
+    const uint8_t *bytes = static_cast<const uint8_t *>(data);
+    size_t sent_total = 0;
+    while (sent_total < size) {
+        const ssize_t sent = send(socket_fd, bytes + sent_total, size - sent_total, MSG_NOSIGNAL);
+        if (sent > 0) {
+            sent_total += size_t(sent);
+        }
+        else if ((sent < 0) && (errno == EINTR)) {
+            continue;
+        }
+        else {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+void switch_screenshot_server() {
+    const int listener = socket(AF_INET, SOCK_STREAM, 0);
+    if (listener < 0) {
+        switch_log_checkpoint("screenshot: socket creation failed", false);
+        return;
+    }
+
+    int reuse_address = 1;
+    setsockopt(listener, SOL_SOCKET, SO_REUSEADDR, &reuse_address, sizeof(reuse_address));
+    sockaddr_in address{};
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = htonl(INADDR_ANY);
+    address.sin_port = htons(switch_screenshot_port);
+    if ((bind(listener, reinterpret_cast<const sockaddr *>(&address), sizeof(address)) < 0) ||
+        (listen(listener, 1) < 0))
+    {
+        close(listener);
+        switch_log_checkpoint("screenshot: HTTP listener setup failed", false);
+        return;
+    }
+
+    switch_log_checkpoint("screenshot: HTTP capture ready on port 47474", false);
+    while (switch_screenshot_running.load(std::memory_order_relaxed)) {
+        fd_set read_fds;
+        FD_ZERO(&read_fds);
+        FD_SET(listener, &read_fds);
+        timeval timeout{ 0, 250'000 };
+        const int selected = select(listener + 1, &read_fds, nullptr, nullptr, &timeout);
+        if ((selected <= 0) || !FD_ISSET(listener, &read_fds)) {
+            continue;
+        }
+
+        const int client = accept(listener, nullptr, nullptr);
+        if (client < 0) {
+            continue;
+        }
+
+        timeval io_timeout{ 2, 0 };
+        setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, &io_timeout, sizeof(io_timeout));
+        setsockopt(client, SOL_SOCKET, SO_SNDTIMEO, &io_timeout, sizeof(io_timeout));
+        char request[1024]{};
+        const ssize_t request_size = recv(client, request, sizeof(request) - 1, 0);
+        const bool screenshot_request = (request_size > 0) &&
+            (std::strncmp(request, "GET /screenshot.jpg ", 20) == 0);
+        if (!screenshot_request) {
+            static constexpr char response[] =
+                "HTTP/1.1 404 Not Found\r\nConnection: close\r\nContent-Length: 0\r\n\r\n";
+            switch_send_all(client, response, sizeof(response) - 1);
+            close(client);
+            continue;
+        }
+
+        std::vector<uint8_t> pixels;
+        uint32_t width = 0;
+        uint32_t height = 0;
+        {
+            std::unique_lock screenshot_lock(switch_screenshot_mutex);
+            switch_screenshot_ready = false;
+            switch_screenshot_requested.store(true, std::memory_order_release);
+            const bool captured = switch_screenshot_condition.wait_for(screenshot_lock,
+                std::chrono::seconds(2), []() { return switch_screenshot_ready; });
+            switch_screenshot_requested.store(false, std::memory_order_release);
+            if (captured) {
+                pixels = switch_screenshot_pixels;
+                width = switch_screenshot_width;
+                height = switch_screenshot_height;
+            }
+        }
+
+        std::vector<uint8_t> jpeg_buffer;
+        bool encoded = false;
+        if (!pixels.empty() && (width > 0) && (height > 0)) {
+            plutovg_surface_t *surface = plutovg_surface_create_for_data(
+                pixels.data(), int(width), int(height), int(width * 4));
+            if (surface != nullptr) {
+                auto write_jpeg = [](void *closure, void *data, int size) {
+                    auto *bytes = static_cast<std::vector<uint8_t> *>(closure);
+                    const uint8_t *source = static_cast<const uint8_t *>(data);
+                    bytes->insert(bytes->end(), source, source + size);
+                };
+                encoded = plutovg_surface_write_to_jpg_stream(surface, write_jpeg,
+                    &jpeg_buffer, 90);
+                plutovg_surface_destroy(surface);
+            }
+        }
+
+        if (encoded && !jpeg_buffer.empty()) {
+            char header[256]{};
+            const int header_size = std::snprintf(header, sizeof(header),
+                "HTTP/1.1 200 OK\r\nContent-Type: image/jpeg\r\nContent-Length: %zu\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
+                jpeg_buffer.size());
+            switch_send_all(client, header, size_t(header_size));
+            switch_send_all(client, jpeg_buffer.data(), jpeg_buffer.size());
+            char message[128]{};
+            std::snprintf(message, sizeof(message), "screenshot: served JPEG %ux%u bytes=%zu",
+                width, height, jpeg_buffer.size());
+            switch_log_checkpoint(message, false);
+        }
+        else {
+            static constexpr char body[] = "renderer capture timed out\n";
+            char header[192]{};
+            const int header_size = std::snprintf(header, sizeof(header),
+                "HTTP/1.1 503 Service Unavailable\r\nContent-Type: text/plain\r\nContent-Length: %d\r\nConnection: close\r\n\r\n",
+                int(sizeof(body) - 1));
+            switch_send_all(client, header, size_t(header_size));
+            switch_send_all(client, body, sizeof(body) - 1);
+        }
+
+        close(client);
+    }
+
+    close(listener);
+}
 
 void switch_initialize_logging() {
     const std::lock_guard<std::mutex> lock(switch_log_mutex);
@@ -105,11 +255,19 @@ void switch_initialize_logging() {
             if (socket_flags >= 0) {
                 fcntl(switch_nxlink_socket, F_SETFL, socket_flags | O_NONBLOCK);
             }
+
+            switch_screenshot_running.store(true, std::memory_order_relaxed);
+            switch_screenshot_thread = std::thread(switch_screenshot_server);
         }
     }
 }
 
 void switch_shutdown_logging() {
+    switch_screenshot_running.store(false, std::memory_order_relaxed);
+    if (switch_screenshot_thread.joinable()) {
+        switch_screenshot_thread.join();
+    }
+
     {
         const std::lock_guard<std::mutex> lock(switch_log_mutex);
         if (switch_nxlink_socket >= 0) {
@@ -123,6 +281,30 @@ void switch_shutdown_logging() {
         switch_socket_initialized = false;
     }
 }
+}
+
+extern "C" bool switch_screenshot_capture_requested() {
+    return switch_screenshot_requested.load(std::memory_order_acquire);
+}
+
+extern "C" void switch_screenshot_capture_complete(const void *pixels, size_t size,
+    uint32_t width, uint32_t height)
+{
+    if ((pixels == nullptr) || (size != size_t(width) * height * 4)) {
+        return;
+    }
+
+    {
+        const std::lock_guard screenshot_lock(switch_screenshot_mutex);
+        const uint8_t *source = static_cast<const uint8_t *>(pixels);
+        switch_screenshot_pixels.assign(source, source + size);
+        switch_screenshot_width = width;
+        switch_screenshot_height = height;
+        switch_screenshot_ready = true;
+        switch_screenshot_requested.store(false, std::memory_order_release);
+    }
+
+    switch_screenshot_condition.notify_all();
 }
 
 void switch_log_checkpoint(const char* message, bool reset = false) {
@@ -860,6 +1042,7 @@ int main(int argc, char** argv) {
     std::filesystem::create_directories(switch_root / "mods", switch_path_error);
     std::filesystem::create_directories(switch_root / "saves", switch_path_error);
     std::filesystem::create_directories(switch_root / "config", switch_path_error);
+    std::filesystem::create_directories(switch_root / "cache", switch_path_error);
     switch_initialize_logging();
     switch_log_checkpoint("startup: entered main", true);
     switch_log_checkpoint("startup: nonblocking nxlink checkpoints enabled");

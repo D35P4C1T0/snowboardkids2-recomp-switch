@@ -1,0 +1,162 @@
+diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
+index bce7fed..31c23ac 100644
+--- a/plume_vulkan.cpp
++++ b/plume_vulkan.cpp
+@@ -98,6 +98,57 @@ namespace plume {
+         std::snprintf(SwitchSubmitContext, sizeof(SwitchSubmitContext), "%s",
+             context != nullptr ? context : "unlabeled");
+     }
++
++    static void recordSwitchSubmit(VulkanQueue::SubmitRecord &record, uint32_t sequence, const char *context) {
++        record.sequence = sequence;
++        std::snprintf(record.context, sizeof(record.context), "%s", context);
++    }
++
++    static void formatSwitchSubmitHistory(const std::array<VulkanQueue::SubmitRecord, 4> &history,
++        uint32_t cursor, char *output, size_t outputSize)
++    {
++        size_t outputLength = 0;
++        output[0] = '\0';
++        const uint32_t available = std::min(cursor, uint32_t(history.size()));
++        for (uint32_t offset = 0; offset < available; offset++) {
++            const uint32_t index = (cursor - 1U - offset) % uint32_t(history.size());
++            const VulkanQueue::SubmitRecord &record = history[index];
++            const int written = std::snprintf(output + outputLength, outputSize - outputLength,
++                "%s#%u '%s'", (offset == 0) ? "" : " | ", record.sequence, record.context);
++            if (written < 0) {
++                break;
++            }
++
++            const size_t writtenSize = size_t(written);
++            if (writtenSize >= (outputSize - outputLength)) {
++                outputLength = outputSize - 1;
++                break;
++            }
++
++            outputLength += writtenSize;
++        }
++    }
++
++    static void logSwitchSubmitHistory(VulkanQueue *queue) {
++        char submittedMessage[1200]{};
++        char completedMessage[1200]{};
++        {
++            const std::scoped_lock queueLock(*queue->mutex);
++            char submittedHistory[1100]{};
++            char completedHistory[1100]{};
++            formatSwitchSubmitHistory(queue->submittedHistory, queue->submittedHistoryCursor,
++                submittedHistory, sizeof(submittedHistory));
++            formatSwitchSubmitHistory(queue->completedHistory, queue->completedHistoryCursor,
++                completedHistory, sizeof(completedHistory));
++            std::snprintf(submittedMessage, sizeof(submittedMessage),
++                "fatal-history: last submitted %s", submittedHistory);
++            std::snprintf(completedMessage, sizeof(completedMessage),
++                "fatal-history: last completed %s", completedHistory);
++        }
++
++        switch_log_checkpoint(submittedMessage, false);
++        switch_log_checkpoint(completedMessage, false);
++    }
+ #endif
+ 
+     // Backend constants.
+@@ -3861,6 +3912,20 @@ namespace plume {
+         {
+             const std::scoped_lock queueLock(*queue->mutex);
+             res = vkQueueSubmit(queue->vk, 1, &submitInfo, submitFence);
++#if defined(__SWITCH__)
++            if (res == VK_SUCCESS) {
++                VulkanQueue::SubmitRecord &record =
++                    queue->submittedHistory[queue->submittedHistoryCursor % queue->submittedHistory.size()];
++                recordSwitchSubmit(record, submitSequence, SwitchSubmitContext);
++                queue->submittedHistoryCursor++;
++                if (signalFence != nullptr) {
++                    VulkanCommandFence *interfaceFence = static_cast<VulkanCommandFence *>(signalFence);
++                    interfaceFence->switchSubmitSequence = submitSequence;
++                    std::snprintf(interfaceFence->switchSubmitContext,
++                        sizeof(interfaceFence->switchSubmitContext), "%s", SwitchSubmitContext);
++                }
++            }
++#endif
+         }
+ 
+ #if defined(__SWITCH__)
+@@ -3907,6 +3972,7 @@ namespace plume {
+                 waitSemaphoreCount, signalSemaphoreCount, SwitchSubmitContext,
+                 int(res), unsigned(res));
+             switch_log_checkpoint(message, false);
++            logSwitchSubmitHistory(queue);
+             std::_Exit(EXIT_FAILURE);
+ #endif
+             fprintf(stderr, "vkQueueSubmit failed with error code 0x%X.\n", res);
+@@ -3931,15 +3997,27 @@ namespace plume {
+ #if defined(__SWITCH__)
+             char message[384]{};
+             std::snprintf(message, sizeof(message),
+-                "fatal: Plume fence wait context='%s' failed: %d (0x%08X)",
+-                SwitchSubmitContext, int(res), unsigned(res));
++                "fatal: Plume fence wait submit=#%u context='%s' failed: %d (0x%08X)",
++                interfaceFence->switchSubmitSequence, interfaceFence->switchSubmitContext,
++                int(res), unsigned(res));
+             switch_log_checkpoint(message, false);
++            logSwitchSubmitHistory(queue);
+             std::_Exit(EXIT_FAILURE);
+ #endif
+             fprintf(stderr, "vkWaitForFences failed with error code 0x%X.\n", res);
+             return;
+         }
+ 
++#if defined(__SWITCH__)
++        {
++            const std::scoped_lock queueLock(*queue->mutex);
++            VulkanQueue::SubmitRecord &record =
++                queue->completedHistory[queue->completedHistoryCursor % queue->completedHistory.size()];
++            recordSwitchSubmit(record, interfaceFence->switchSubmitSequence,
++                interfaceFence->switchSubmitContext);
++            queue->completedHistoryCursor++;
++        }
++#endif
+         vkResetFences(device->vk, 1, &interfaceFence->vk);
+     }
+ 
+diff --git a/plume_vulkan.h b/plume_vulkan.h
+index 3f397bc..489443e 100644
+--- a/plume_vulkan.h
++++ b/plume_vulkan.h
+@@ -9,6 +9,7 @@
+ 
+ #include "plume_render_interface.h"
+ 
++#include <array>
+ #include <atomic>
+ #include <mutex>
+ #include <set>
+@@ -351,6 +352,10 @@ namespace plume {
+     struct VulkanCommandFence : RenderCommandFence {
+         VkFence vk = VK_NULL_HANDLE;
+         VulkanDevice *device = nullptr;
++#if defined(__SWITCH__)
++        uint32_t switchSubmitSequence = 0;
++        char switchSubmitContext[256] = "unlabeled";
++#endif
+ 
+         VulkanCommandFence(VulkanDevice *device);
+         ~VulkanCommandFence() override;
+@@ -394,6 +399,17 @@ namespace plume {
+         VkQueue vk;
+         std::unique_ptr<std::mutex> mutex;
+         std::unordered_set<const VulkanCommandQueue *> virtualQueues;
++#if defined(__SWITCH__)
++        struct SubmitRecord {
++            uint32_t sequence = 0;
++            char context[256] = "unlabeled";
++        };
++
++        std::array<SubmitRecord, 4> submittedHistory{};
++        std::array<SubmitRecord, 4> completedHistory{};
++        uint32_t submittedHistoryCursor = 0;
++        uint32_t completedHistoryCursor = 0;
++#endif
+     };
+ 
+     struct VulkanQueueFamily {

@@ -1,0 +1,187 @@
+diff --git a/src/hle/rt64_state.cpp b/src/hle/rt64_state.cpp
+index 1d6afd9..37a8a31 100644
+--- a/src/hle/rt64_state.cpp
++++ b/src/hle/rt64_state.cpp
+@@ -1287,6 +1287,7 @@ namespace RT64 {
+             auto renderAndSynchronize = [&](uint32_t maxFramebufferPair, uint32_t minGameCall = 0, uint32_t maxGameCall = UINT_MAX,
+                 bool firstPairChunk = true, bool lastPairChunk = true) {
+ #if defined(__SWITCH__)
++                const bool switchCopybackOnly = lastPairChunk && (minGameCall == maxGameCall);
+                 bool switchDepthCopybackPending = false;
+                 thread_local std::vector<std::pair<uint32_t, uint32_t>> switchDepthCopybackSeeds;
+                 switchDepthCopybackSeeds.clear();
+@@ -1305,80 +1306,85 @@ namespace RT64 {
+ 
+                 checkRenderTargetSafety(!resizedTargets.empty());
+ 
+-                // Add all framebuffers for rendering.
+-                pairCursor = framebufferPairCursor;
+-                while (pairCursor < maxFramebufferPair) {
+-                    const FramebufferPair &fbPair = workload.fbPairs[pairCursor];
+-                    if (getTargetsFromPair(pairCursor)) {
+-                        RenderFramebufferStorage &fbStorage = renderFramebufferManager->get(fbKey, colorTarget, (depthTarget != nullptr) ? depthTarget : dummyDepthTarget.get());
+-                        FramebufferRenderer::DrawParams drawParams;
+-                        drawParams.worker = ext.framebufferGraphicsWorker;
+-                        drawParams.fbStorage = &fbStorage;
+-                        drawParams.curWorkload = &workload;
+-                        drawParams.fbPairIndex = pairCursor;
+-                        drawParams.fbWidth = fbPair.colorImage.width;
+-                        drawParams.fbHeight = colorHeight;
+-                        drawParams.targetWidth = fbPair.colorImage.width;
+-                        drawParams.targetHeight = colorHeight;
+-                        drawParams.rasterShaderCache = ext.rasterShaderCache;
+-                        drawParams.resolutionScale = resolutionScale;
+-                        drawParams.aspectRatioSource = 1.0f;
+-                        drawParams.aspectRatioTarget = 1.0f;
+-                        drawParams.extAspectPercentage = 0.0f;
+-                        drawParams.horizontalMisalignment = 0.0f;
+-                        drawParams.rtEnabled = false;
+-                        drawParams.submissionFrame = workload.submissionFrame;
+-                        drawParams.deltaTimeMs = 0.0f;
+-                        drawParams.ubershadersOnly = false;
+-                        drawParams.postBlendNoise = ext.emulatorConfig->dither.postBlendNoise;
+-                        drawParams.postBlendNoiseNegative = ext.emulatorConfig->dither.postBlendNoiseNegative;
+-                        drawParams.minGameCall = minGameCall;
+-                        drawParams.maxGameCall = maxGameCall;
+-                        framebufferRenderer->addFramebuffer(drawParams);
++#if defined(__SWITCH__)
++                if (!switchCopybackOnly)
++#endif
++                {
++                    // Add all framebuffers for rendering.
++                    pairCursor = framebufferPairCursor;
++                    while (pairCursor < maxFramebufferPair) {
++                        const FramebufferPair &fbPair = workload.fbPairs[pairCursor];
++                        if (getTargetsFromPair(pairCursor)) {
++                            RenderFramebufferStorage &fbStorage = renderFramebufferManager->get(fbKey, colorTarget, (depthTarget != nullptr) ? depthTarget : dummyDepthTarget.get());
++                            FramebufferRenderer::DrawParams drawParams;
++                            drawParams.worker = ext.framebufferGraphicsWorker;
++                            drawParams.fbStorage = &fbStorage;
++                            drawParams.curWorkload = &workload;
++                            drawParams.fbPairIndex = pairCursor;
++                            drawParams.fbWidth = fbPair.colorImage.width;
++                            drawParams.fbHeight = colorHeight;
++                            drawParams.targetWidth = fbPair.colorImage.width;
++                            drawParams.targetHeight = colorHeight;
++                            drawParams.rasterShaderCache = ext.rasterShaderCache;
++                            drawParams.resolutionScale = resolutionScale;
++                            drawParams.aspectRatioSource = 1.0f;
++                            drawParams.aspectRatioTarget = 1.0f;
++                            drawParams.extAspectPercentage = 0.0f;
++                            drawParams.horizontalMisalignment = 0.0f;
++                            drawParams.rtEnabled = false;
++                            drawParams.submissionFrame = workload.submissionFrame;
++                            drawParams.deltaTimeMs = 0.0f;
++                            drawParams.ubershadersOnly = false;
++                            drawParams.postBlendNoise = ext.emulatorConfig->dither.postBlendNoise;
++                            drawParams.postBlendNoiseNegative = ext.emulatorConfig->dither.postBlendNoiseNegative;
++                            drawParams.minGameCall = minGameCall;
++                            drawParams.maxGameCall = maxGameCall;
++                            framebufferRenderer->addFramebuffer(drawParams);
++                        }
++
++                        pairCursor++;
+                     }
+ 
+-                    pairCursor++;
+-                }
++                    // Synchronize all texture uploads before filling out the GPU tiles and update the texture cache on the framebuffer renderer.
++                    ext.textureCache->waitForGPUUploads();
++                    framebufferRenderer->updateTextureCache(ext.textureCache);
+ 
+-                // Synchronize all texture uploads before filling out the GPU tiles and update the texture cache on the framebuffer renderer.
+-                ext.textureCache->waitForGPUUploads();
+-                framebufferRenderer->updateTextureCache(ext.textureCache);
++                    thread_local std::vector<BufferUploader *> bufferUploaders;
++                    bufferUploaders.clear();
+ 
+-                thread_local std::vector<BufferUploader *> bufferUploaders;
+-                bufferUploaders.clear();
++                    // Create all GPU tile mappings and upload them.
++                    bool uploadGPUTiles = (gpuTileCursor < rdpTileCursor);
++                    if (uploadGPUTiles) {
++                        std::pair<size_t, size_t> gpuTileRange;
++                        gpuTileRange.first = gpuTileCursor;
++                        gpuTileRange.second = rdpTileCursor;
++                        framebufferRenderer->createGPUTiles(&workload.drawData.callTiles[gpuTileCursor], rdpTileCursor - gpuTileCursor,
++                            &workload.drawData.gpuTiles[gpuTileCursor], &framebufferManager, ext.textureCache, workload.submissionFrame);
+ 
+-                // Create all GPU tile mappings and upload them.
+-                bool uploadGPUTiles = (gpuTileCursor < rdpTileCursor);
+-                if (uploadGPUTiles) {
+-                    std::pair<size_t, size_t> gpuTileRange;
+-                    gpuTileRange.first = gpuTileCursor;
+-                    gpuTileRange.second = rdpTileCursor;
+-                    framebufferRenderer->createGPUTiles(&workload.drawData.callTiles[gpuTileCursor], rdpTileCursor - gpuTileCursor,
+-                        &workload.drawData.gpuTiles[gpuTileCursor], &framebufferManager, ext.textureCache, workload.submissionFrame);
++                        // Upload the GPU tiles.
++                        ext.tilesUploader->submit(ext.framebufferGraphicsWorker, {
++                            { workload.drawData.gpuTiles.data(), gpuTileRange, sizeof(interop::GPUTile), RenderBufferFlag::STORAGE, { }, &workload.drawBuffers.gpuTilesBuffer}
++                        });
+ 
+-                    // Upload the GPU tiles.
+-                    ext.tilesUploader->submit(ext.framebufferGraphicsWorker, {
+-                        { workload.drawData.gpuTiles.data(), gpuTileRange, sizeof(interop::GPUTile), RenderBufferFlag::STORAGE, { }, &workload.drawBuffers.gpuTilesBuffer}
+-                    });
++                        gpuTileCursor = rdpTileCursor;
+ 
+-                    gpuTileCursor = rdpTileCursor;
+-
+-                    // Queue tile uploader.
+-                    bufferUploaders.emplace_back(ext.tilesUploader);
+-                }
++                        // Queue tile uploader.
++                        bufferUploaders.emplace_back(ext.tilesUploader);
++                    }
+ 
+-                // Synchronize the draw data uploaders and the processors the first time.
+-                RSPProcessor *queuedProcessor = nullptr;
+-                if (!firstSynchronizationPerformed) {
+-                    bufferUploaders.emplace_back(ext.drawDataUploader);
+-                    bufferUploaders.emplace_back(ext.transformsUploader);
+-                    queuedProcessor = rspProcessor.get();
+-                    firstSynchronizationPerformed = true;
+-                }
++                    // Synchronize the draw data uploaders and the processors the first time.
++                    RSPProcessor *queuedProcessor = nullptr;
++                    if (!firstSynchronizationPerformed) {
++                        bufferUploaders.emplace_back(ext.drawDataUploader);
++                        bufferUploaders.emplace_back(ext.transformsUploader);
++                        queuedProcessor = rspProcessor.get();
++                        firstSynchronizationPerformed = true;
++                    }
+ 
+-                // Record all setup previous to drawing any of the recorded framebuffers.
+-                framebufferRenderer->endFramebuffers(ext.framebufferGraphicsWorker, &workload.drawBuffers, &workload.outputBuffers, false);
+-                framebufferRenderer->recordSetup(ext.framebufferGraphicsWorker, bufferUploaders, queuedProcessor, nullptr, &workload.outputBuffers, false);
++                    // Record all setup previous to drawing any of the recorded framebuffers.
++                    framebufferRenderer->endFramebuffers(ext.framebufferGraphicsWorker, &workload.drawBuffers, &workload.outputBuffers, false);
++                    framebufferRenderer->recordSetup(ext.framebufferGraphicsWorker, bufferUploaders, queuedProcessor, nullptr, &workload.outputBuffers, false);
++                }
+ 
+                 // Record the command list for the framebuffer pairs.
+                 pairCursor = framebufferPairCursor;
+@@ -1476,7 +1482,12 @@ namespace RT64 {
+                             }
+                         }
+ 
+-                        framebufferRenderer->recordFramebuffer(ext.framebufferGraphicsWorker, framebufferIndex++);
++#if defined(__SWITCH__)
++                        if (!switchCopybackOnly)
++#endif
++                        {
++                            framebufferRenderer->recordFramebuffer(ext.framebufferGraphicsWorker, framebufferIndex++);
++                        }
+ 
+                         if (!lastPairChunk && colorTarget->usesResolve()) {
+                             colorTarget->resolveTarget(ext.framebufferGraphicsWorker, ext.shaderLibrary);
+@@ -1613,8 +1624,7 @@ namespace RT64 {
+                         switch_log_checkpoint(switchSlowMessage, false);
+                     }
+                 };
+-                const bool switchTerminalCopyback = lastPairChunk && (minGameCall == maxGameCall);
+-                submitSwitchFramebuffer(switchTerminalCopyback ? "color copyback" : "draw", switchStartOperations,
++                submitSwitchFramebuffer(switchCopybackOnly ? "color copyback" : "draw", switchStartOperations,
+                     switchDepthCopybackPending ? 0U : switchEndOperations);
+ #else
+                 ext.framebufferGraphicsWorker->execute();

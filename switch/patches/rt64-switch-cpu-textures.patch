@@ -1,0 +1,333 @@
+diff --git a/src/render/rt64_texture_cache.cpp b/src/render/rt64_texture_cache.cpp
+index cb50796..c2cc64d 100644
+--- a/src/render/rt64_texture_cache.cpp
++++ b/src/render/rt64_texture_cache.cpp
+@@ -24,6 +24,7 @@
+ 
+ #if defined(__SWITCH__)
+ extern "C" void plume_switch_set_submit_context(const char *context);
++void switch_log_checkpoint(const char *message, bool flush);
+ #endif
+ 
+ namespace RT64 {
+@@ -33,6 +34,163 @@ namespace RT64 {
+     static const uint32_t TextureDataPitchAlignment = 256;
+     static const uint32_t TextureDataPlacementAlignment = 512;
+ 
++#if defined(__SWITCH__)
++    static uint8_t switchLoadTMEM(const TextureUpload &upload, uint32_t relativeAddress, uint32_t addressMask, uint32_t orAddress, bool oddRow, uint32_t textureStart, uint32_t rowSize) {
++        uint32_t finalAddress = textureStart + relativeAddress;
++        if (oddRow && (rowSize > 0)) {
++            const uint32_t rowStart = (relativeAddress / rowSize) * rowSize;
++            const uint32_t wordIndex = (relativeAddress - rowStart) / 4;
++            finalAddress = textureStart + rowStart + ((wordIndex ^ 1U) * 4) + (relativeAddress & 3U);
++        }
++
++        const uint32_t byteAddress = ((finalAddress & addressMask) | orAddress) & 0xFFFU;
++        return (byteAddress < upload.bytesTMEM.size()) ? upload.bytesTMEM[byteAddress] : 0;
++    }
++
++    static void switchStoreRGBA16(uint16_t value, uint8_t *destination) {
++        const uint8_t red = uint8_t((value >> 11) & 0x1F);
++        const uint8_t green = uint8_t((value >> 6) & 0x1F);
++        const uint8_t blue = uint8_t((value >> 1) & 0x1F);
++        destination[0] = uint8_t((red << 3) | (red >> 2));
++        destination[1] = uint8_t((green << 3) | (green >> 2));
++        destination[2] = uint8_t((blue << 3) | (blue >> 2));
++        destination[3] = (value & 1U) ? 0xFF : 0;
++    }
++
++    static void switchStoreIA16(uint16_t value, uint8_t *destination) {
++        const uint8_t intensity = uint8_t(value >> 8);
++        destination[0] = intensity;
++        destination[1] = intensity;
++        destination[2] = intensity;
++        destination[3] = uint8_t(value);
++    }
++
++    static std::vector<uint8_t> switchDecodeTMEM(const TextureUpload &upload) {
++        std::vector<uint8_t> decoded(size_t(upload.width) * upload.height * 4);
++        const uint32_t format = upload.loadTile.fmt;
++        const uint32_t size = upload.loadTile.siz;
++        const uint32_t textureStart = uint32_t(upload.loadTile.tmem) << 3;
++        const uint32_t rowSize = uint32_t(upload.loadTile.line) << 3;
++        const bool isRGBA32 = (format == G_IM_FMT_RGBA) && (size == G_IM_SIZ_32b);
++        const bool usesTLUT = upload.tlut > 0;
++        const uint32_t tmemShift = isRGBA32 ? 2U : size;
++        const uint32_t addressMask = (isRGBA32 || usesTLUT) ? 0x7FFU : 0xFFFU;
++
++        for (uint32_t y = 0; y < upload.height; y++) {
++            const bool oddRow = (y & 1U) != 0;
++            for (uint32_t x = 0; x < upload.width; x++) {
++                const bool oddColumn = (x & 1U) != 0;
++                const uint32_t pixelAddress = (y * rowSize) + ((x << tmemShift) >> 1);
++                const uint8_t value0 = switchLoadTMEM(upload, pixelAddress, addressMask, 0, oddRow, textureStart, rowSize);
++                const uint8_t value1 = switchLoadTMEM(upload, pixelAddress + 1, addressMask, 0, oddRow, textureStart, rowSize);
++                const uint8_t value4 = uint8_t((value0 >> (oddColumn ? 0 : 4)) & 0xF);
++                uint8_t *destination = &decoded[(size_t(y) * upload.width + x) * 4];
++
++                if (usesTLUT) {
++                    const uint32_t paletteAddress = (size == G_IM_SIZ_4b)
++                        ? 0x800U + (uint32_t(upload.loadTile.palette) << 7) + (uint32_t(value4) << 3)
++                        : 0x800U + (uint32_t(value0) << 3);
++                    const uint16_t paletteValue = uint16_t(switchLoadTMEM(upload, paletteAddress, 0xFFFU, 0, false, 0, rowSize) << 8)
++                        | switchLoadTMEM(upload, paletteAddress + 1, 0xFFFU, 0, false, 0, rowSize);
++                    if (upload.tlut == G_TT_RGBA16) {
++                        switchStoreRGBA16(paletteValue, destination);
++                    }
++                    else if (upload.tlut == G_TT_IA16) {
++                        switchStoreIA16(paletteValue, destination);
++                    }
++                    else {
++                        destination[0] = destination[1] = destination[2] = 0;
++                        destination[3] = 0xFF;
++                    }
++                    continue;
++                }
++
++                const uint32_t pixelAddress2 = isRGBA32 ? pixelAddress : pixelAddress + 2;
++                const uint32_t orAddress = isRGBA32 ? 0x800U : 0;
++                const uint8_t value2 = switchLoadTMEM(upload, pixelAddress2, addressMask, orAddress, oddRow, textureStart, rowSize);
++                const uint8_t value3 = switchLoadTMEM(upload, pixelAddress2 + 1, addressMask, orAddress, oddRow, textureStart, rowSize);
++
++                switch (size) {
++                case G_IM_SIZ_4b:
++                    if (format == G_IM_FMT_IA) {
++                        uint8_t intensity = value4 & 0xE;
++                        intensity = uint8_t((intensity << 4) | (intensity << 1) | (intensity >> 2));
++                        destination[0] = destination[1] = destination[2] = intensity;
++                        destination[3] = (value4 & 1U) ? 0xFF : 0;
++                    }
++                    else if ((format == G_IM_FMT_I) || (format == G_IM_FMT_RGBA)) {
++                        destination[0] = destination[1] = destination[2] = destination[3] = uint8_t(value4 * 0x11U);
++                    }
++                    else if (format == G_IM_FMT_CI) {
++                        destination[0] = destination[1] = destination[2] = destination[3] = uint8_t((uint32_t(upload.loadTile.palette) << 4) | value4);
++                    }
++                    else {
++                        destination[0] = destination[1] = destination[2] = 0;
++                        destination[3] = 0xFF;
++                    }
++                    break;
++                case G_IM_SIZ_8b:
++                    if (format == G_IM_FMT_IA) {
++                        const uint8_t intensity = uint8_t((value0 & 0xF0U) | (value0 >> 4));
++                        destination[0] = destination[1] = destination[2] = intensity;
++                        destination[3] = uint8_t((value0 << 4) | (value0 & 0xFU));
++                    }
++                    else if ((format == G_IM_FMT_I) || (format == G_IM_FMT_RGBA) || (format == G_IM_FMT_CI)) {
++                        destination[0] = destination[1] = destination[2] = destination[3] = value0;
++                    }
++                    else {
++                        destination[0] = destination[1] = destination[2] = 0;
++                        destination[3] = 0xFF;
++                    }
++                    break;
++                case G_IM_SIZ_16b:
++                    if (format == G_IM_FMT_RGBA) {
++                        switchStoreRGBA16(uint16_t(value0 << 8) | value1, destination);
++                    }
++                    else if (format == G_IM_FMT_IA) {
++                        switchStoreIA16(uint16_t(value0 << 8) | value1, destination);
++                    }
++                    else if ((format == G_IM_FMT_CI) || (format == G_IM_FMT_I)) {
++                        destination[0] = value0;
++                        destination[1] = value1;
++                        destination[2] = value0;
++                        destination[3] = value1;
++                    }
++                    else {
++                        destination[0] = destination[1] = destination[2] = 0;
++                        destination[3] = 0xFF;
++                    }
++                    break;
++                case G_IM_SIZ_32b:
++                    if (format == G_IM_FMT_RGBA) {
++                        destination[0] = value0;
++                        destination[1] = value1;
++                        destination[2] = value2;
++                        destination[3] = value3;
++                    }
++                    else if ((format == G_IM_FMT_CI) || (format == G_IM_FMT_IA) || (format == G_IM_FMT_I)) {
++                        destination[0] = oddColumn ? value0 : value2;
++                        destination[1] = oddColumn ? value1 : value3;
++                        destination[2] = oddColumn ? value0 : value2;
++                        destination[3] = oddColumn ? value1 : value3;
++                    }
++                    else {
++                        destination[0] = destination[1] = destination[2] = 0;
++                        destination[3] = 0xFF;
++                    }
++                    break;
++                default:
++                    destination[0] = destination[1] = destination[2] = 0;
++                    destination[3] = 0xFF;
++                    break;
++                }
++            }
++        }
++
++        return decoded;
++    }
++#endif
++
+     ReplacementMap::ReplacementMap() {
+         // Empty constructor.
+     }
+@@ -973,6 +1131,9 @@ namespace RT64 {
+         Thread::setCurrentThreadName("RT64 Texture");
+ 
+         uploadThreadRunning = true;
++#if defined(__SWITCH__)
++        switch_log_checkpoint("rt64 texture cache: Switch CPU TMEM decode enabled", false);
++#endif
+ 
+         std::vector<TextureUpload> queueCopy;
+         std::vector<TextureUpload> newQueue;
+@@ -984,6 +1145,9 @@ namespace RT64 {
+         std::vector<RenderTextureBarrier> beforeDecodeBarriers;
+         std::vector<RenderTextureBarrier> afterDecodeBarriers;
+         std::vector<uint8_t> replacementBytes;
++#if defined(__SWITCH__)
++        std::vector<std::unique_ptr<RenderBuffer>> decodedUploadResources;
++#endif
+ 
+         while (uploadThreadRunning) {
+             resolvedPathQueueCopy.clear();
+@@ -1054,14 +1218,24 @@ namespace RT64 {
+                     }
+                 }
+ 
++#if !defined(__SWITCH__)
+                 for (size_t i = descriptorSets.size(); i < queueSize; i++) {
+                     descriptorSets.emplace_back(std::make_unique<TextureDecodeDescriptorSet>(directWorker->device));
+                 }
++#endif
+ 
+                 // Upload all textures in the queue using the copy worker. It's worth noting the usage of a copy worker during copy texture operations is intentional
+                 // to avoid issues with drivers that are not very explicit about where they execute the copy texture operations and end up causing subtle synchronization
+                 // issues that can't be accounted for. Using dedicated copy queues for these operations has shown to eliminate these issues entirely.
+-                copyWorker->commandList->begin();
++#if defined(__SWITCH__)
++                // NVK exposes one reliable native queue. Record upload and
++                // decode into one command buffer instead of synchronizing two
++                // virtual workers with a binary semaphore.
++                RenderWorker *uploadWorker = directWorker;
++#else
++                RenderWorker *uploadWorker = copyWorker;
++#endif
++                uploadWorker->commandList->begin();
+                 textureMapAdditions.clear();
+ 
+                 for (size_t i = 0; i < queueSize; i++) {
+@@ -1074,7 +1248,7 @@ namespace RT64 {
+                     newTexture->format = RenderFormat::R8_UINT;
+                     newTexture->width = upload.width;
+                     newTexture->height = upload.height;
+-                    newTexture->tmem = copyWorker->device->createTexture(RenderTextureDesc::Texture1D(std::max(uint32_t(upload.bytesTMEM.size()), 1U), 1, newTexture->format));
++                    newTexture->tmem = uploadWorker->device->createTexture(RenderTextureDesc::Texture1D(std::max(uint32_t(upload.bytesTMEM.size()), 1U), 1, newTexture->format));
+                     newTexture->tmem->setName("Texture Cache TMEM #" + std::to_string(TMEMGlobalCounter++));
+                     newTexture->bytesTMEM = upload.bytesTMEM;
+                     newTexture->loadTile = upload.loadTile;
+@@ -1090,14 +1264,14 @@ namespace RT64 {
+                     beforeCopyBarriers.emplace_back(newTexture->tmem.get(), RenderTextureLayout::COPY_DEST);
+                 }
+ 
+-                copyWorker->commandList->barriers(RenderBarrierStage::COPY, beforeCopyBarriers);
++                uploadWorker->commandList->barriers(RenderBarrierStage::COPY, beforeCopyBarriers);
+ 
+                 for (size_t i = 0; i < queueSize; i++) {
+                     const TextureUpload &upload = queueCopy[i];
+                     const uint32_t byteCount = uint32_t(upload.bytesTMEM.size());
+                     Texture *dstTexture = textureMapAdditions[i].texture;
+                     if (byteCount > 0) {
+-                        copyWorker->commandList->copyTextureRegion(
++                        uploadWorker->commandList->copyTextureRegion(
+                             RenderTextureCopyLocation::Subresource(dstTexture->tmem.get()),
+                             RenderTextureCopyLocation::PlacedFootprint(tmemUploadResources[i].get(), RenderFormat::R8_UINT, byteCount, 1, 1, byteCount)
+                         );
+@@ -1107,6 +1281,15 @@ namespace RT64 {
+ 
+                     if (upload.decodeTMEM) {
+                         static uint32_t TextureGlobalCounter = 0;
++#if defined(__SWITCH__)
++                        std::vector<uint8_t> decodedBytes = switchDecodeTMEM(upload);
++                        decodedUploadResources.emplace_back();
++                        TextureCache::setRGBA32(dstTexture, uploadWorker->device, uploadWorker->commandList.get(),
++                            decodedBytes.data(), decodedBytes.size(), upload.width, upload.height, upload.width * 4,
++                            decodedUploadResources.back(), uploadResourcePool.get(), &uploadResourcePoolMutex);
++                        dstTexture->texture->setName("Texture Cache RGBA32 CPU #" + std::to_string(TextureGlobalCounter++));
++                        afterDecodeBarriers.emplace_back(dstTexture->texture.get(), RenderTextureLayout::SHADER_READ);
++#else
+                         TextureDecodeDescriptorSet *descSet = descriptorSets[i].get();
+                         dstTexture->format = RenderFormat::R8G8B8A8_UNORM;
+                         dstTexture->texture = directWorker->device->createTexture(RenderTextureDesc::Texture2D(upload.width, upload.height, 1, dstTexture->format, RenderTextureFlag::STORAGE | RenderTextureFlag::UNORDERED_ACCESS));
+@@ -1114,6 +1297,7 @@ namespace RT64 {
+                         descSet->setTexture(descSet->TMEM, dstTexture->tmem.get(), RenderTextureLayout::SHADER_READ);
+                         descSet->setTexture(descSet->RGBA32, dstTexture->texture.get(), RenderTextureLayout::GENERAL);
+                         beforeDecodeBarriers.emplace_back(dstTexture->texture.get(), RenderTextureLayout::GENERAL);
++#endif
+                     }
+ 
+                     addResolvedPaths(upload.hash, upload.width, upload.height, upload.tlut, upload.loadTile, upload.bytesTMEM, upload.decodeTMEM, resolvedPathQueueCopy);
+@@ -1165,7 +1349,7 @@ namespace RT64 {
+                         // Load the texture directly on this thread (operation was defined as Stall).
+                         else if (textureMap.replacementMap.fileSystems[resolvedPath.fileSystemIndex]->load(resolvedPath.relativePath, replacementBytes)) {
+                             replacementUploadResources.emplace_back();
+-                            replacementTexture = TextureCache::loadTextureFromBytes(copyWorker->device, copyWorker->commandList.get(), replacementBytes, replacementUploadResources.back());
++                            replacementTexture = TextureCache::loadTextureFromBytes(uploadWorker->device, uploadWorker->commandList.get(), replacementBytes, replacementUploadResources.back());
+                             textureMapMutex.lock();
+                             textureMap.replacementMap.addLoadedTexture(replacementTexture, resolvedPath.fileSystemIndex, resolvedPath.relativePath, true);
+                             textureMapMutex.unlock();
+@@ -1181,18 +1365,18 @@ namespace RT64 {
+                 }
+                 
+                 // Execute the copy worker and signal a semaphore so it synchronizes with the direct worker afterwards.
++#if !defined(__SWITCH__)
+                 const RenderCommandList *copyCommandList = copyWorker->commandList.get();
+                 RenderCommandSemaphore *syncSemaphore = copyToDirectSemaphore.get();
+                 copyWorker->commandList->end();
+-#if defined(__SWITCH__)
+-                plume_switch_set_submit_context("Texture Cache copy upload");
+-#endif
+                 copyWorker->commandQueue->executeCommandLists(&copyCommandList, 1, nullptr, 0, &syncSemaphore, 1);
+                 
+                 // Decode all textures using the direct worker and transition all textures to their final layouts.
+                 directWorker->commandList->begin();
++#endif
+                 directWorker->commandList->barriers(RenderBarrierStage::GRAPHICS_AND_COMPUTE, beforeDecodeBarriers);
+ 
++#if !defined(__SWITCH__)
+                 const ShaderRecord &textureDecode = shaderLibrary->textureDecode;
+                 bool pipelineSet = false;
+                 for (size_t i = 0; i < queueSize; i++) {
+@@ -1224,6 +1408,7 @@ namespace RT64 {
+                         afterDecodeBarriers.emplace_back(RenderTextureBarrier(textureMapAdditions[i].texture->texture.get(), RenderTextureLayout::SHADER_READ));
+                     }
+                 }
++#endif
+ 
+                 if (!afterDecodeBarriers.empty()) {
+                     directWorker->commandList->barriers(RenderBarrierStage::GRAPHICS_AND_COMPUTE, afterDecodeBarriers);
+@@ -1233,13 +1418,18 @@ namespace RT64 {
+                 const RenderCommandList *directCommandList = directWorker->commandList.get();
+                 directWorker->commandList->end();
+ #if defined(__SWITCH__)
+-                plume_switch_set_submit_context("Texture Cache compute decode");
+-#endif
++                plume_switch_set_submit_context("Texture Cache CPU decode upload");
++                directWorker->commandQueue->executeCommandLists(directCommandList, directWorker->commandFence.get());
++#else
+                 directWorker->commandQueue->executeCommandLists(&directCommandList, 1, &syncSemaphore, 1, nullptr, 0, directWorker->commandFence.get());
++#endif
+                 directWorker->wait();
+ 
+                 // Delete all the resources used during the upload of replacements.
+                 replacementUploadResources.clear();
++#if defined(__SWITCH__)
++                decodedUploadResources.clear();
++#endif
+                 
+                 // Add all the textures to the map once they're ready.
+                 {
+

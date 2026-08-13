@@ -69,6 +69,8 @@ def parse_log(path: Path) -> dict[str, object]:
     fatals: list[str] = []
     warnings: list[str] = []
     modes: list[str] = []
+    pipeline_cache_state: str | None = None
+    pipeline_cache_saved: str | None = None
     swapchains: list[str] = []
     ucodes: list[str] = []
     audio_first: dict[str, int] | None = None
@@ -123,8 +125,17 @@ def parse_log(path: Path) -> dict[str, object]:
         elif message.startswith("warning:"):
             warnings.append(message)
 
-        if message.startswith("startup: NVK") or "ubershaders only" in message:
+        if (
+            message.startswith("startup: NVK")
+            or "ubershaders only" in message
+            or message.startswith("rt64 texture cache:")
+        ):
             modes.append(message)
+        if message.startswith("plume: Vulkan pipeline cache"):
+            if "saved bytes=" in message:
+                pipeline_cache_saved = message
+            else:
+                pipeline_cache_state = message
         if message.startswith("plume swapchain:"):
             swapchains.append(message)
         if message.startswith("rt64 gbi:"):
@@ -150,6 +161,8 @@ def parse_log(path: Path) -> dict[str, object]:
         "fatals": fatals,
         "warnings": warnings,
         "modes": list(dict.fromkeys(modes)),
+        "pipeline_cache_state": pipeline_cache_state,
+        "pipeline_cache_saved": pipeline_cache_saved,
         "swapchains": list(dict.fromkeys(swapchains)),
         "ucodes": list(dict.fromkeys(ucodes)),
         "audio_first": audio_first,
@@ -168,6 +181,10 @@ def print_summary(path: Path, data: dict[str, object]) -> None:
     print(f"Duration: {data['duration_ms'] / 1000:.1f} s")
     for mode in data["modes"]:  # type: ignore[union-attr]
         print(f"Mode: {mode}")
+    if data["pipeline_cache_state"] is not None:
+        print(f"Pipeline cache: {data['pipeline_cache_state']}")
+    if data["pipeline_cache_saved"] is not None:
+        print(f"Pipeline cache: {data['pipeline_cache_saved']}")
     for swapchain in data["swapchains"]:  # type: ignore[union-attr]
         print(f"Output: {swapchain}")
     for ucode in data["ucodes"]:  # type: ignore[union-attr]

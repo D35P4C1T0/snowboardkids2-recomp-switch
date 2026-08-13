@@ -3,30 +3,57 @@ set -euo pipefail
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 REPO_ROOT=$(CDPATH= cd -- "${SCRIPT_DIR}/.." && pwd)
-SWITCH_ADDRESS=${1:-${SWITCH_IP:-}}
-MODE=${2:-full}
 
-if [[ -z "${SWITCH_ADDRESS}" ]]; then
-    echo "Usage: $0 <switch-ip> [full|core|bootstrap]" >&2
-    echo "Or export SWITCH_IP once and run: $0" >&2
-    exit 1
+usage() {
+    echo "Usage:" >&2
+    echo "  $0 <nro-path> <switch-ip>" >&2
+    echo "  $0 <switch-ip> [full|core|bootstrap]" >&2
+    echo "  SWITCH_IP=<switch-ip> $0 [nro-path]" >&2
+}
+
+NRO=""
+MODE=""
+SWITCH_ADDRESS=""
+
+if [[ "${1:-}" == *.nro ]]; then
+    NRO=$1
+    SWITCH_ADDRESS=${2:-${SWITCH_IP:-}}
+    MODE=$(basename "${NRO}" .nro)
+    if [[ $# -gt 2 ]]; then
+        usage
+        exit 1
+    fi
+else
+    SWITCH_ADDRESS=${1:-${SWITCH_IP:-}}
+    MODE=${2:-full}
+    if [[ $# -gt 2 ]]; then
+        usage
+        exit 1
+    fi
+
+    case "${MODE}" in
+        full)
+            NRO="${REPO_ROOT}/build-switch-full/snowboardkids2-recompiled.nro"
+            ;;
+        core)
+            NRO="${REPO_ROOT}/build-switch-core/snowboardkids2-core-probe.nro"
+            ;;
+        bootstrap)
+            NRO="${REPO_ROOT}/build-switch/snowboardkids2-recompiled.nro"
+            ;;
+        *)
+            echo "Unknown mode '${MODE}'. Expected full, core, or bootstrap." >&2
+            usage
+            exit 1
+            ;;
+    esac
 fi
 
-case "${MODE}" in
-    full)
-        NRO="${REPO_ROOT}/build-switch-full/snowboardkids2-recompiled.nro"
-        ;;
-    core)
-        NRO="${REPO_ROOT}/build-switch-core/snowboardkids2-core-probe.nro"
-        ;;
-    bootstrap)
-        NRO="${REPO_ROOT}/build-switch/snowboardkids2-recompiled.nro"
-        ;;
-    *)
-        echo "Unknown mode '${MODE}'. Expected full, core, or bootstrap." >&2
-        exit 1
-        ;;
-esac
+if [[ -z "${SWITCH_ADDRESS}" ]]; then
+    echo "Switch IP is required." >&2
+    usage
+    exit 1
+fi
 
 if ! command -v nxlink >/dev/null 2>&1; then
     echo "nxlink is missing. Add ${DEVKITPRO:-/opt/devkitpro}/tools/bin to PATH." >&2
@@ -35,15 +62,19 @@ fi
 
 if [[ ! -f "${NRO}" ]]; then
     echo "NRO not found: ${NRO}" >&2
-    echo "Build it first with: ./scripts/switch-build.sh ${MODE}" >&2
+    if [[ "${MODE}" == full || "${MODE}" == core || "${MODE}" == bootstrap ]]; then
+        echo "Build it first with: ./scripts/switch-build.sh ${MODE}" >&2
+    fi
     exit 1
 fi
 
 LOG_DIR="${REPO_ROOT}/build-switch-logs"
 mkdir -p "${LOG_DIR}"
-LOG_PATH="${LOG_DIR}/${MODE}-$(date '+%Y%m%d-%H%M%S').log"
+LOG_NAME=${MODE//[^A-Za-z0-9._-]/_}
+LOG_PATH="${LOG_DIR}/${LOG_NAME}-$(date '+%Y%m%d-%H%M%S').log"
 
 echo "Open hbmenu through Atmosphere title takeover (hold R while launching a game), then press Y for NetLoader."
+echo "Uploading ${NRO} to ${SWITCH_ADDRESS}"
 echo "Streaming log to ${LOG_PATH}"
 if [[ -x /usr/bin/script ]]; then
     # Give nxlink a PTY so its libc stream is line-buffered. Without this, a

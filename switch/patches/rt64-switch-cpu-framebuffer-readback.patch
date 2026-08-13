@@ -1,0 +1,456 @@
+diff --git a/src/hle/rt64_state.cpp b/src/hle/rt64_state.cpp
+--- a/src/hle/rt64_state.cpp
++++ b/src/hle/rt64_state.cpp
+@@ -1289,6 +1289,8 @@ namespace RT64 {
+ #if defined(__SWITCH__)
+                 const bool switchCopybackOnly = lastPairChunk && (minGameCall == maxGameCall);
+                 bool switchDepthCopybackPending = false;
++                bool switchColorCPUReadback = false;
++                bool switchDepthCPUReadback = false;
+                 thread_local std::vector<std::pair<uint32_t, uint32_t>> switchDepthCopybackSeeds;
+                 switchDepthCopybackSeeds.clear();
+ #endif
+@@ -1507,7 +1509,15 @@ namespace RT64 {
+                             }
+ 
+                             // Copy results from render targets back to RAM.
++#if defined(__SWITCH__)
++                            const uint32_t colorDitherSeed = ditherRandomSeed++;
++                            switchColorCPUReadback = colorFb->copyRenderTargetToNativeCPU(ext.framebufferGraphicsWorker, colorTarget, colorWriteWidth, colorRowStart, colorRowEnd, colorImg.fmt, colorDitherSeed, ext.shaderLibrary);
++                            if (!switchColorCPUReadback) {
++                                colorFb->copyRenderTargetToNative(ext.framebufferGraphicsWorker, colorTarget, colorWriteWidth, colorRowStart, colorRowEnd, colorImg.fmt, colorDitherSeed, ext.shaderLibrary);
++                            }
++#else
+                             colorFb->copyRenderTargetToNative(ext.framebufferGraphicsWorker, colorTarget, colorWriteWidth, colorRowStart, colorRowEnd, colorImg.fmt, ditherRandomSeed++, ext.shaderLibrary);
++#endif
+ 
+                             if (depthWriteWidth > 0) {
+ #if defined(__SWITCH__)
+@@ -1635,8 +1645,15 @@ namespace RT64 {
+                     pairCursor = framebufferPairCursor;
+                     while (pairCursor < maxFramebufferPair) {
+                         if (getFramebufferPairs(pairCursor)) {
++#if defined(__SWITCH__)
++                            if (switchColorCPUReadback) {
++                                colorFb->copyNativeToRAMCPU(&RDRAM[colorFb->addressStart], colorWriteWidth, colorRowStart, std::min(colorRowEnd, colorFb->height));
++                            }
++                            else {
++                                colorFb->copyNativeToRAM(&RDRAM[colorFb->addressStart], colorWriteWidth, colorRowStart, std::min(colorRowEnd, colorFb->height));
++                            }
++#else
+                             colorFb->copyNativeToRAM(&RDRAM[colorFb->addressStart], colorWriteWidth, colorRowStart, std::min(colorRowEnd, colorFb->height));
+-#if !defined(__SWITCH__)
+                             if (depthWriteWidth > 0) {
+                                 depthFb->copyNativeToRAM(&RDRAM[depthFb->addressStart], depthWriteWidth, depthRowStart, std::min(depthRowEnd, depthFb->height));
+                             }
+@@ -1652,17 +1669,39 @@ namespace RT64 {
+                         pairCursor = framebufferPairCursor;
+                         size_t depthCopybackIndex = 0;
+                         while (pairCursor < maxFramebufferPair) {
+-                            FramebufferPair &fbPair = workload.fbPairs[pairCursor];
+                             if (getTargetsFromPair(pairCursor) && (depthWriteWidth > 0)) {
+                                 assert(depthCopybackIndex < switchDepthCopybackSeeds.size());
+                                 assert(switchDepthCopybackSeeds[depthCopybackIndex].first == pairCursor);
+-                                depthFb->copyRenderTargetToNative(ext.framebufferGraphicsWorker, depthTarget, depthWriteWidth, depthRowStart, depthRowEnd,
+-                                    G_IM_FMT_DEPTH, switchDepthCopybackSeeds[depthCopybackIndex].second, ext.shaderLibrary);
++
++                                if (switchDepthCopyTarget == nullptr) {
++                                    switchDepthCopyTarget = std::make_unique<RenderTarget>(0, Framebuffer::Type::Color,
++                                        RenderMultisampling(), false);
++                                    switchDepthCopyTarget->setupColor(ext.framebufferGraphicsWorker, rtWidth, rtHeight);
++                                }
++                                else {
++                                    switchDepthCopyTarget->resize(ext.framebufferGraphicsWorker, rtWidth, rtHeight);
++                                }
++
++                                // Avoid both NVK failure paths observed on
++                                // hardware: D32 image readback and the depth
++                                // framebuffer compute encoder. Existing graphics
++                                // shader encodes exact depth16 into RGBA8 first.
++                                switchDepthCopyTarget->copyFromTarget(ext.framebufferGraphicsWorker, depthTarget,
++                                    0, depthRowStart, depthWriteWidth, depthRowEnd - depthRowStart, ext.shaderLibrary);
++                                switchDepthCPUReadback = depthFb->nativeTarget.copyToNativeCPU(ext.framebufferGraphicsWorker,
++                                    switchDepthCopyTarget.get(), depthWriteWidth, depthRowStart, depthRowEnd,
++                                    depthFb->siz, G_IM_FMT_RGBA, 3,
++                                    switchDepthCopybackSeeds[depthCopybackIndex].second, ext.shaderLibrary);
++                                if (!switchDepthCPUReadback) {
++                                    depthFb->copyRenderTargetToNative(ext.framebufferGraphicsWorker, depthTarget,
++                                        depthWriteWidth, depthRowStart, depthRowEnd, G_IM_FMT_DEPTH,
++                                        switchDepthCopybackSeeds[depthCopybackIndex].second, ext.shaderLibrary);
++                                }
+                                 depthCopybackIndex++;
+                             }
+ 
+                             framebufferManager.recordOperations(ext.framebufferGraphicsWorker, &workload.fbChangePool, &workload.fbStorage, ext.shaderLibrary, ext.textureCache,
+-                                fbPair.endFbOperations, renderTargetManager, resolutionScale, pairCursor, workload.submissionFrame);
++                                workload.fbPairs[pairCursor].endFbOperations, renderTargetManager, resolutionScale, pairCursor, workload.submissionFrame);
+                             pairCursor++;
+                         }
+                         assert(depthCopybackIndex == switchDepthCopybackSeeds.size());
+@@ -1673,7 +1695,12 @@ namespace RT64 {
+                         pairCursor = framebufferPairCursor;
+                         while (pairCursor < maxFramebufferPair) {
+                             if (getFramebufferPairs(pairCursor) && (depthWriteWidth > 0)) {
+-                                depthFb->copyNativeToRAM(&RDRAM[depthFb->addressStart], depthWriteWidth, depthRowStart, std::min(depthRowEnd, depthFb->height));
++                                if (switchDepthCPUReadback) {
++                                    depthFb->copyNativeToRAMCPU(&RDRAM[depthFb->addressStart], depthWriteWidth, depthRowStart, std::min(depthRowEnd, depthFb->height));
++                                }
++                                else {
++                                    depthFb->copyNativeToRAM(&RDRAM[depthFb->addressStart], depthWriteWidth, depthRowStart, std::min(depthRowEnd, depthFb->height));
++                                }
+                             }
+ 
+                             pairCursor++;
+@@ -2276,6 +2320,9 @@ namespace RT64 {
+         renderTargetManager.destroyAll();
+         renderTargetManager.setMultisampling(multisampling);
+         dummyDepthTarget.reset();
++#if defined(__SWITCH__)
++        switchDepthCopyTarget.reset();
++#endif
+         framebufferRenderer->updateMultisampling();
+         updateRenderFlagSampleCount();
+     }
+diff --git a/src/hle/rt64_state.h b/src/hle/rt64_state.h
+--- a/src/hle/rt64_state.h
++++ b/src/hle/rt64_state.h
+@@ -83,6 +83,9 @@ namespace RT64 {
+         uint64_t workloadCounter;
+         std::vector<uint64_t> evictedTextureHashes;
+         std::unique_ptr<RenderTarget> dummyDepthTarget;
++#if defined(__SWITCH__)
++        std::unique_ptr<RenderTarget> switchDepthCopyTarget;
++#endif
+         DrawCall drawCall;
+         DrawStatus drawStatus;
+         SpriteCommand activeSpriteCommand;
+@@ -174,4 +177,4 @@ namespace RT64 {
+         void clearExtended();
+         void updateRenderFlagSampleCount();
+     };
+-};
+\ No newline at end of file
++};
+diff --git a/src/hle/rt64_framebuffer.cpp b/src/hle/rt64_framebuffer.cpp
+--- a/src/hle/rt64_framebuffer.cpp
++++ b/src/hle/rt64_framebuffer.cpp
+@@ -174,6 +174,54 @@ namespace RT64 {
+ #   endif
+     }
+ 
++#if defined(__SWITCH__)
++    bool Framebuffer::copyRenderTargetToNativeCPU(RenderWorker *worker, RenderTarget *target, uint32_t dstRowWidth, uint32_t dstRowStart, uint32_t dstRowEnd, uint8_t fmt, uint32_t ditherRandomSeed, const ShaderLibrary *shaderLibrary) {
++        assert(worker != nullptr);
++        assert(target != nullptr);
++        assert(dstRowStart < height);
++        assert(dstRowEnd <= height);
++
++        return nativeTarget.copyToNativeCPU(worker, target, dstRowWidth, dstRowStart, dstRowEnd, siz, fmt, bestDitherPattern(), ditherRandomSeed, shaderLibrary);
++    }
++
++    void Framebuffer::copyNativeToRAMCPU(uint8_t *dst, uint32_t dstRowWidth, uint32_t dstRowStart, uint32_t dstRowEnd) {
++        assert(dst != nullptr);
++        assert(dstRowStart < height);
++        assert(dstRowEnd <= height);
++
++        uint8_t *dstBytes = dst + dstRowStart * imageRowBytes(dstRowWidth);
++        uint32_t *dstWords = reinterpret_cast<uint32_t *>(dstBytes);
++        const uint32_t bytesToSwap = (dstRowEnd - dstRowStart) * imageRowBytes(dstRowWidth);
++        uint32_t dstFirstWord = dstWords[0];
++        nativeTarget.copyToRAMCPU(dstBytes);
++
++        if (bytesToSwap >= sizeof(uint32_t)) {
++            uint32_t wordsToSwap = bytesToSwap / sizeof(uint32_t);
++            while (wordsToSwap > 0) {
++                *dstWords = _byteswap_ulong(*dstWords);
++                wordsToSwap--;
++                dstWords++;
++            }
++        }
++        else {
++            uint8_t *dstFirstWordU8 = reinterpret_cast<uint8_t *>(&dstFirstWord);
++            for (uint32_t i = 0; i < bytesToSwap; i++) {
++                dstFirstWordU8[i ^ 3] = dstBytes[i];
++            }
++
++            dstWords[0] = dstFirstWord;
++        }
++
++#   ifdef DUMP_RAW_RDRAM
++        char path[1024];
++        snprintf(path, sizeof(path), "dumps/FB_0x%X_W_%d_H_%d_SIZ_%d.rdram", addressStart, dstRowWidth, height, siz);
++        FILE *fp = fopen(path, "wb");
++        fwrite(dst, imageRowBytes(dstRowWidth) * dstRowEnd, 1, fp);
++        fclose(fp);
++#   endif
++    }
++#endif
++
+     void Framebuffer::clearChanged() {
+         widthChanged = false;
+         sizChanged = false;
+@@ -199,4 +247,4 @@ namespace RT64 {
+     uint64_t FramebufferTile::hash() const {
+         return XXH3_64bits(this, sizeof(FramebufferTile));
+     }
+-};
+\ No newline at end of file
++};
+diff --git a/src/hle/rt64_framebuffer.h b/src/hle/rt64_framebuffer.h
+--- a/src/hle/rt64_framebuffer.h
++++ b/src/hle/rt64_framebuffer.h
+@@ -74,6 +74,10 @@ namespace RT64 {
+ 
+         void copyRenderTargetToNative(RenderWorker *worker, RenderTarget *target, uint32_t dstRowWidth, uint32_t dstRowStart, uint32_t dstRowEnd, uint8_t fmt, uint32_t ditherRandomSeed, const ShaderLibrary *shaderLibrary);
+         void copyNativeToRAM(uint8_t *dst, uint32_t dstRowWidth, uint32_t dstRowStart, uint32_t dstRowEnd);
++#if defined(__SWITCH__)
++        bool copyRenderTargetToNativeCPU(RenderWorker *worker, RenderTarget *target, uint32_t dstRowWidth, uint32_t dstRowStart, uint32_t dstRowEnd, uint8_t fmt, uint32_t ditherRandomSeed, const ShaderLibrary *shaderLibrary);
++        void copyNativeToRAMCPU(uint8_t *dst, uint32_t dstRowWidth, uint32_t dstRowStart, uint32_t dstRowEnd);
++#endif
+         void clearChanged();
+         void addDitherPatterns(const std::array<uint32_t, 4> &extraPatterns);
+         uint32_t bestDitherPattern() const;
+@@ -93,4 +97,4 @@ namespace RT64 {
+         bool valid() const;
+         uint64_t hash() const;
+     };
+-};
+\ No newline at end of file
++};
+diff --git a/src/render/rt64_native_target.cpp b/src/render/rt64_native_target.cpp
+--- a/src/render/rt64_native_target.cpp
++++ b/src/render/rt64_native_target.cpp
+@@ -2,6 +2,8 @@
+ // RT64
+ //
+ 
++#include <algorithm>
++#include <cmath>
+ #include <cstring>
+ 
+ #include "rt64_native_target.h"
+@@ -9,9 +11,83 @@
+ #include "gbi/rt64_f3d.h"
+ #include "shared/rt64_fb_common.h"
+ 
+ #include "rt64_render_target.h"
+ #include "rt64_render_worker.h"
++
++#if defined(__SWITCH__)
++namespace {
++    constexpr uint32_t SwitchDitherPatternBayer[16] = {
++        0, 4, 1, 5,
++        4, 0, 5, 1,
++        3, 7, 2, 6,
++        7, 3, 6, 2
++    };
++
++    constexpr uint32_t SwitchDitherPatternMagicSquare[16] = {
++        0, 6, 1, 7,
++        4, 2, 5, 3,
++        3, 5, 2, 4,
++        7, 1, 6, 0
++    };
++
++    uint32_t switchInitRand(uint32_t value0, uint32_t value1) {
++        uint32_t sum = 0;
++        for (uint32_t iteration = 0; iteration < 16; iteration++) {
++            sum += 0x9e3779b9U;
++            value0 += ((value1 << 4) + 0xa341316cU) ^ (value1 + sum) ^ ((value1 >> 5) + 0xc8013ea4U);
++            value1 += ((value0 << 4) + 0xad90777dU) ^ (value0 + sum) ^ ((value0 >> 5) + 0x7e95761eU);
++        }
++
++        return value0;
++    }
++
++    uint32_t switchDitherValue(uint32_t pattern, uint32_t x, uint32_t y, uint32_t randomSeed) {
++        const uint32_t index = ((y & 3U) << 2U) + (x & 3U);
++        switch (pattern) {
++        case 0:
++            return SwitchDitherPatternMagicSquare[index];
++        case 1:
++            return SwitchDitherPatternBayer[index];
++        case 2:
++            return randomSeed & 7U;
++        default:
++            return 0;
++        }
++    }
++
++    uint16_t switchEncodeRGBA16(const uint8_t *source, uint32_t dither) {
++        uint32_t red = source[0];
++        uint32_t green = source[1];
++        uint32_t blue = source[2];
++        const uint32_t alpha = (uint32_t(source[3]) & 4U) ? 1U : 0U;
++        red = std::min(red + dither, 255U) >> 3U;
++        green = std::min(green + dither, 255U) >> 3U;
++        blue = std::min(blue + dither, 255U) >> 3U;
++        return uint16_t((red << 11U) | (green << 6U) | (blue << 1U) | alpha);
++    }
++
++    uint16_t switchEncodeDepth16(float inputDepth) {
++        if (!std::isfinite(inputDepth)) {
++            inputDepth = 0.0f;
++        }
++
++        const float depth = std::clamp(inputDepth, 0.0f, 1.0f);
++        const uint32_t fixedDepth = uint32_t(std::nearbyint(depth * (32768.0f * 8.0f - 1.0f)));
++        const uint32_t invertedShiftedDepth = ~(fixedDepth << 14U);
++        uint32_t exponent = 0;
++        uint32_t leadingMask = 0x80000000U;
++        while ((exponent < 7U) && ((invertedShiftedDepth & leadingMask) == 0U)) {
++            exponent++;
++            leadingMask >>= 1U;
++        }
++
++        const uint32_t mantissa = fixedDepth >> (6U - std::min(6U, exponent));
++        return uint16_t((exponent << 13U) | ((mantissa << 2U) & 0x1FFCU));
++    }
++
++}
++#endif
+ 
+ namespace RT64 {
+     // NativeTarget
+ 
+@@ -369,4 +445,102 @@ namespace RT64 {
+         writeBuffer.nativeReadbackBuffer->unmap();
+         writeBufferHistoryIndex++;
+     }
+-};
+\ No newline at end of file
++
++#if defined(__SWITCH__)
++    bool NativeTarget::copyToNativeCPU(RenderWorker *worker, RenderTarget *srcTarget, uint32_t rowWidth, uint32_t rowStart, uint32_t rowEnd, uint8_t siz, uint8_t fmt,
++        uint32_t ditherPattern, uint32_t ditherRandomSeed, const ShaderLibrary *shaderLibrary)
++    {
++        assert(worker != nullptr);
++        assert(srcTarget != nullptr);
++        assert(shaderLibrary != nullptr);
++        assert(rowWidth > 0);
++        assert(rowWidth <= srcTarget->width);
++        assert(rowStart < rowEnd);
++        assert(rowEnd <= srcTarget->height);
++        const bool supportedSizeAndFormat = (siz == G_IM_SIZ_16b) &&
++            ((fmt == G_IM_FMT_RGBA) || (fmt == G_IM_FMT_DEPTH));
++        if (!supportedSizeAndFormat || (srcTarget->multisampling.sampleCount != 1) || shaderLibrary->usesHDR) {
++            return false;
++        }
++
++        srcTarget->resolveTarget(worker, shaderLibrary);
++        RenderTexture *sourceTexture = srcTarget->getResolvedTexture();
++        const RenderFormat sourceFormat = srcTarget->format;
++        const bool supportedColor = (fmt == G_IM_FMT_RGBA) && (sourceFormat == RenderFormat::R8G8B8A8_UNORM);
++        const bool supportedDepth = (fmt == G_IM_FMT_DEPTH) && (sourceFormat == RenderFormat::D32_FLOAT);
++        if (!supportedColor && !supportedDepth) {
++            return false;
++        }
++
++        const uint32_t rowCount = rowEnd - rowStart;
++        const uint32_t sourcePixelSize = RenderFormatSize(sourceFormat);
++        const uint32_t requiredBufferSize = rowWidth * rowCount * sourcePixelSize;
++        if (switchTextureReadbackBufferSize < requiredBufferSize) {
++            switchTextureReadbackBuffer = worker->device->createBuffer(RenderBufferDesc::ReadbackBuffer(requiredBufferSize));
++            switchTextureReadbackBufferSize = requiredBufferSize;
++        }
++
++        switchTextureReadbackRowWidth = rowWidth;
++        switchTextureReadbackRowStart = rowStart;
++        switchTextureReadbackRowEnd = rowEnd;
++        switchTextureReadbackSize = siz;
++        switchTextureReadbackN64Format = fmt;
++        switchTextureReadbackDitherPattern = ditherPattern;
++        switchTextureReadbackDitherSeed = ditherRandomSeed;
++        switchTextureReadbackRenderFormat = sourceFormat;
++
++        worker->commandList->barriers(RenderBarrierStage::COPY,
++            RenderBufferBarrier(switchTextureReadbackBuffer.get(), RenderBufferAccess::WRITE),
++            RenderTextureBarrier(sourceTexture, RenderTextureLayout::COPY_SOURCE));
++        const RenderTextureCopyLocation destination = RenderTextureCopyLocation::PlacedFootprint(
++            switchTextureReadbackBuffer.get(), sourceFormat, rowWidth, rowCount, 1, rowWidth);
++        const RenderTextureCopyLocation source = RenderTextureCopyLocation::Subresource(sourceTexture);
++        const RenderBox sourceBox(0, rowStart, rowWidth, rowEnd);
++        worker->commandList->copyTextureRegion(destination, source, 0, 0, 0, &sourceBox);
++        return true;
++    }
++
++    void NativeTarget::copyToRAMCPU(uint8_t *data) {
++        assert(data != nullptr);
++        assert(switchTextureReadbackBuffer != nullptr);
++        assert(switchTextureReadbackSize == G_IM_SIZ_16b);
++        assert((switchTextureReadbackN64Format == G_IM_FMT_RGBA) || (switchTextureReadbackN64Format == G_IM_FMT_DEPTH));
++
++        const uint32_t rowWidth = switchTextureReadbackRowWidth;
++        const uint32_t rowStart = switchTextureReadbackRowStart;
++        const uint32_t rowCount = switchTextureReadbackRowEnd - rowStart;
++        const uint32_t sourcePixelSize = RenderFormatSize(switchTextureReadbackRenderFormat);
++        const uint32_t sourceByteCount = rowWidth * rowCount * sourcePixelSize;
++        assert(sourceByteCount <= switchTextureReadbackBufferSize);
++
++        RenderRange readRange(0, sourceByteCount);
++        const uint8_t *readback = reinterpret_cast<const uint8_t *>(switchTextureReadbackBuffer->map(0, &readRange));
++        uint8_t *destination = data;
++
++        for (uint32_t y = 0; y < rowCount; y++) {
++            const uint32_t framebufferY = rowStart + y;
++            for (uint32_t x = 0; x < rowWidth; x++) {
++                const uint32_t pixelIndex = y * rowWidth + x;
++                const uint8_t *sourcePixel = readback + pixelIndex * sourcePixelSize;
++                uint16_t nativeValue = 0;
++                if (switchTextureReadbackN64Format == G_IM_FMT_DEPTH) {
++                    float depth;
++                    std::memcpy(&depth, sourcePixel, sizeof(depth));
++                    nativeValue = switchEncodeDepth16(depth);
++                }
++                else {
++                    const uint32_t destinationIndex = framebufferY * rowWidth + x;
++                    const uint32_t randomSeed = switchInitRand(switchTextureReadbackDitherSeed, destinationIndex);
++                    const uint32_t dither = switchDitherValue(switchTextureReadbackDitherPattern, x, framebufferY, randomSeed);
++                    nativeValue = switchEncodeRGBA16(sourcePixel, dither);
++                }
++
++                destination[pixelIndex * 2] = uint8_t(nativeValue >> 8U);
++                destination[pixelIndex * 2 + 1] = uint8_t(nativeValue);
++            }
++        }
++
++        switchTextureReadbackBuffer->unmap();
++    }
++#endif
++};
+diff --git a/src/render/rt64_native_target.h b/src/render/rt64_native_target.h
+--- a/src/render/rt64_native_target.h
++++ b/src/render/rt64_native_target.h
+@@ -44,6 +44,18 @@ namespace RT64 {
+         uint32_t readBufferHistoryCount = 0;
+         uint32_t writeBufferHistoryCount = 0;
+         uint32_t writeBufferHistoryIndex = 0;
++#if defined(__SWITCH__)
++        std::unique_ptr<RenderBuffer> switchTextureReadbackBuffer;
++        uint32_t switchTextureReadbackBufferSize = 0;
++        uint32_t switchTextureReadbackRowWidth = 0;
++        uint32_t switchTextureReadbackRowStart = 0;
++        uint32_t switchTextureReadbackRowEnd = 0;
++        uint8_t switchTextureReadbackSize = 0;
++        uint8_t switchTextureReadbackN64Format = 0;
++        uint32_t switchTextureReadbackDitherPattern = 0;
++        uint32_t switchTextureReadbackDitherSeed = 0;
++        RenderFormat switchTextureReadbackRenderFormat = RenderFormat::UNKNOWN;
++#endif
+ 
+         NativeTarget();
+         ~NativeTarget();
+@@ -56,7 +68,11 @@ namespace RT64 {
+         uint32_t copyFromRAM(RenderWorker *worker, FramebufferChange &emptyFbChange, uint32_t width, uint32_t height, uint32_t rowStart, uint8_t siz, uint8_t fmt, const uint8_t *data, bool invalidateTargets, const ShaderLibrary *shaderLibrary);
+         void copyToNative(RenderWorker *worker, RenderTarget *srcTarget, uint32_t rowWidth, uint32_t rowStart, uint32_t rowEnd, uint8_t siz, uint8_t fmt, uint32_t ditherPattern, uint32_t ditherRandomSeed, const ShaderLibrary *shaderLibrary);
+         void copyToRAM(uint32_t rowStart, uint32_t rowEnd, uint32_t width, uint8_t siz, uint8_t *data);
++#if defined(__SWITCH__)
++        bool copyToNativeCPU(RenderWorker *worker, RenderTarget *srcTarget, uint32_t rowWidth, uint32_t rowStart, uint32_t rowEnd, uint8_t siz, uint8_t fmt, uint32_t ditherPattern, uint32_t ditherRandomSeed, const ShaderLibrary *shaderLibrary);
++        void copyToRAMCPU(uint8_t *data);
++#endif
+ 
+         static uint32_t getNativeSize(uint32_t width, uint32_t height, uint8_t siz);
+     };
+-};
+\ No newline at end of file
++};
