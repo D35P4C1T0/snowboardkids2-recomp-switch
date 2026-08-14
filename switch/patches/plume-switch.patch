@@ -30,12 +30,6 @@ index 0789c20..07326ab 100644
  # Include directories
  target_include_directories(plume PUBLIC
      ${CMAKE_CURRENT_SOURCE_DIR}
-diff --git a/contrib/volk b/contrib/volk
---- a/contrib/volk
-+++ b/contrib/volk
-@@ -1 +1 @@
--Subproject commit be3dbd49bf77052665e96b6c7484af855e7e5f67
-+Subproject commit be3dbd49bf77052665e96b6c7484af855e7e5f67-dirty
 diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
 index f1dd503..311a134 100644
 --- a/plume_vulkan.cpp

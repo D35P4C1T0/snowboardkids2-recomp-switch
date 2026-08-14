@@ -4,6 +4,7 @@ set -eu
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 REPO_ROOT=$(CDPATH= cd -- "${SCRIPT_DIR}/.." && pwd)
 MODE="${1:-bootstrap}"
+SWITCH_DEPS_ROOT="${REPO_ROOT}/build-switch-deps"
 
 if [ -z "${DEVKITPRO:-}" ]; then
     echo "DEVKITPRO is not set. Install devkitA64/libnx and export DEVKITPRO." >&2
@@ -49,7 +50,7 @@ if [ "${MODE}" != bootstrap ]; then
         echo "Run scripts/build-switch-nvk.sh first." >&2
         exit 1
     fi
-    "${SCRIPT_DIR}/apply-switch-patches.sh"
+    "${SCRIPT_DIR}/prepare-switch-dependencies.sh" "${SWITCH_DEPS_ROOT}"
     "${SCRIPT_DIR}/build-host-tools.sh"
 fi
 
@@ -72,9 +73,14 @@ cmake \
     -DCMAKE_BUILD_TYPE=Release \
     -DSK2_SWITCH_BOOTSTRAP_ONLY="${BOOTSTRAP}" \
     -DSK2_SWITCH_CORE_PROBE_ONLY="${CORE_PROBE}" \
+    -DSK2_SWITCH_DEPS_ROOT="${SWITCH_DEPS_ROOT}" \
     -DSK2_SWITCH_NVK_ROOT="${SK2_SWITCH_NVK_ROOT:-}"
 
-cmake --build "${BUILD_DIR}" --target "${TARGET}" --parallel
+if [ -n "${SK2_SWITCH_BUILD_JOBS:-}" ]; then
+    cmake --build "${BUILD_DIR}" --target "${TARGET}" --parallel "${SK2_SWITCH_BUILD_JOBS}"
+else
+    cmake --build "${BUILD_DIR}" --target "${TARGET}" --parallel
+fi
 
 if [ "${MODE}" = full ]; then
     "${SCRIPT_DIR}/package-switch.sh"

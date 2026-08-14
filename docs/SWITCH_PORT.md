@@ -34,6 +34,9 @@ The port must not contain or download copyrighted game data. Users will copy the
   before the title/log connection closed.
 - [x] Reproducible dependency patch chain; every follow-up patch passes forward
   and reverse application checks against the pinned submodules.
+- [x] Clean dependency workflow: Switch patches are applied to disposable,
+  manifest-cached sources under `build-switch-deps/`; canonical submodule
+  worktrees remain at their pinned commits.
 
 ### Still missing before the port is release-ready
 
@@ -244,6 +247,13 @@ The output is `build-switch/snowboardkids2-recompiled.nro`. Copy it to the targe
 
 ## Build the runtime + NVK hardware probe
 
+Non-bootstrap builds first export the pinned N64ModernRuntime, RecompFrontend,
+RT64, and nested submodule commits into the ignored `build-switch-deps/`
+directory. The complete Switch patch chain is applied there in strict order,
+and CMake builds only from those disposable sources. A manifest reuses the
+tree until a dependency commit or patch changes; deleting `build-switch-deps/`
+is always safe. The checked-out `lib/*` submodules are never patched in place.
+
 The renderer package is pinned to switch-nvk commit
 `6eec707da3ad5f86c64f748226583202801bfd03` and Mesa 25.0.7. Its upstream
 build currently requires about 15 GB of Docker storage. The project patch also
@@ -254,6 +264,12 @@ silently break as nightly Rust changes.
 ./scripts/build-switch-nvk.sh
 export SK2_SWITCH_NVK_ROOT="$PWD/build-switch-nvk/source/nvk-switch"
 ./scripts/switch-build.sh core
+```
+
+On memory-constrained hosts, limit cross-build concurrency, for example:
+
+```sh
+export SK2_SWITCH_BUILD_JOBS=2
 ```
 
 The output is `build-switch-core/snowboardkids2-core-probe.nro`. Launch it in

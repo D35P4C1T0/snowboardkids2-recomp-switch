@@ -86,6 +86,27 @@ configure_file(
     @ONLY
 )
 
+set(SK2_N64MODERNRUNTIME_SOURCE_DIR "${CMAKE_SOURCE_DIR}/lib/N64ModernRuntime")
+set(SK2_RECOMP_FRONTEND_SOURCE_DIR "${CMAKE_SOURCE_DIR}/lib/RecompFrontend")
+set(SK2_RT64_SOURCE_DIR "${CMAKE_SOURCE_DIR}/lib/rt64")
+set(SK2_N64MODERNRUNTIME_BINARY_DIR "${CMAKE_BINARY_DIR}/lib/N64ModernRuntime")
+set(SK2_RECOMP_FRONTEND_BINARY_DIR "${CMAKE_BINARY_DIR}/lib/RecompFrontend")
+set(SK2_RT64_BINARY_DIR "${CMAKE_BINARY_DIR}/rt64")
+
+if(CMAKE_SYSTEM_NAME STREQUAL "NintendoSwitch")
+    set(SK2_SWITCH_DEPS_ROOT "" CACHE PATH
+        "Disposable patched dependency tree prepared by switch-build.sh"
+    )
+    if(NOT SK2_SWITCH_DEPS_ROOT STREQUAL "")
+        set(SK2_N64MODERNRUNTIME_SOURCE_DIR "${SK2_SWITCH_DEPS_ROOT}/N64ModernRuntime")
+        set(SK2_RECOMP_FRONTEND_SOURCE_DIR "${SK2_SWITCH_DEPS_ROOT}/RecompFrontend")
+        set(SK2_RT64_SOURCE_DIR "${SK2_SWITCH_DEPS_ROOT}/rt64")
+        set(SK2_N64MODERNRUNTIME_BINARY_DIR "${CMAKE_BINARY_DIR}/switch-deps/N64ModernRuntime")
+        set(SK2_RECOMP_FRONTEND_BINARY_DIR "${CMAKE_BINARY_DIR}/switch-deps/RecompFrontend")
+        set(SK2_RT64_BINARY_DIR "${CMAKE_BINARY_DIR}/switch-deps/rt64")
+    endif()
+endif()
+
 # The Horizon OS port is being brought up in layers. The bootstrap target is a
 # small, hardware-runnable NRO that validates the devkitA64, libnx, SDL2, audio,
 # controller, and SD-card path before the much larger RT64 Vulkan integration is
@@ -107,6 +128,25 @@ if(CMAKE_SYSTEM_NAME STREQUAL "NintendoSwitch")
         return()
     endif()
 
+    if(SK2_SWITCH_DEPS_ROOT STREQUAL "")
+        message(FATAL_ERROR
+            "Full Switch builds require disposable patched dependencies. "
+            "Run scripts/switch-build.sh core or scripts/switch-build.sh full."
+        )
+    endif()
+    foreach(SK2_SWITCH_DEPENDENCY_DIR IN ITEMS
+        "${SK2_N64MODERNRUNTIME_SOURCE_DIR}"
+        "${SK2_RECOMP_FRONTEND_SOURCE_DIR}"
+        "${SK2_RT64_SOURCE_DIR}"
+    )
+        if(NOT IS_DIRECTORY "${SK2_SWITCH_DEPENDENCY_DIR}")
+            message(FATAL_ERROR
+                "Switch dependency source is missing: ${SK2_SWITCH_DEPENDENCY_DIR}. "
+                "Run scripts/prepare-switch-dependencies.sh."
+            )
+        endif()
+    endforeach()
+
     find_package(PkgConfig REQUIRED)
     pkg_check_modules(SDL2 REQUIRED IMPORTED_TARGET sdl2)
     pkg_check_modules(FREETYPE REQUIRED IMPORTED_TARGET freetype2)
@@ -126,13 +166,13 @@ if(CMAKE_SYSTEM_NAME STREQUAL "NintendoSwitch")
     if(CMAKE_HOST_APPLE)
         if(CMAKE_HOST_SYSTEM_PROCESSOR MATCHES "x86_64|amd64|AMD64")
             set(DXC
-                "DYLD_LIBRARY_PATH=${CMAKE_SOURCE_DIR}/lib/rt64/src/contrib/dxc/lib/x64"
-                "${CMAKE_SOURCE_DIR}/lib/rt64/src/contrib/dxc/bin/x64/dxc-macos"
+                "DYLD_LIBRARY_PATH=${SK2_RT64_SOURCE_DIR}/src/contrib/dxc/lib/x64"
+                "${SK2_RT64_SOURCE_DIR}/src/contrib/dxc/bin/x64/dxc-macos"
             )
         else()
             set(DXC
-                "DYLD_LIBRARY_PATH=${CMAKE_SOURCE_DIR}/lib/rt64/src/contrib/dxc/lib/arm64"
-                "${CMAKE_SOURCE_DIR}/lib/rt64/src/contrib/dxc/bin/arm64/dxc-macos"
+                "DYLD_LIBRARY_PATH=${SK2_RT64_SOURCE_DIR}/src/contrib/dxc/lib/arm64"
+                "${SK2_RT64_SOURCE_DIR}/src/contrib/dxc/bin/arm64/dxc-macos"
             )
         endif()
     endif()
@@ -166,6 +206,11 @@ if(CMAKE_SYSTEM_NAME STREQUAL "NintendoSwitch")
         set(SK2_SWITCH_NVK_ROOT "$ENV{SK2_SWITCH_NVK_ROOT}")
     endif()
 
+    # These searches are constrained to SK2_SWITCH_NVK_ROOT. Clear results
+    # from an older package location before resolving the current root.
+    unset(SK2_SWITCH_NVK_INCLUDE_DIR CACHE)
+    unset(SK2_SWITCH_NVK_LIBRARY CACHE)
+    unset(SK2_SWITCH_NVK_EXPAT_LIBRARY CACHE)
     find_path(SK2_SWITCH_NVK_INCLUDE_DIR
         NAMES vulkan/vulkan.h
         PATHS "${SK2_SWITCH_NVK_ROOT}/include"
@@ -246,24 +291,24 @@ if (RECOMP_FLATPAK)
     add_compile_definitions(RECOMP_FLATPAK)
 endif()
 
-add_subdirectory(${CMAKE_SOURCE_DIR}/lib/rt64 ${CMAKE_BINARY_DIR}/rt64)
+add_subdirectory(${SK2_RT64_SOURCE_DIR} ${SK2_RT64_BINARY_DIR})
 
 set(BUILD_SHARED_LIBS OFF)
 
-add_subdirectory(${CMAKE_SOURCE_DIR}/lib/N64ModernRuntime)
+add_subdirectory(${SK2_N64MODERNRUNTIME_SOURCE_DIR} ${SK2_N64MODERNRUNTIME_BINARY_DIR})
 
-target_include_directories(rt64 PRIVATE ${CMAKE_BINARY_DIR}/rt64/src)
+target_include_directories(rt64 PRIVATE ${SK2_RT64_BINARY_DIR}/src)
 
 if (CMAKE_SYSTEM_NAME STREQUAL "NintendoSwitch" AND SK2_SWITCH_CORE_PROBE_ONLY)
-    set(RECOMP_FRONTEND_N64MODERNRUNTIME_PATH ${CMAKE_SOURCE_DIR}/lib/N64ModernRuntime)
-    set(RECOMP_FRONTEND_RT64_PATH ${CMAKE_SOURCE_DIR}/lib/rt64)
-    add_subdirectory(${CMAKE_SOURCE_DIR}/lib/RecompFrontend)
+    set(RECOMP_FRONTEND_N64MODERNRUNTIME_PATH ${SK2_N64MODERNRUNTIME_SOURCE_DIR})
+    set(RECOMP_FRONTEND_RT64_PATH ${SK2_RT64_SOURCE_DIR})
+    add_subdirectory(${SK2_RECOMP_FRONTEND_SOURCE_DIR} ${SK2_RECOMP_FRONTEND_BINARY_DIR})
 
     add_executable(SnowboardKids2SwitchCoreProbe switch/core_probe.cpp switch/full_main.cpp)
     target_include_directories(SnowboardKids2SwitchCoreProbe PRIVATE
-        ${CMAKE_SOURCE_DIR}/lib/RecompFrontend/recompui/src
-        ${CMAKE_SOURCE_DIR}/lib/RecompFrontend/recompui/include
-        ${CMAKE_SOURCE_DIR}/lib/rt64/src/contrib/plume
+        ${SK2_RECOMP_FRONTEND_SOURCE_DIR}/recompui/src
+        ${SK2_RECOMP_FRONTEND_SOURCE_DIR}/recompui/include
+        ${SK2_RT64_SOURCE_DIR}/src/contrib/plume
         ${SDL2_INCLUDE_DIRS}
     )
     target_link_options(SnowboardKids2SwitchCoreProbe PRIVATE
@@ -318,9 +363,9 @@ target_compile_options(RecompiledFuncs PRIVATE
 
 target_include_directories(RecompiledFuncs PRIVATE
     ${CMAKE_SOURCE_DIR}/include
-    ${CMAKE_SOURCE_DIR}/lib/N64ModernRuntime/ultramodern/include
-    ${CMAKE_SOURCE_DIR}/lib/N64ModernRuntime/librecomp/include
-    ${CMAKE_SOURCE_DIR}/lib/N64ModernRuntime/N64Recomp/include
+    ${SK2_N64MODERNRUNTIME_SOURCE_DIR}/ultramodern/include
+    ${SK2_N64MODERNRUNTIME_SOURCE_DIR}/librecomp/include
+    ${SK2_N64MODERNRUNTIME_SOURCE_DIR}/N64Recomp/include
 )
 
 file(GLOB FUNC_C_SOURCES ${CMAKE_SOURCE_DIR}/RecompiledFuncs/*.c)
@@ -340,9 +385,9 @@ target_compile_options(PatchesLib PRIVATE
 
 target_include_directories(PatchesLib PRIVATE
     ${CMAKE_SOURCE_DIR}/include
-    ${CMAKE_SOURCE_DIR}/lib/N64ModernRuntime/ultramodern/include
-    ${CMAKE_SOURCE_DIR}/lib/N64ModernRuntime/librecomp/include
-    ${CMAKE_SOURCE_DIR}/lib/N64ModernRuntime/N64Recomp/include
+    ${SK2_N64MODERNRUNTIME_SOURCE_DIR}/ultramodern/include
+    ${SK2_N64MODERNRUNTIME_SOURCE_DIR}/librecomp/include
+    ${SK2_N64MODERNRUNTIME_SOURCE_DIR}/N64Recomp/include
 )
 
 target_sources(PatchesLib PRIVATE
@@ -440,20 +485,20 @@ endif()
 
 target_include_directories(SnowboardKids2Recompiled PRIVATE
     ${CMAKE_SOURCE_DIR}/include
-    ${CMAKE_SOURCE_DIR}/lib/N64ModernRuntime/N64Recomp/include
-    ${CMAKE_SOURCE_DIR}/lib/N64ModernRuntime/thirdparty
-    ${CMAKE_SOURCE_DIR}/lib/N64ModernRuntime/thirdparty/concurrentqueue
-    ${CMAKE_SOURCE_DIR}/lib/RecompFrontend/recompinput/include
-    ${CMAKE_SOURCE_DIR}/lib/RecompFrontend/recompui/include
-    ${CMAKE_SOURCE_DIR}/lib/RecompFrontend/recompui/src
-    ${CMAKE_SOURCE_DIR}/lib/rt64/src/contrib
-    ${CMAKE_SOURCE_DIR}/lib/rt64/src/contrib/hlslpp/include
-    ${CMAKE_SOURCE_DIR}/lib/rt64/src/contrib/dxc/inc
-    ${CMAKE_SOURCE_DIR}/lib/rt64/src
-    ${CMAKE_SOURCE_DIR}/lib/rt64/src/rhi
-    ${CMAKE_SOURCE_DIR}/lib/rt64/src/render
+    ${SK2_N64MODERNRUNTIME_SOURCE_DIR}/N64Recomp/include
+    ${SK2_N64MODERNRUNTIME_SOURCE_DIR}/thirdparty
+    ${SK2_N64MODERNRUNTIME_SOURCE_DIR}/thirdparty/concurrentqueue
+    ${SK2_RECOMP_FRONTEND_SOURCE_DIR}/recompinput/include
+    ${SK2_RECOMP_FRONTEND_SOURCE_DIR}/recompui/include
+    ${SK2_RECOMP_FRONTEND_SOURCE_DIR}/recompui/src
+    ${SK2_RT64_SOURCE_DIR}/src/contrib
+    ${SK2_RT64_SOURCE_DIR}/src/contrib/hlslpp/include
+    ${SK2_RT64_SOURCE_DIR}/src/contrib/dxc/inc
+    ${SK2_RT64_SOURCE_DIR}/src
+    ${SK2_RT64_SOURCE_DIR}/src/rhi
+    ${SK2_RT64_SOURCE_DIR}/src/render
     ${CMAKE_SOURCE_DIR}/lib/freetype-windows-binaries/include
-    ${CMAKE_SOURCE_DIR}/lib/rt64/src/contrib/nativefiledialog-extended/src/include
+    ${SK2_RT64_SOURCE_DIR}/src/contrib/nativefiledialog-extended/src/include
     ${CMAKE_BINARY_DIR}/shaders
     ${CMAKE_CURRENT_BINARY_DIR}/generated
     ${CMAKE_CURRENT_BINARY_DIR}
@@ -530,8 +575,8 @@ if (WIN32)
     add_custom_command(TARGET SnowboardKids2Recompiled POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${sdl2_SOURCE_DIR}/lib/x64/SDL2.dll"
-            "${CMAKE_SOURCE_DIR}/lib/rt64/src/contrib/dxc/bin/x64/dxil.dll"
-            "${CMAKE_SOURCE_DIR}/lib/rt64/src/contrib/dxc/bin/x64/dxcompiler.dll"
+            "${SK2_RT64_SOURCE_DIR}/src/contrib/dxc/bin/x64/dxil.dll"
+            "${SK2_RT64_SOURCE_DIR}/src/contrib/dxc/bin/x64/dxcompiler.dll"
             $<TARGET_FILE_DIR:SnowboardKids2Recompiled>)
 
     set_target_properties(
@@ -617,36 +662,36 @@ set (DXC_GS_OPTS "${DXC_COMMON_OPTS}" "-E" "GSMain" "-T gs_6_0")
 set (DXC_RT_OPTS "${DXC_COMMON_OPTS}" "-D" "RT_SHADER" "-T" "lib_6_3" "-fspv-target-env=vulkan1.1spirv1.4" "-fspv-extension=SPV_KHR_ray_tracing" "-fspv-extension=SPV_EXT_descriptor_indexing")
 
 if (${WIN32})
-    set (DXC "${PROJECT_SOURCE_DIR}/lib/rt64/src/contrib/dxc/bin/x64/dxc.exe")
+    set (DXC "${SK2_RT64_SOURCE_DIR}/src/contrib/dxc/bin/x64/dxc.exe")
     add_compile_definitions(NOMINMAX)
 else()
     if (CMAKE_HOST_APPLE)
         # Apple's binary is universal, so it'll work on both x86_64 and arm64
-        set (DXC "DYLD_LIBRARY_PATH=${PROJECT_SOURCE_DIR}/lib/rt64/src/contrib/dxc/lib/arm64" "${PROJECT_SOURCE_DIR}/lib/rt64/src/contrib/dxc/bin/arm64/dxc-macos")
+        set (DXC "DYLD_LIBRARY_PATH=${SK2_RT64_SOURCE_DIR}/src/contrib/dxc/lib/arm64" "${SK2_RT64_SOURCE_DIR}/src/contrib/dxc/bin/arm64/dxc-macos")
         if(CMAKE_HOST_SYSTEM_PROCESSOR MATCHES "x86_64|amd64|AMD64")
-            set(SPIRVCROSS "DYLD_LIBRARY_PATH=${PROJECT_SOURCE_DIR}/lib/rt64/src/contrib/spirv-cross/lib/x64" "${PROJECT_SOURCE_DIR}/lib/rt64//src/contrib/spirv-cross/bin/x64/spirv-cross")
+            set(SPIRVCROSS "DYLD_LIBRARY_PATH=${SK2_RT64_SOURCE_DIR}/src/contrib/spirv-cross/lib/x64" "${SK2_RT64_SOURCE_DIR}/src/contrib/spirv-cross/bin/x64/spirv-cross")
         else()
-            set(SPIRVCROSS "DYLD_LIBRARY_PATH=${PROJECT_SOURCE_DIR}/lib/rt64/src/contrib/spirv-cross/lib/arm64" "${PROJECT_SOURCE_DIR}/lib/rt64//src/contrib/spirv-cross/bin/x64/spirv-cross")
+            set(SPIRVCROSS "DYLD_LIBRARY_PATH=${SK2_RT64_SOURCE_DIR}/src/contrib/spirv-cross/lib/arm64" "${SK2_RT64_SOURCE_DIR}/src/contrib/spirv-cross/bin/x64/spirv-cross")
         endif()
     else()
         if(CMAKE_SIZEOF_VOID_P EQUAL 8 AND CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64|AMD64")
-            set (DXC "LD_LIBRARY_PATH=${PROJECT_SOURCE_DIR}/lib/rt64/src/contrib/dxc/lib/x64" "${PROJECT_SOURCE_DIR}/lib/rt64/src/contrib/dxc/bin/x64/dxc-linux")
+            set (DXC "LD_LIBRARY_PATH=${SK2_RT64_SOURCE_DIR}/src/contrib/dxc/lib/x64" "${SK2_RT64_SOURCE_DIR}/src/contrib/dxc/bin/x64/dxc-linux")
         else()
-            set (DXC "LD_LIBRARY_PATH=${PROJECT_SOURCE_DIR}/lib/rt64/src/contrib/dxc/lib/arm64" "${PROJECT_SOURCE_DIR}/lib/rt64/src/contrib/dxc/bin/arm64/dxc-linux")
+            set (DXC "LD_LIBRARY_PATH=${SK2_RT64_SOURCE_DIR}/src/contrib/dxc/lib/arm64" "${SK2_RT64_SOURCE_DIR}/src/contrib/dxc/bin/arm64/dxc-linux")
         endif()
     endif()
 endif()
 
-set(RECOMP_FRONTEND_N64MODERNRUNTIME_PATH ${CMAKE_SOURCE_DIR}/lib/N64ModernRuntime)
-set(RECOMP_FRONTEND_RT64_PATH ${CMAKE_SOURCE_DIR}/lib/rt64)
+set(RECOMP_FRONTEND_N64MODERNRUNTIME_PATH ${SK2_N64MODERNRUNTIME_SOURCE_DIR})
+set(RECOMP_FRONTEND_RT64_PATH ${SK2_RT64_SOURCE_DIR})
 
-add_subdirectory(${CMAKE_SOURCE_DIR}/lib/RecompFrontend)
+add_subdirectory(${SK2_RECOMP_FRONTEND_SOURCE_DIR} ${SK2_RECOMP_FRONTEND_BINARY_DIR})
 
 target_include_directories(recompui BEFORE PRIVATE
-    ${CMAKE_SOURCE_DIR}/lib/N64ModernRuntime/thirdparty
+    ${SK2_N64MODERNRUNTIME_SOURCE_DIR}/thirdparty
 )
 target_include_directories(recompinput BEFORE PRIVATE
-    ${CMAKE_SOURCE_DIR}/lib/N64ModernRuntime/thirdparty
+    ${SK2_N64MODERNRUNTIME_SOURCE_DIR}/thirdparty
 )
 
 target_link_libraries(SnowboardKids2Recompiled PRIVATE
