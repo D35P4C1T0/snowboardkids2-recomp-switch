@@ -1,0 +1,47 @@
+diff --git a/plume_vulkan.h b/plume_vulkan.h
+--- a/plume_vulkan.h
++++ b/plume_vulkan.h
+@@ -56,6 +56,9 @@ namespace plume {
+         VulkanPool *pool = nullptr;
+         VmaAllocation allocation = VK_NULL_HANDLE;
+         VmaAllocationInfo allocationInfo = {};
++#if defined(__SWITCH__)
++        void *switchMappedData = nullptr;
++#endif
+         RenderBufferDesc desc;
+         RenderBarrierStages barrierStages = RenderBarrierStage::NONE;
+ 
+diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
+--- a/plume_vulkan.cpp
++++ b/plume_vulkan.cpp
+@@ -1053,18 +1053,30 @@ namespace plume {
+             }
+         }
+ 
++#if defined(__SWITCH__)
++        switchMappedData = data;
++#endif
+         return data;
+     }
+ 
+     void VulkanBuffer::unmap(uint32_t subresource, const RenderRange *writtenRange) {
+         const VkDeviceSize offset = (writtenRange != nullptr) ? writtenRange->begin : 0;
+         const VkDeviceSize size = (writtenRange != nullptr) ? (writtenRange->end - writtenRange->begin) : VK_WHOLE_SIZE;
++#if defined(__SWITCH__)
++        if ((desc.heapType == RenderHeapType::UPLOAD) && (switchMappedData != nullptr)) {
++            const size_t cleanSize = (size == VK_WHOLE_SIZE) ? size_t(desc.size) : size_t(size);
++            armDCacheClean(static_cast<uint8_t *>(switchMappedData) + offset, cleanSize);
++        }
++#endif
+         VkResult res = vmaFlushAllocation(device->allocator, allocation, offset, size);
+         if (res != VK_SUCCESS) {
+             fprintf(stderr, "vmaFlushAllocation failed with error code 0x%X.\n", res);
+         }
+ 
+         vmaUnmapMemory(device->allocator, allocation);
++#if defined(__SWITCH__)
++        switchMappedData = nullptr;
++#endif
+     }
+ 
+     std::unique_ptr<RenderBufferFormattedView> VulkanBuffer::createBufferFormattedView(RenderFormat format) {

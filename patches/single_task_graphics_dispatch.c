@@ -166,7 +166,12 @@ RECOMP_PATCH void processDisplayFrameUpdate(void) {
         }
         initMsg = (FrameCallbackMsg*) ((u8*) gDisplayBufferMsgs + (nextDisplayBufferIndex * 0x150));
 
-        mergedDL = (Gfx*) arenaAlloc16(48 * (s32) sizeof(Gfx));
+        // Four fixed commands (enable, init list, full sync, end), plus one
+        // ucode load, segment reset, and display-list call per graphics group.
+        // A fixed 48-command allocation overflowed when a frame contained
+        // more than 14 groups, corrupting adjacent arena data in HUD-heavy
+        // S2DEX/F3DEX frames.
+        mergedDL = (Gfx*) arenaAlloc16((4 + (groupCount * 3)) * (s32) sizeof(Gfx));
         mergedGfx = mergedDL;
         gEXEnable(mergedGfx++);
         gSPDisplayList(mergedGfx++, initMsg->t.t.data_ptr);

@@ -6,6 +6,89 @@ Produce a native Horizon OS homebrew build of Snowboard Kids 2: Recompiled with 
 
 The port must not contain or download copyrighted game data. Users will copy their own supported Snowboard Kids 2 ROM to the application directory.
 
+## Current port status — 2026-08-14
+
+### Working and hardware-tested
+
+- [x] Full aarch64 game runtime builds and packages as a native NRO.
+- [x] Homebrew Menu title-takeover launch and SD-card application layout.
+- [x] NVK Vulkan surface, fixed 1280x720 FIFO swapchain, and native N64
+  internal rendering scaled by the VI pass.
+- [x] Switch SDL controller input and 48 kHz stereo audio. Long traces report
+  no empty audio queues or failed SDL submissions.
+- [x] Controller-first RmlUi launcher with Switch-safe file and mod actions.
+- [x] CPU TMEM decoding for the Switch path, including CI/TLUT and RGBA formats.
+- [x] Fenced two-stage decoded-texture upload: host-visible buffer to reusable
+  device-local buffer, then device-local buffer to sampled image.
+- [x] Explicit ARM data-cache clean before NVK consumes mapped upload memory.
+- [x] Correct post-copy `SHADER_READ` transitions for game and RmlUi textures.
+- [x] Exact merged display-list allocation; HUD-heavy frames no longer overrun
+  the frame arena after 14 graphics groups.
+- [x] CPU framebuffer color/depth copyback path that avoids unstable Switch
+  compute encoders.
+- [x] Serialized runtime raster specialization with ubershader fallback.
+- [x] Persistent NVK pipeline-cache load/save, live screenshots, timestamped
+  hardware logs, submit-history diagnostics, and performance-log analysis.
+- [x] Best hardware run so far: 145.6 seconds, 30.2 FPS median gameplay,
+  healthy audio, 136 MiB peak Vulkan budget use, and no reported Vulkan fatal
+  before the title/log connection closed.
+- [x] Reproducible dependency patch chain; every follow-up patch passes forward
+  and reverse application checks against the pinned submodules.
+
+### Still missing before the port is release-ready
+
+#### P0 — Rendering correctness and stability
+
+- [ ] Eliminate remaining HUD corruption in text, item icons, and item boxes.
+- [ ] Eliminate intermittent residual world-texture corruption.
+- [ ] Audit the raw-TMEM/S2DEX sampling path separately from decoded textures.
+  Moving raw-TMEM images onto the decoded-texture staging strategy was tested
+  and rejected because it made HUD corruption worse.
+- [ ] Complete a 30-minute uninterrupted race/menu stress test without a
+  Vulkan device loss, application exit, or increasing memory use.
+- [ ] Validate several courses, characters, weather effects, menus, and all
+  item types rather than relying on one representative race.
+- [ ] Validate both handheld and docked output on the supported NVK/Horizon
+  combination.
+
+#### P1 — Performance and frame pacing
+
+- [ ] Reduce the roughly 25-second first ubershader/pipeline initialization.
+- [ ] Improve heavy gameplay from the current high-20s/low-30s FPS baseline
+  while preserving correct framebuffer copyback.
+- [ ] Remove runtime pipeline-creation hitches. NVK currently serializes only
+  a 4,896-byte cache for this workload, so specialized pipelines still rebuild
+  after launch.
+- [ ] Measure thermals, clocks, and frame pacing on both Erista and Mariko.
+- [ ] Keep 60 FPS disabled until simulation timing and sustained rendering are
+  proven; 30 FPS remains the safe target.
+
+#### P1 — Platform and gameplay parity
+
+- [ ] Verify EEPROM saves, configuration persistence, quicksaves, and recovery
+  after an interrupted write on real SD cards.
+- [ ] Verify controller disconnect/reconnect, remapping, rumble, and four-player
+  local play with mixed Joy-Con/Pro Controller configurations.
+- [ ] Implement and test suspend/resume, HOME focus changes, dock/undock, and
+  clean shutdown during gameplay and saving.
+- [ ] Audit every launcher/settings screen for controller-only navigation and
+  add a Switch software-keyboard path where text entry is unavoidable.
+- [ ] Validate embedded mods, data-only SD mods, enable/disable persistence,
+  dependency errors, and malformed-mod recovery.
+- [ ] Decide whether live code mods can be supported safely under Horizon W^X
+  policy; keep them disabled until that work is complete.
+
+#### P2 — Release engineering
+
+- [ ] Add clean-container CI for patch application, generated code, NRO build,
+  packaging, and license collection.
+- [ ] Add a repeatable hardware smoke-test checklist and visual-regression
+  captures for launcher, title, menus, HUD, and representative courses.
+- [ ] Produce a release archive containing only redistributable assets, the
+  full NRO, controller database, documentation, and licenses—never game ROMs.
+- [ ] Document the pinned switch-nvk build and supported Atmosphere/Horizon
+  versions for users and contributors.
+
 ## Architectural finding
 
 Shipwright is a useful product and platform reference, but it is not a drop-in technical base. Shipwright is a decompilation/source port and can use the Switch homebrew OpenGL stack. This project is an N64 static recompilation whose display lists are rendered by RT64. RT64 currently targets Vulkan, D3D12, and Metal; the pinned runtime and renderer have no Horizon OS platform definitions.
@@ -81,6 +164,31 @@ full core stack without generated game code.
   an independent 8x-MSAA 720p target.
 
 Exit gate: launcher and an in-game scene render correctly for 30 minutes on both handheld and docked displays without validation errors, GPU faults, or unbounded memory growth.
+
+### Texture-upload reliability (hardware findings)
+
+The Switch CPU TMEM decoder was validated independently against captured CI4,
+TLUT, and RGBA output. The remaining horizontal texture corruption came from
+NVK's direct host-visible-buffer-to-image path, not the decoder. Tight rows
+reduced the damage, but direct copies still produced stale rows and eventually
+lost the Vulkan device.
+
+The current candidate uses two fenced transfer stages per decoded texture:
+
+1. host-visible upload buffer to a reusable device-local buffer;
+2. device-local buffer to the optimal sampled image, followed immediately by
+   the `COPY_DEST` to `SHADER_READ` transition.
+
+Each texture uses its own command list and each stage completes before the next
+stage begins. On hardware this removed the large world-texture stripes and
+survived 145.5 seconds of active gameplay without a Vulkan fence failure; small
+HUD/S2DEX artifacts still require validation, so the 30-minute M2 gate remains
+open. RmlUi uploads now also perform the previously missing post-copy shader-read
+transition.
+
+The game-side merged display-list patch now allocates exactly
+`4 + 3 * graphics_group_count` commands. The former fixed 48-command allocation
+overran the frame arena whenever HUD-heavy frames exceeded 14 graphics groups.
 
 ### M3 — Complete Switch UX
 
@@ -190,16 +298,16 @@ Use Atmosphere title takeover to enter hbmenu, press Y to start NetLoader, then
 upload and stream the full build:
 
 ```sh
-export SWITCH_IP=192.168.1.123
+export SWITCH_IP=192.168.222.237
 ./scripts/switch-run.sh
 ```
 
-The equivalent explicit form is `./scripts/switch-run.sh 192.168.1.123 full`.
+The equivalent explicit form is `./scripts/switch-run.sh 192.168.222.237 full`.
 
 To upload a specific diagnostic or candidate NRO without renaming it:
 
 ```sh
-./scripts/switch-run.sh build-switch-full/candidate.nro 192.168.1.123
+./scripts/switch-run.sh build-switch-full/candidate.nro 192.168.222.237
 ```
 
 `nxlink -s` receives an explicit checkpoint stream; stdout/stderr are not
@@ -218,7 +326,7 @@ While the game is running, fetch the composed 1280x720 frame (including UI)
 for visual-regression or texture-glitch inspection with:
 
 ```sh
-./scripts/switch-screenshot.sh 192.168.1.123 build-switch-logs/capture.jpg
+./scripts/switch-screenshot.sh 192.168.222.237 build-switch-logs/capture.jpg
 ```
 
 The target serves a synchronized renderer readback on TCP port 47474. Omitting
