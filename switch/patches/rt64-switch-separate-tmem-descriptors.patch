@@ -1,0 +1,92 @@
+diff --git a/src/render/rt64_framebuffer_renderer.h b/src/render/rt64_framebuffer_renderer.h
+--- a/src/render/rt64_framebuffer_renderer.h
++++ b/src/render/rt64_framebuffer_renderer.h
+@@ -89,6 +89,9 @@ namespace RT64 {
+         RenderPipeline *postBlendDitherNoiseSubNegativePipeline = nullptr;
+         std::unique_ptr<FramebufferRendererDescriptorCommonSet> descCommonSet;
+         std::unique_ptr<FramebufferRendererDescriptorTextureSet> descTextureSet;
++#if defined(__SWITCH__)
++        std::unique_ptr<FramebufferRendererDescriptorTextureSet> descTMEMSet;
++#endif
+         std::unique_ptr<RenderTexture> dummyColorTarget;
+         std::unique_ptr<RenderTexture> dummyDepthTarget;
+         std::unique_ptr<RenderTextureView> dummyColorTargetView;
+diff --git a/src/render/rt64_framebuffer_renderer.cpp b/src/render/rt64_framebuffer_renderer.cpp
+--- a/src/render/rt64_framebuffer_renderer.cpp
++++ b/src/render/rt64_framebuffer_renderer.cpp
+@@ -312,7 +312,14 @@ namespace RT64 {
+         
+         const bool createSet = (descTextureSet == nullptr) || (descTextureSet->textureCacheSize < (textureCacheSize + 1));
+         if (createSet) {
+-            descTextureSet = std::make_unique<FramebufferRendererDescriptorTextureSet>(worker->device, ((textureCacheSize + 1) * 3) / 2);
++            const uint32_t descriptorCount = ((textureCacheSize + 1) * 3) / 2;
++            descTextureSet = std::make_unique<FramebufferRendererDescriptorTextureSet>(worker->device, descriptorCount);
++#if defined(__SWITCH__)
++            // Keep 1D raw TMEM views out of the 2D texture descriptor set. NVK
++            // can otherwise alias the mixed image-view types when the same set
++            // is bound to both shader spaces.
++            descTMEMSet = std::make_unique<FramebufferRendererDescriptorTextureSet>(worker->device, descriptorCount);
++#endif
+         }
+ 
+         if (createSet || (descriptorTextureReplacementMapEnabled != textureCacheReplacementMapEnabled)) {
+@@ -401,7 +408,11 @@ namespace RT64 {
+                     descTextureSet->setTexture(i, textureCacheTextures[i]->texture.get(), RenderTextureLayout::SHADER_READ);
+                 }
+                 else {
++#if defined(__SWITCH__)
++                    descTMEMSet->setTexture(i, textureCacheTextures[i]->tmem.get(), RenderTextureLayout::SHADER_READ);
++#else
+                     descTextureSet->setTexture(i, textureCacheTextures[i]->tmem.get(), RenderTextureLayout::SHADER_READ);
++#endif
+                 }
+             }
+ 
+@@ -482,7 +493,11 @@ namespace RT64 {
+             worker->commandList->setGraphicsPipelineLayout(rendererPipelineLayout);
+             worker->commandList->setGraphicsDescriptorSet(descCommonSet->get(), 0);
+             worker->commandList->setGraphicsDescriptorSet(descTextureSet->get(), 1);
++#if defined(__SWITCH__)
++            worker->commandList->setGraphicsDescriptorSet(descTMEMSet->get(), 2);
++#else
+             worker->commandList->setGraphicsDescriptorSet(descTextureSet->get(), 2);
++#endif
+             worker->commandList->setGraphicsDescriptorSet(depthState ? descRealFbSet : descDummyFbSet, 3);
+             worker->commandList->setViewports(framebuffer.viewport);
+         };
+@@ -749,7 +764,11 @@ namespace RT64 {
+         
+         Framebuffer &framebuffer = framebufferVector[framebufferCount - 1];
+         RenderDescriptorSet *descRealDepthSet = framebuffer.descRealFbSet->get();
++#if defined(__SWITCH__)
++        RenderDescriptorSet *descriptorSets[] = { descCommonSet->get(), descTextureSet->get(), descTMEMSet->get(), descRealDepthSet };
++#else
+         RenderDescriptorSet *descriptorSets[] = { descCommonSet->get(), descTextureSet->get(), descTextureSet->get(), descRealDepthSet };
++#endif
+         rtResources->updateTopLevelASResources(worker, instanceDrawCallVector, rtScene.instanceIndices);
+         rtResources->createShaderBindingTable(worker, rtState, descriptorSets, uint32_t(std::size(descriptorSets)), hitGroupVector);
+         rtResources->updateLightsBuffer(worker, rtScene);
+@@ -810,7 +829,11 @@ namespace RT64 {
+         worker->commandList->setRaytracingPipelineLayout(rtPipelineLayout);
+         worker->commandList->setRaytracingDescriptorSet(descCommonSet->get(), 0);
+         worker->commandList->setRaytracingDescriptorSet(descTextureSet->get(), 1);
++#if defined(__SWITCH__)
++        worker->commandList->setRaytracingDescriptorSet(descTMEMSet->get(), 2);
++#else
+         worker->commandList->setRaytracingDescriptorSet(descTextureSet->get(), 2);
++#endif
+         worker->commandList->setRaytracingDescriptorSet(descRealFbSet, 3);
+         worker->commandList->traceRays(rtResources->textureWidth, rtResources->textureHeight, 1, rtResources->shaderBindingTableBuffer->at(0), rtResources->shaderBindingTableInfo.groups);
+ 
+@@ -1140,7 +1163,11 @@ namespace RT64 {
+             worker->commandList->setGraphicsPipelineLayout(debugShader.pipelineLayout.get());
+             worker->commandList->setGraphicsDescriptorSet(descCommonSet->get(), 0);
+             worker->commandList->setGraphicsDescriptorSet(descTextureSet->get(), 1);
++#if defined(__SWITCH__)
++            worker->commandList->setGraphicsDescriptorSet(descTMEMSet->get(), 2);
++#else
+             worker->commandList->setGraphicsDescriptorSet(descTextureSet->get(), 2);
++#endif
+             worker->commandList->setGraphicsDescriptorSet(descRealFbSet, 3);
+             worker->commandList->drawInstanced(3, 1, 0, 0);
+         }

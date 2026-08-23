@@ -81,9 +81,9 @@ if [[ -x /usr/bin/script ]]; then
     # frozen target can leave the newest diagnostics hidden in a 16 KiB host
     # buffer until the TCP connection finally closes.
     /usr/bin/script -q /dev/null \
-        nxlink --server --address "${SWITCH_ADDRESS}" "${NRO}" 2>&1 \
+        nxlink --server --retries 30 --address "${SWITCH_ADDRESS}" "${NRO}" 2>&1 \
         | tr -d '\r' | tee "${LOG_PATH}"
 else
-    nxlink --server --address "${SWITCH_ADDRESS}" "${NRO}" 2>&1 \
+    nxlink --server --retries 30 --address "${SWITCH_ADDRESS}" "${NRO}" 2>&1 \
         | tee "${LOG_PATH}"
 fi

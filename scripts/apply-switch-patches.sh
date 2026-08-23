@@ -155,6 +155,16 @@ apply_patch_set \
     "RT64 texture upload stability"
 
 apply_patch_set \
+    "${DEPENDENCY_ROOT}/rt64" \
+    "${REPO_ROOT}/switch/patches/rt64-switch-shader-warm-cache.patch" \
+    "RT64 Switch shader warm cache"
+
+apply_patch_set \
+    "${DEPENDENCY_ROOT}/rt64" \
+    "${REPO_ROOT}/switch/patches/rt64-switch-separate-tmem-descriptors.patch" \
+    "RT64 Switch separate TMEM descriptors"
+
+apply_patch_set \
     "${DEPENDENCY_ROOT}/rt64/src/contrib/implot" \
     "${REPO_ROOT}/switch/patches/implot-switch.patch" \
     "ImPlot"

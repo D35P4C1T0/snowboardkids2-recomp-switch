@@ -1,0 +1,228 @@
+diff --git a/src/render/rt64_raster_shader_cache.h b/src/render/rt64_raster_shader_cache.h
+--- a/src/render/rt64_raster_shader_cache.h
++++ b/src/render/rt64_raster_shader_cache.h
+@@ -55,8 +55,18 @@ namespace RT64 {
+         std::unique_ptr<ShaderCompiler> shaderCompiler;
+         RenderMultisampling multisampling;
+         bool usesHDR = false;
++#if defined(__SWITCH__)
++        std::filesystem::path descriptionCachePath;
++        std::mutex descriptionCacheMutex;
++        std::unordered_map<uint64_t, bool> persistedShaderHashes;
++        bool descriptionCacheReady = false;
++#endif
+         
+-        RasterShaderCache(uint32_t threadCount, uint32_t ubershaderThreadCount);
++        RasterShaderCache(uint32_t threadCount, uint32_t ubershaderThreadCount
++#if defined(__SWITCH__)
++            , const std::filesystem::path &descriptionCachePath = {}
++#endif
++        );
+         ~RasterShaderCache();
+         void setup(RenderDevice *device, RenderShaderFormat shaderFormat, const ShaderLibrary *shaderLibrary, const RenderMultisampling &multisampling);
+         void submit(const ShaderDescription &desc);
+@@ -65,5 +75,9 @@ namespace RT64 {
+         RasterShader *getGPUShader(const ShaderDescription &desc);
+         RasterShaderUber *getGPUShaderUber() const;
+         uint32_t shaderCount();
++#if defined(__SWITCH__)
++        void loadPersistentShaderDescriptions();
++        void persistShaderDescription(const ShaderDescription &desc);
++#endif
+     };
+ };
+diff --git a/src/render/rt64_raster_shader_cache.cpp b/src/render/rt64_raster_shader_cache.cpp
+--- a/src/render/rt64_raster_shader_cache.cpp
++++ b/src/render/rt64_raster_shader_cache.cpp
+@@ -4,12 +4,20 @@
+ 
+ #include "rt64_raster_shader_cache.h"
+ 
++#include <cstdio>
+ #include <cstdlib>
++#include <system_error>
++#include <type_traits>
++#include <vector>
+ 
+ #include "common/rt64_thread.h"
+ 
+ #define ENABLE_OPTIMIZED_SHADER_GENERATION
+ 
++#if defined(__SWITCH__)
++void switch_log_checkpoint(const char*, bool);
++#endif
++
+ namespace RT64 {
+     // RasterShaderCache::CompilationThread
+     
+@@ -100,6 +108,10 @@ namespace RT64 {
+                     shaderCache->GPUShaders[shaderDesc.hash()] = std::move(newShader);
+                 }
+ 
++#if defined(__SWITCH__)
++                shaderCache->persistShaderDescription(shaderDesc);
++#endif
++
+                 {
+                     const std::unique_lock<std::mutex> queueLock(shaderCache->descQueueMutex);
+                     assert(shaderCache->activeCompilationCount > 0);
+@@ -114,11 +126,18 @@ namespace RT64 {
+ 
+     // RasterShaderCache
+ 
+-    RasterShaderCache::RasterShaderCache(uint32_t threadCount, uint32_t ubershaderThreadCount) {
++    RasterShaderCache::RasterShaderCache(uint32_t threadCount, uint32_t ubershaderThreadCount
++#if defined(__SWITCH__)
++        , const std::filesystem::path &descriptionCachePath
++#endif
++    ) {
+         assert(threadCount > 0);
+ 
+         this->threadCount = threadCount;
+         this->ubershaderThreadCount = ubershaderThreadCount;
++#if defined(__SWITCH__)
++        this->descriptionCachePath = descriptionCachePath;
++#endif
+ 
+ #ifdef ENABLE_OPTIMIZED_SHADER_GENERATION
+ #   ifdef _WIN32
+@@ -149,6 +168,10 @@ namespace RT64 {
+         if (shaderFormat == RenderShaderFormat::SPIRV) {
+             optimizerCacheSPIRV.initialize();
+         }
++
++#if defined(__SWITCH__)
++        loadPersistentShaderDescriptions();
++#endif
+     }
+ 
+     void RasterShaderCache::submit(const ShaderDescription &desc) {
+@@ -217,5 +240,110 @@ namespace RT64 {
+     uint32_t RasterShaderCache::shaderCount() {
+         std::unique_lock<std::mutex> lock(GPUShadersMutex);
+         return GPUShaders.size();
++    }
++
++#if defined(__SWITCH__)
++    namespace {
++        constexpr uint64_t SwitchShaderDescriptionCacheMagic = 0x3153485344343652ULL;
++        constexpr uint32_t SwitchShaderDescriptionCacheVersion = 1;
++        constexpr uint32_t SwitchShaderDescriptionCacheLimit = 4096;
++
++#pragma pack(push, 1)
++        struct SwitchShaderDescriptionCacheHeader {
++            uint64_t magic;
++            uint32_t version;
++            uint32_t recordSize;
++        };
++
++        struct SwitchShaderDescriptionCacheRecord {
++            uint64_t hash;
++            ShaderDescription description;
++        };
++#pragma pack(pop)
++
++        static_assert(std::is_trivially_copyable_v<ShaderDescription>);
++    }
++
++    void RasterShaderCache::loadPersistentShaderDescriptions() {
++        if (descriptionCachePath.empty()) {
++            return;
++        }
++
++        std::vector<ShaderDescription> cachedDescriptions;
++        {
++            const std::unique_lock<std::mutex> cacheLock(descriptionCacheMutex);
++            persistedShaderHashes.clear();
++            std::ifstream cacheFile(descriptionCachePath, std::ios::binary);
++            SwitchShaderDescriptionCacheHeader header{};
++            const bool validHeader = cacheFile.read(reinterpret_cast<char *>(&header), sizeof(header)) &&
++                (header.magic == SwitchShaderDescriptionCacheMagic) &&
++                (header.version == SwitchShaderDescriptionCacheVersion) &&
++                (header.recordSize == sizeof(SwitchShaderDescriptionCacheRecord));
++
++            if (validHeader) {
++                SwitchShaderDescriptionCacheRecord record{};
++                while ((cachedDescriptions.size() < SwitchShaderDescriptionCacheLimit) &&
++                    cacheFile.read(reinterpret_cast<char *>(&record), sizeof(record)))
++                {
++                    record.description.maskUnusedParameters();
++                    if (record.hash == record.description.hash()) {
++                        cachedDescriptions.emplace_back(record.description);
++                        persistedShaderHashes[record.hash] = true;
++                    }
++                }
++            }
++
++            // Canonicalize the file on every load so an interrupted final
++            // record can never misalign descriptions appended by this run.
++            cacheFile.close();
++            std::error_code pathError;
++            std::filesystem::create_directories(descriptionCachePath.parent_path(), pathError);
++            std::ofstream normalizedCacheFile(descriptionCachePath, std::ios::binary | std::ios::trunc);
++            const SwitchShaderDescriptionCacheHeader newHeader = {
++                SwitchShaderDescriptionCacheMagic,
++                SwitchShaderDescriptionCacheVersion,
++                uint32_t(sizeof(SwitchShaderDescriptionCacheRecord))
++            };
++            descriptionCacheReady = bool(normalizedCacheFile.write(
++                reinterpret_cast<const char *>(&newHeader), sizeof(newHeader)));
++            for (const ShaderDescription &description : cachedDescriptions) {
++                const SwitchShaderDescriptionCacheRecord record = {
++                    description.hash(), description
++                };
++                descriptionCacheReady = descriptionCacheReady && bool(normalizedCacheFile.write(
++                    reinterpret_cast<const char *>(&record), sizeof(record)));
++            }
++            normalizedCacheFile.flush();
++        }
++
++        for (const ShaderDescription &description : cachedDescriptions) {
++            submit(description);
++        }
++
++        char cacheMessage[160]{};
++        std::snprintf(cacheMessage, sizeof(cacheMessage),
++            "rt64 shader warm cache: loaded %zu descriptions", cachedDescriptions.size());
++        switch_log_checkpoint(cacheMessage, false);
+     }
++
++    void RasterShaderCache::persistShaderDescription(const ShaderDescription &desc) {
++        if (descriptionCachePath.empty()) {
++            return;
++        }
++
++        const uint64_t shaderHash = desc.hash();
++        const std::unique_lock<std::mutex> cacheLock(descriptionCacheMutex);
++        bool &alreadyPersisted = persistedShaderHashes[shaderHash];
++        if (alreadyPersisted || !descriptionCacheReady) {
++            return;
++        }
++
++        const SwitchShaderDescriptionCacheRecord record = { shaderHash, desc };
++        std::ofstream cacheFile(descriptionCachePath, std::ios::binary | std::ios::app);
++        if (cacheFile.write(reinterpret_cast<const char *>(&record), sizeof(record))) {
++            cacheFile.flush();
++            alreadyPersisted = true;
++        }
++    }
++#endif
+ };
+diff --git a/src/hle/rt64_application.cpp b/src/hle/rt64_application.cpp
+--- a/src/hle/rt64_application.cpp
++++ b/src/hle/rt64_application.cpp
+@@ -396,7 +396,14 @@ namespace RT64 {
+         const uint32_t rasterShaderThreads = std::max(threadsAvailable / 2U, 1U);
+ #endif
+         const uint32_t ubershaderThreads = uint32_t(std::max(int(threadsAvailable) - 2, 1));
++#if defined(__SWITCH__)
++        const std::filesystem::path switchShaderDescriptionCachePath =
++            "sdmc:/switch/snowboardkids2-recompiled/cache/rt64-raster-shaders-v1.bin";
++        rasterShaderCache = std::make_unique<RasterShaderCache>(rasterShaderThreads,
++            ubershaderThreads, switchShaderDescriptionCachePath);
++#else
+         rasterShaderCache = std::make_unique<RasterShaderCache>(rasterShaderThreads, ubershaderThreads);
++#endif
+         rasterShaderCache->setup(device.get(), renderInterface->getCapabilities().shaderFormat, shaderLibrary.get(), multisampling);
+         RT64_SWITCH_CHECKPOINT("rt64 setup: raster shader cache ready");
+ #if defined(__SWITCH__)
