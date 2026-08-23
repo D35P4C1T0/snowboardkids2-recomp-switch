@@ -92,6 +92,11 @@ apply_patch_set \
     "RecompFrontend texture upload barrier"
 
 apply_patch_set \
+    "${DEPENDENCY_ROOT}/RecompFrontend" \
+    "${REPO_ROOT}/switch/patches/recompfrontend-switch-screenshot-hotkey.patch" \
+    "RecompFrontend R3 screenshot hotkey"
+
+apply_patch_set \
     "${DEPENDENCY_ROOT}/RecompFrontend/recompui/lib/lunasvg" \
     "${REPO_ROOT}/switch/patches/lunasvg-switch.patch" \
     "lunasvg"

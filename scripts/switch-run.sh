@@ -73,6 +73,20 @@ mkdir -p "${LOG_DIR}"
 LOG_NAME=${MODE//[^A-Za-z0-9._-]/_}
 LOG_PATH="${LOG_DIR}/${LOG_NAME}-$(date '+%Y%m%d-%H%M%S').log"
 
+CAPTURE_WATCHER_PID=""
+stop_capture_watcher() {
+    if [[ -n "${CAPTURE_WATCHER_PID}" ]]; then
+        kill "${CAPTURE_WATCHER_PID}" 2>/dev/null || true
+        wait "${CAPTURE_WATCHER_PID}" 2>/dev/null || true
+    fi
+}
+trap stop_capture_watcher EXIT INT TERM
+
+if [[ "${MODE}" == "full" ]]; then
+    "${SCRIPT_DIR}/switch-capture-watch.sh" "${SWITCH_ADDRESS}" &
+    CAPTURE_WATCHER_PID=$!
+fi
+
 echo "Open hbmenu through Atmosphere title takeover (hold R while launching a game), then press Y for NetLoader."
 echo "Uploading ${NRO} to ${SWITCH_ADDRESS}"
 echo "Streaming log to ${LOG_PATH}"

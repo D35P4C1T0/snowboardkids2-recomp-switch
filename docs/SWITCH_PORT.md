@@ -6,7 +6,7 @@ Produce a native Horizon OS homebrew build of Snowboard Kids 2: Recompiled with 
 
 The port must not contain or download copyrighted game data. Users will copy their own supported Snowboard Kids 2 ROM to the application directory.
 
-## Current port status — 2026-08-14
+## Current port status — 2026-08-23
 
 ### Working and hardware-tested
 
@@ -29,6 +29,9 @@ The port must not contain or download copyrighted game data. Users will copy the
 - [x] Serialized runtime raster specialization with ubershader fallback.
 - [x] Persistent NVK pipeline-cache load/save, live screenshots, timestamped
   hardware logs, submit-history diagnostics, and performance-log analysis.
+- [x] NetLoader-only R3 capture workflow: R3 captures the next composed frame,
+  the host watcher downloads it automatically, and normal SD launches retain
+  the original R3 mapping.
 - [x] Best hardware run so far: 145.6 seconds, 30.2 FPS median gameplay,
   healthy audio, 136 MiB peak Vulkan budget use, and no reported Vulkan fatal
   before the title/log connection closed.
@@ -43,6 +46,9 @@ The port must not contain or download copyrighted game data. Users will copy the
 #### P0 — Rendering correctness and stability
 
 - [ ] Eliminate remaining HUD corruption in text, item icons, and item boxes.
+- [ ] Eliminate corruption in frontend-generated launcher buttons, version
+  text, file-select messages, and other transparent 2D layers. R3 captures
+  confirm this is not limited to N64-decoded textures.
 - [ ] Eliminate intermittent residual world-texture corruption.
 - [ ] Audit the raw-TMEM/S2DEX sampling path separately from decoded textures.
   Moving raw-TMEM images onto the decoded-texture staging strategy was tested
@@ -53,6 +59,40 @@ The port must not contain or download copyrighted game data. Users will copy the
   item types rather than relying on one representative race.
 - [ ] Validate both handheld and docked output on the supported NVK/Horizon
   combination.
+
+### Next texture tests
+
+Run each candidate through `./scripts/switch-run.sh <switch-ip> full`. Pause at
+each named screen and press R3 once; the host stores timestamped JPEGs under
+`build-switch-logs/`.
+
+1. Make the GPU upload verifier reproducible in the dependency patch chain.
+   Compare source bytes against a cache-correct image-to-buffer readback for a
+   generated launcher button, a decoded N64 texture, and a raw-TMEM texture.
+2. Capture the launcher after its buttons and version text are visible, then
+   file select, title menu, character select, race HUD before item pickup, race
+   HUD with an item, pause, and results. Keep one clean reference capture for
+   every screen.
+3. If uploaded texture bytes differ, isolate the first failing boundary:
+   mapped upload buffer, device-local staging buffer, or sampled image. Test a
+   dedicated staging allocation before changing shaders or descriptors.
+4. If uploaded texture bytes are exact, verify GPU-visible UI vertex/index
+   data and RT64 tile metadata next; bad UVs can select coherent but unrelated
+   regions from otherwise-correct textures.
+5. After the first visual fix, repeat item pickup/use, dialogue glyphs, all
+   character portraits, every item icon, and S2DEX-heavy menus on multiple
+   courses. Reject fixes that only improve one capture.
+6. Re-run a 30-minute menu/race loop at stock clocks. Require no device loss,
+   no growing Vulkan allocation count, healthy audio queues, and gameplay at
+   or above the current high-20s/low-30s FPS baseline.
+
+Rejected diagnostic directions should not be reintroduced without new
+evidence: ubershader-only rendering left corruption intact and reduced
+gameplay to roughly 7–9 FPS; per-frame descriptor-set recreation left
+corruption intact and later lost the device; full upload-buffer cache clean,
+raw-TMEM-as-decoded-texture staging, and RGBA/BGRA format substitutions did not
+produce a general fix. Texture-cache and tile-copy miss counters also remained
+zero in the captured failures.
 
 #### P1 — Performance and frame pacing
 
@@ -348,6 +388,12 @@ for visual-regression or texture-glitch inspection with:
 The target serves a synchronized renderer readback on TCP port 47474. Omitting
 the output argument creates a timestamped JPEG under `build-switch-logs/`.
 
+For rapid manual capture during a full NetLoader run, press R3. The target
+captures the next presented frame and `switch-run.sh` automatically saves it
+as `build-switch-logs/manual-YYYYMMDD-HHMMSS.jpg`. R3 is reserved and consumed
+only while the debug screenshot server is active; a normal SD launch preserves
+the game's configured R3 action.
+
 Summarize a captured run, or export its performance windows for plotting, with:
 
 ```sh
@@ -428,15 +474,19 @@ playable-performance target.
 
 ## Current gates before a playable build
 
-1. Hardware-validate the fixed 720p swapchain, single-sampled UI glyphs,
-   deduplicated controller hints, and ubershader-only renderer through every
-   frontend and in-game menu.
-2. Exercise audio, EEPROM saves, controller mappings, suspend/resume, and memory use in a long gameplay session.
-3. Validate the reconstructed VertexTestZ continuation slices, split color/depth
-   render-to-RDRAM copy-back, and zero-copy native-buffer registration through
-   races, menus, suspend/resume, and dock changes. Keep CPU-copy marker testing
-   as recovery coverage. Compare gameplay against the measured 39.17 FPS median
-   baseline and require zero audio empty queues or submission failures.
-4. Runtime code mods remain intentionally unavailable until a safe Horizon W^X policy is implemented; embedded and data-only mods are the first playable target.
+1. Fix transparent/generated 2D textures across frontend and in-game HUD
+   captures without regressing coherent world textures or stock-clock frame
+   rate. Use the `Next texture tests` sequence above.
+2. Complete a 30-minute menu/race stress run with no Vulkan device loss,
+   increasing allocation count, audio empty queue, or SDL submission failure.
+3. Validate EEPROM saves, controller mappings, suspend/resume, HOME focus,
+   handheld/docked transitions, and clean shutdown during saving.
+4. Validate reconstructed VertexTestZ continuation slices, split color/depth
+   render-to-RDRAM copy-back, and zero-copy native-buffer registration across
+   several courses and characters. Keep CPU-copy marker testing as recovery
+   coverage.
+5. Runtime code mods remain intentionally unavailable until a safe Horizon W^X
+   policy is implemented; embedded and data-only mods are the first playable
+   target.
 
 These are engineering gates, not reasons to fork the game logic. The recompiled ARM64 code, SDL audio/input model, assets, configuration system, and most UI/game features remain reusable.

@@ -138,6 +138,12 @@ copying a log from the SD card. The network writes are nonblocking: a lost or
 slow nxlink receiver drops messages instead of freezing a game thread. The NRO
 does not create or write `startup.log`; hardware diagnostics are nxlink-only.
 
+During a full NetLoader run, press R3 to capture the next composed frame. The
+host watcher started by `switch-run.sh` downloads it automatically to
+`build-switch-logs/manual-YYYYMMDD-HHMMSS.jpg` and prints the exact path. R3 is
+reserved only while this debug capture server is active; normal SD launches
+keep the configured game binding.
+
 The full Switch build always presents at 1280x720. Game render targets default
 to native N64 resolution for GM20B/NVK stability and are scaled by RT64's VI
 pass. To compare the older 480p internal path, create the empty file

@@ -1,0 +1,55 @@
+diff --git a/recompinput/src/input_events.cpp b/recompinput/src/input_events.cpp
+--- a/recompinput/src/input_events.cpp
++++ b/recompinput/src/input_events.cpp
+@@ -10,3 +10,8 @@ static struct {
+ } DropState;
+-
++
++#if defined(__SWITCH__)
++extern "C" bool switch_manual_screenshot_enabled();
++extern "C" bool switch_request_manual_screenshot();
++#endif
++
+ namespace recompinput {
+@@ -56,5 +61,16 @@ bool sdl_event_filter(void* userdata, SDL_Event* event) {
+         event->cbutton.button = switch_face_button_from_sdl_position(event->cbutton.button);
+     }
++
++    // Reserve R3 for zero-menu texture debugging on Switch. Consume both
++    // edges so it never leaks into an N64 or frontend binding.
++    if ((event->type == SDL_CONTROLLERBUTTONDOWN || event->type == SDL_CONTROLLERBUTTONUP) &&
++        (event->cbutton.button == SDL_CONTROLLER_BUTTON_RIGHTSTICK) &&
++        switch_manual_screenshot_enabled()) {
++        if (event->type == SDL_CONTROLLERBUTTONDOWN) {
++            switch_request_manual_screenshot();
++        }
++        return false;
++    }
+ #endif
+-
++
+     switch (event->type) {
+diff --git a/recompinput/src/input_state.cpp b/recompinput/src/input_state.cpp
+--- a/recompinput/src/input_state.cpp
++++ b/recompinput/src/input_state.cpp
+@@ -12,4 +12,6 @@ using namespace recompinput;
+ using namespace recompinput;
+-
++
+ #if defined(__SWITCH__)
++extern "C" bool switch_manual_screenshot_enabled();
++
+ static SDL_GameControllerButton switch_face_button_to_sdl_position(SDL_GameControllerButton button) {
+@@ -149,6 +151,12 @@ void recompinput::update_rumble() {
+ bool controller_button_state(int controller_num, int32_t input_id) {
+     if (input_id >= 0 && input_id < SDL_GameControllerButton::SDL_CONTROLLER_BUTTON_MAX) {
+         SDL_GameControllerButton button = (SDL_GameControllerButton)input_id;
++#if defined(__SWITCH__)
++        if ((button == SDL_CONTROLLER_BUTTON_RIGHTSTICK) &&
++            switch_manual_screenshot_enabled()) {
++            return false;
++        }
++#endif
+ #if defined(__SWITCH__)
+         button = switch_face_button_to_sdl_position(button);
+ #endif

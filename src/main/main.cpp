@@ -99,6 +99,9 @@ std::vector<uint8_t> switch_screenshot_pixels;
 uint32_t switch_screenshot_width = 0;
 uint32_t switch_screenshot_height = 0;
 bool switch_screenshot_ready = false;
+std::atomic<bool> switch_manual_screenshot_pending{false};
+uint64_t switch_manual_screenshot_sequence = 0;
+uint64_t switch_manual_screenshot_served = 0;
 
 bool switch_send_all(int socket_fd, const void *data, size_t size) {
     const uint8_t *bytes = static_cast<const uint8_t *>(data);
@@ -117,6 +120,30 @@ bool switch_send_all(int socket_fd, const void *data, size_t size) {
     }
 
     return true;
+}
+
+bool switch_encode_screenshot_jpeg(const std::vector<uint8_t> &pixels,
+    uint32_t width, uint32_t height, std::vector<uint8_t> &jpeg_buffer)
+{
+    if (pixels.empty() || (width == 0) || (height == 0)) {
+        return false;
+    }
+
+    plutovg_surface_t *surface = plutovg_surface_create_for_data(
+        const_cast<uint8_t *>(pixels.data()), int(width), int(height), int(width * 4));
+    if (surface == nullptr) {
+        return false;
+    }
+
+    auto write_jpeg = [](void *closure, void *data, int size) {
+        auto *bytes = static_cast<std::vector<uint8_t> *>(closure);
+        const uint8_t *source = static_cast<const uint8_t *>(data);
+        bytes->insert(bytes->end(), source, source + size);
+    };
+    const bool encoded = plutovg_surface_write_to_jpg_stream(surface, write_jpeg,
+        &jpeg_buffer, 90);
+    plutovg_surface_destroy(surface);
+    return encoded && !jpeg_buffer.empty();
 }
 
 void switch_screenshot_server() {
@@ -163,7 +190,9 @@ void switch_screenshot_server() {
         const ssize_t request_size = recv(client, request, sizeof(request) - 1, 0);
         const bool screenshot_request = (request_size > 0) &&
             (std::strncmp(request, "GET /screenshot.jpg ", 20) == 0);
-        if (!screenshot_request) {
+        const bool manual_screenshot_request = (request_size > 0) &&
+            (std::strncmp(request, "GET /manual.jpg ", 16) == 0);
+        if (!screenshot_request && !manual_screenshot_request) {
             static constexpr char response[] =
                 "HTTP/1.1 404 Not Found\r\nConnection: close\r\nContent-Length: 0\r\n\r\n";
             switch_send_all(client, response, sizeof(response) - 1);
@@ -174,7 +203,8 @@ void switch_screenshot_server() {
         std::vector<uint8_t> pixels;
         uint32_t width = 0;
         uint32_t height = 0;
-        {
+        uint64_t manual_sequence = 0;
+        if (screenshot_request) {
             std::unique_lock screenshot_lock(switch_screenshot_mutex);
             switch_screenshot_ready = false;
             switch_screenshot_requested.store(true, std::memory_order_release);
@@ -187,34 +217,52 @@ void switch_screenshot_server() {
                 height = switch_screenshot_height;
             }
         }
-
-        std::vector<uint8_t> jpeg_buffer;
-        bool encoded = false;
-        if (!pixels.empty() && (width > 0) && (height > 0)) {
-            plutovg_surface_t *surface = plutovg_surface_create_for_data(
-                pixels.data(), int(width), int(height), int(width * 4));
-            if (surface != nullptr) {
-                auto write_jpeg = [](void *closure, void *data, int size) {
-                    auto *bytes = static_cast<std::vector<uint8_t> *>(closure);
-                    const uint8_t *source = static_cast<const uint8_t *>(data);
-                    bytes->insert(bytes->end(), source, source + size);
-                };
-                encoded = plutovg_surface_write_to_jpg_stream(surface, write_jpeg,
-                    &jpeg_buffer, 90);
-                plutovg_surface_destroy(surface);
+        else {
+            const std::lock_guard screenshot_lock(switch_screenshot_mutex);
+            if (switch_screenshot_ready &&
+                (switch_manual_screenshot_sequence > switch_manual_screenshot_served))
+            {
+                pixels = switch_screenshot_pixels;
+                width = switch_screenshot_width;
+                height = switch_screenshot_height;
+                manual_sequence = switch_manual_screenshot_sequence;
+            }
+            else {
+                static constexpr char response[] =
+                    "HTTP/1.1 204 No Content\r\nConnection: close\r\nContent-Length: 0\r\n\r\n";
+                switch_send_all(client, response, sizeof(response) - 1);
+                close(client);
+                continue;
             }
         }
+
+        std::vector<uint8_t> jpeg_buffer;
+        const bool encoded = switch_encode_screenshot_jpeg(pixels, width, height,
+            jpeg_buffer);
 
         if (encoded && !jpeg_buffer.empty()) {
             char header[256]{};
             const int header_size = std::snprintf(header, sizeof(header),
                 "HTTP/1.1 200 OK\r\nContent-Type: image/jpeg\r\nContent-Length: %zu\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
                 jpeg_buffer.size());
-            switch_send_all(client, header, size_t(header_size));
-            switch_send_all(client, jpeg_buffer.data(), jpeg_buffer.size());
+            const bool sent = switch_send_all(client, header, size_t(header_size)) &&
+                switch_send_all(client, jpeg_buffer.data(), jpeg_buffer.size());
+            if (sent && manual_screenshot_request) {
+                const std::lock_guard screenshot_lock(switch_screenshot_mutex);
+                switch_manual_screenshot_served = std::max(
+                    switch_manual_screenshot_served, manual_sequence);
+            }
             char message[128]{};
-            std::snprintf(message, sizeof(message), "screenshot: served JPEG %ux%u bytes=%zu",
-                width, height, jpeg_buffer.size());
+            if (manual_screenshot_request) {
+                std::snprintf(message, sizeof(message),
+                    "screenshot: R3 JPEG #%" PRIu64 " served %ux%u bytes=%zu",
+                    manual_sequence, width, height, jpeg_buffer.size());
+            }
+            else {
+                std::snprintf(message, sizeof(message),
+                    "screenshot: served JPEG %ux%u bytes=%zu",
+                    width, height, jpeg_buffer.size());
+            }
             switch_log_checkpoint(message, false);
         }
         else {
@@ -287,6 +335,24 @@ extern "C" bool switch_screenshot_capture_requested() {
     return switch_screenshot_requested.load(std::memory_order_acquire);
 }
 
+extern "C" bool switch_manual_screenshot_enabled() {
+    return switch_screenshot_running.load(std::memory_order_relaxed);
+}
+
+extern "C" bool switch_request_manual_screenshot() {
+    if (!switch_manual_screenshot_enabled()) {
+        return false;
+    }
+
+    bool expected = false;
+    if (switch_manual_screenshot_pending.compare_exchange_strong(expected, true)) {
+        switch_screenshot_requested.store(true, std::memory_order_release);
+        switch_log_checkpoint("screenshot: R3 capture requested", false);
+    }
+
+    return true;
+}
+
 extern "C" void switch_screenshot_capture_complete(const void *pixels, size_t size,
     uint32_t width, uint32_t height)
 {
@@ -294,6 +360,9 @@ extern "C" void switch_screenshot_capture_complete(const void *pixels, size_t si
         return;
     }
 
+    uint64_t manual_sequence = 0;
+    const bool manual_capture = switch_manual_screenshot_pending.exchange(false,
+        std::memory_order_acq_rel);
     {
         const std::lock_guard screenshot_lock(switch_screenshot_mutex);
         const uint8_t *source = static_cast<const uint8_t *>(pixels);
@@ -301,10 +370,19 @@ extern "C" void switch_screenshot_capture_complete(const void *pixels, size_t si
         switch_screenshot_width = width;
         switch_screenshot_height = height;
         switch_screenshot_ready = true;
+        if (manual_capture) {
+            manual_sequence = ++switch_manual_screenshot_sequence;
+        }
         switch_screenshot_requested.store(false, std::memory_order_release);
     }
 
     switch_screenshot_condition.notify_all();
+    if (manual_capture) {
+        char message[96]{};
+        std::snprintf(message, sizeof(message),
+            "screenshot: R3 capture #%" PRIu64 " ready", manual_sequence);
+        switch_log_checkpoint(message, false);
+    }
 }
 
 void switch_log_checkpoint(const char* message, bool reset = false) {
