@@ -1,8 +1,7 @@
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 0789c20..07326ab 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
-@@ -14,10 +14,15 @@ if(APPLE)
+@@ -14,10 +14,15 @@
  endif()
  
  string(COMPARE EQUAL ${CMAKE_SYSTEM_NAME} "Linux" IS_LINUX)
@@ -19,7 +18,7 @@ index 0789c20..07326ab 100644
  cmake_dependent_option(PLUME_D3D12_AGILITY_SDK_ENABLED "Enable D3D12 Agility SDK" OFF WIN32 OFF)
  cmake_dependent_option(PLUME_APPLE_RETINA_ENABLED "Enable Apple Retina display support" ON APPLE ON)
  option(PLUME_BUILD_EXAMPLES "Build example applications" OFF)
-@@ -75,6 +80,10 @@ endif()
+@@ -75,6 +80,10 @@
  # Create target
  add_library(plume STATIC ${PLUME_SOURCES})
  
@@ -30,11 +29,21 @@ index 0789c20..07326ab 100644
  # Include directories
  target_include_directories(plume PUBLIC
      ${CMAKE_CURRENT_SOURCE_DIR}
+diff --git a/plume_render_interface.h b/plume_render_interface.h
+--- a/plume_render_interface.h
++++ b/plume_render_interface.h
+@@ -230,6 +230,7 @@
+         virtual std::unique_ptr<RenderSampler> createSampler(const RenderSamplerDesc &desc) = 0;
+         virtual std::unique_ptr<RenderPipeline> createComputePipeline(const RenderComputePipelineDesc &desc) = 0;
+         virtual std::unique_ptr<RenderPipeline> createGraphicsPipeline(const RenderGraphicsPipelineDesc &desc) = 0;
++        virtual void savePipelineCache() { }
+         virtual std::unique_ptr<RenderPipeline> createRaytracingPipeline(const RenderRaytracingPipelineDesc &desc, const RenderPipeline *previousPipeline = nullptr) = 0;
+         virtual std::unique_ptr<RenderCommandQueue> createCommandQueue(RenderCommandListType type) = 0;
+         virtual std::unique_ptr<RenderBuffer> createBuffer(const RenderBufferDesc &desc) = 0;
 diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
-index f1dd503..311a134 100644
 --- a/plume_vulkan.cpp
 +++ b/plume_vulkan.cpp
-@@ -11,10 +11,21 @@
+@@ -11,9 +11,20 @@
  #include "plume_vulkan.h"
  
  #include <algorithm>
@@ -43,7 +52,7 @@ index f1dd503..311a134 100644
  #include <climits>
 +#include <cstdio>
  #include <unordered_map>
- 
++
 +#if defined(__SWITCH__)
 +#include <switch.h>
 +
@@ -52,28 +61,129 @@ index f1dd503..311a134 100644
 +extern "C" VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL
 +vk_icdGetInstanceProcAddr(VkInstance instance, const char *name);
 +#endif
-+
+ 
  #if DLSS_ENABLED
  #   include "render/plume_dlss.h"
- #endif
-@@ -28,6 +39,16 @@
+@@ -28,6 +39,118 @@
  // - Fix resource pools.
  
  namespace plume {
 +#if defined(__SWITCH__)
 +    static std::atomic<uint32_t> SwitchSubmitSequence{0};
-+    static thread_local char SwitchSubmitContext[256] = "unlabeled";
++    static thread_local char SwitchSubmitContext[512] = "unlabeled";
++    static constexpr const char *SwitchPipelineCachePath =
++        "sdmc:/switch/snowboardkids2-recompiled/cache/nvk-pipeline-cache.bin";
++    static constexpr const char *SwitchPipelineCacheTemporaryPath =
++        "sdmc:/switch/snowboardkids2-recompiled/cache/nvk-pipeline-cache.tmp";
++    static constexpr size_t SwitchPipelineCacheSizeLimit = 64U * 1024U * 1024U;
++
++    static bool loadSwitchPipelineCache(std::vector<uint8_t> &bytes) {
++        FILE *file = std::fopen(SwitchPipelineCachePath, "rb");
++        if (file == nullptr) {
++            return false;
++        }
++
++        bool loaded = false;
++        if ((std::fseek(file, 0, SEEK_END) == 0)) {
++            const long fileSize = std::ftell(file);
++            if ((fileSize > 0) && (size_t(fileSize) <= SwitchPipelineCacheSizeLimit) &&
++                (std::fseek(file, 0, SEEK_SET) == 0)) {
++                bytes.resize(size_t(fileSize));
++                loaded = std::fread(bytes.data(), 1, bytes.size(), file) == bytes.size();
++            }
++        }
++
++        std::fclose(file);
++        if (!loaded) {
++            bytes.clear();
++        }
++
++        return loaded;
++    }
++
++    static bool storeSwitchPipelineCache(const uint8_t *bytes, size_t byteCount) {
++        FILE *file = std::fopen(SwitchPipelineCacheTemporaryPath, "wb");
++        if (file == nullptr) {
++            return false;
++        }
++
++        const bool written = (std::fwrite(bytes, 1, byteCount, file) == byteCount) &&
++            (std::fflush(file) == 0);
++        const bool closed = std::fclose(file) == 0;
++        if (!written || !closed) {
++            std::remove(SwitchPipelineCacheTemporaryPath);
++            return false;
++        }
++
++        if (std::rename(SwitchPipelineCacheTemporaryPath, SwitchPipelineCachePath) != 0) {
++            std::remove(SwitchPipelineCacheTemporaryPath);
++            return false;
++        }
++
++        return true;
++    }
 +
 +    extern "C" void plume_switch_set_submit_context(const char *context) {
 +        std::snprintf(SwitchSubmitContext, sizeof(SwitchSubmitContext), "%s",
 +            context != nullptr ? context : "unlabeled");
++    }
++
++    static void recordSwitchSubmit(VulkanQueue::SubmitRecord &record, uint32_t sequence, const char *context) {
++        record.sequence = sequence;
++        std::snprintf(record.context, sizeof(record.context), "%s", context);
++    }
++
++    static void formatSwitchSubmitHistory(const std::array<VulkanQueue::SubmitRecord, 4> &history,
++        uint32_t cursor, char *output, size_t outputSize)
++    {
++        size_t outputLength = 0;
++        output[0] = '\0';
++        const uint32_t available = std::min(cursor, uint32_t(history.size()));
++        for (uint32_t offset = 0; offset < available; offset++) {
++            const uint32_t index = (cursor - 1U - offset) % uint32_t(history.size());
++            const VulkanQueue::SubmitRecord &record = history[index];
++            const int written = std::snprintf(output + outputLength, outputSize - outputLength,
++                "%s#%u '%s'", (offset == 0) ? "" : " | ", record.sequence, record.context);
++            if (written < 0) {
++                break;
++            }
++
++            const size_t writtenSize = size_t(written);
++            if (writtenSize >= (outputSize - outputLength)) {
++                outputLength = outputSize - 1;
++                break;
++            }
++
++            outputLength += writtenSize;
++        }
++    }
++
++    static void logSwitchSubmitHistory(VulkanQueue *queue) {
++        char submittedMessage[1200]{};
++        char completedMessage[1200]{};
++        {
++            const std::scoped_lock queueLock(*queue->mutex);
++            char submittedHistory[1100]{};
++            char completedHistory[1100]{};
++            formatSwitchSubmitHistory(queue->submittedHistory, queue->submittedHistoryCursor,
++                submittedHistory, sizeof(submittedHistory));
++            formatSwitchSubmitHistory(queue->completedHistory, queue->completedHistoryCursor,
++                completedHistory, sizeof(completedHistory));
++            std::snprintf(submittedMessage, sizeof(submittedMessage),
++                "fatal-history: last submitted %s", submittedHistory);
++            std::snprintf(completedMessage, sizeof(completedMessage),
++                "fatal-history: last completed %s", completedHistory);
++        }
++
++        switch_log_checkpoint(submittedMessage, false);
++        switch_log_checkpoint(completedMessage, false);
 +    }
 +#endif
 +
      // Backend constants.
  
      // Required buffer alignment for acceleration structures.
-@@ -39,7 +60,15 @@ namespace plume {
+@@ -39,7 +162,15 @@
      // Controls the maximum amount of native queues the backend will create per queue family.
      // Command queues are created as virtual queues on top of the native queues provided by Vulkan,
      // so they're not under the limit set by the the device or the backend.
@@ -89,7 +199,7 @@ index f1dd503..311a134 100644
  
      // Required extensions.
  
-@@ -58,6 +87,8 @@ namespace plume {
+@@ -58,6 +189,8 @@
  #   endif
  #   elif defined(__APPLE__)
          VK_EXT_METAL_SURFACE_EXTENSION_NAME,
@@ -98,7 +208,7 @@ index f1dd503..311a134 100644
  #   endif
      };
  
-@@ -909,10 +940,28 @@ namespace plume {
+@@ -909,11 +1042,41 @@
              return nullptr;
          }
  
@@ -113,21 +223,34 @@ index f1dd503..311a134 100644
 +            }
 +        }
 +
++#if defined(__SWITCH__)
++        switchMappedData = data;
++#endif
          return data;
      }
  
      void VulkanBuffer::unmap(uint32_t subresource, const RenderRange *writtenRange) {
 +        const VkDeviceSize offset = (writtenRange != nullptr) ? writtenRange->begin : 0;
 +        const VkDeviceSize size = (writtenRange != nullptr) ? (writtenRange->end - writtenRange->begin) : VK_WHOLE_SIZE;
++#if defined(__SWITCH__)
++        if ((desc.heapType == RenderHeapType::UPLOAD) && (switchMappedData != nullptr)) {
++            const size_t cleanSize = (size == VK_WHOLE_SIZE) ? size_t(desc.size) : size_t(size);
++            armDCacheClean(static_cast<uint8_t *>(switchMappedData) + offset, cleanSize);
++        }
++#endif
 +        VkResult res = vmaFlushAllocation(device->allocator, allocation, offset, size);
 +        if (res != VK_SUCCESS) {
 +            fprintf(stderr, "vmaFlushAllocation failed with error code 0x%X.\n", res);
 +        }
 +
          vmaUnmapMemory(device->allocator, allocation);
++#if defined(__SWITCH__)
++        switchMappedData = nullptr;
++#endif
      }
  
-@@ -1390,7 +1439,13 @@ namespace plume {
+     std::unique_ptr<RenderBufferFormattedView> VulkanBuffer::createBufferFormattedView(RenderFormat format) {
+@@ -1390,7 +1553,13 @@
          pipelineInfo.layout = pipelineLayout->vk;
          pipelineInfo.stage = stageInfo;
  
@@ -142,7 +265,7 @@ index f1dd503..311a134 100644
          if (res != VK_SUCCESS) {
              fprintf(stderr, "vkCreateComputePipelines failed with error code 0x%X.\n", res);
              return;
-@@ -1649,7 +1704,13 @@ namespace plume {
+@@ -1649,7 +1818,13 @@
          pipelineInfo.layout = pipelineLayout->vk;
          pipelineInfo.renderPass = renderPass;
  
@@ -157,7 +280,7 @@ index f1dd503..311a134 100644
          if (res != VK_SUCCESS) {
              fprintf(stderr, "vkCreateGraphicsPipelines failed with error code 0x%X.\n", res);
              return;
-@@ -2095,6 +2156,17 @@ namespace plume {
+@@ -2095,6 +2270,17 @@
              fprintf(stderr, "vkCreateWin32SurfaceKHR failed with error code 0x%X.\n", res);
              return;
          }
@@ -175,7 +298,7 @@ index f1dd503..311a134 100644
  #   elif defined(PLUME_SDL_VULKAN_ENABLED)
          VulkanInterface *renderInterface = commandQueue->device->renderInterface;
          SDL_bool sdlRes = SDL_Vulkan_CreateSurface(desc.renderWindow, renderInterface->instance, &surface);
-@@ -2285,6 +2357,19 @@ namespace plume {
+@@ -2285,6 +2471,19 @@
              const std::scoped_lock queueLock(*commandQueue->queue->mutex);
              res = vkQueuePresentKHR(commandQueue->queue->vk, &presentInfo);
          }
@@ -195,7 +318,52 @@ index f1dd503..311a134 100644
  
  #if defined(__APPLE__)
          // Under MoltenVK, VK_SUBOPTIMAL_KHR does not result in a valid state for rendering. We intentionally
-@@ -2401,9 +2486,18 @@ namespace plume {
+@@ -2324,6 +2523,20 @@
+         VkSurfaceCapabilitiesKHR surfaceCapabilities = {};
+         vkGetPhysicalDeviceSurfaceCapabilitiesKHR(commandQueue->device->physicalDevice, surface, &surfaceCapabilities);
+ 
++#if defined(__SWITCH__)
++        {
++            char message[256]{};
++            std::snprintf(message, sizeof(message),
++                "plume swapchain: requested=%ux%u current=%ux%u min=%ux%u max=%ux%u images=%u",
++                width, height,
++                surfaceCapabilities.currentExtent.width, surfaceCapabilities.currentExtent.height,
++                surfaceCapabilities.minImageExtent.width, surfaceCapabilities.minImageExtent.height,
++                surfaceCapabilities.maxImageExtent.width, surfaceCapabilities.maxImageExtent.height,
++                desc.textureCount);
++            switch_log_checkpoint(message, false);
++        }
++#endif
++
+         // Clamp the extent to the surface capabilities' min/max bounds.
+         // This is required because the window size may differ from the valid surface extent
+         // (e.g., due to window decorations, compositor behavior, or timing issues).
+@@ -2338,7 +2551,8 @@
+         createInfo.imageExtent.width = width;
+         createInfo.imageExtent.height = height;
+         createInfo.imageArrayLayers = 1;
+-        createInfo.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
++        createInfo.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
++            VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+         createInfo.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
+         createInfo.preTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
+         createInfo.compositeAlpha = pickedAlphaFlag;
+@@ -2397,13 +2611,32 @@
+             textures[i].createImageView(pickedSurfaceFormat.format);
+         }
+ 
++#if defined(__SWITCH__)
++        {
++            char message[128]{};
++            std::snprintf(message, sizeof(message),
++                "plume swapchain: created=%ux%u images=%u mode=FIFO",
++                width, height, desc.textureCount);
++            switch_log_checkpoint(message, false);
++        }
++#endif
++
+         return true;
      }
  
      bool VulkanSwapChain::needsResize() const {
@@ -214,20 +382,147 @@ index f1dd503..311a134 100644
      }
  
      void VulkanSwapChain::setVsyncEnabled(bool vsyncEnabled) {
-@@ -2463,6 +2557,12 @@ namespace plume {
+@@ -2463,6 +2696,13 @@
          GetClientRect(desc.renderWindow, &rect);
          dstWidth = rect.right - rect.left;
          dstHeight = rect.bottom - rect.top;
 +#   elif defined(__SWITCH__)
-+        NWindow *window = nwindowGetDefault();
-+        if (R_FAILED(nwindowGetDimensions(window, &dstWidth, &dstHeight))) {
-+            dstWidth = 1280;
-+            dstHeight = 720;
-+        }
++        // Horizon's application output is fixed for this port. Do not inherit
++        // transient NWindow dimensions during startup or dock transitions.
++        // The VI pass scales the lower-resolution N64 render target into this
++        // exact 16:9 output surface.
++        dstWidth = 1280;
++        dstHeight = 720;
  #   elif defined(PLUME_SDL_VULKAN_ENABLED)
          SDL_GetWindowSizeInPixels(desc.renderWindow, (int *)(&dstWidth), (int *)(&dstHeight));
  #   elif defined(__ANDROID__)
-@@ -3575,9 +3675,11 @@ namespace plume {
+@@ -2630,7 +2870,7 @@
+             fprintf(stderr, "vkCreateRenderPass failed with error code 0x%X.\n", res);
+             return;
+         }
+-        
++
+         VkFramebufferCreateInfo fbInfo = {};
+         fbInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+         fbInfo.renderPass = renderPass;
+@@ -3117,11 +3357,34 @@
+ 
+         if (clearRectsCount > 0) {
+             for (uint32_t i = 0; i < clearRectsCount; i++) {
++                const int32_t left = std::clamp(clearRects[i].left, 0, int32_t(width));
++                const int32_t top = std::clamp(clearRects[i].top, 0, int32_t(height));
++                const int32_t right = std::clamp(clearRects[i].right, 0, int32_t(width));
++                const int32_t bottom = std::clamp(clearRects[i].bottom, 0, int32_t(height));
++#if defined(__SWITCH__)
++                if ((left != clearRects[i].left) || (top != clearRects[i].top) ||
++                    (right != clearRects[i].right) || (bottom != clearRects[i].bottom))
++                {
++                    static std::atomic<uint32_t> switchClippedClearCount{0};
++                    if (switchClippedClearCount.fetch_add(1, std::memory_order_relaxed) == 0) {
++                        char clearMessage[256]{};
++                        std::snprintf(clearMessage, sizeof(clearMessage),
++                            "plume: clipped clear rect %d,%d-%d,%d to %d,%d-%d,%d framebuffer=%ux%u",
++                            clearRects[i].left, clearRects[i].top, clearRects[i].right, clearRects[i].bottom,
++                            left, top, right, bottom, width, height);
++                        switch_log_checkpoint(clearMessage, false);
++                    }
++                }
++#endif
++                if ((left >= right) || (top >= bottom)) {
++                    continue;
++                }
++
+                 VkClearRect clearRect;
+-                clearRect.rect.offset.x = clearRects[i].left;
+-                clearRect.rect.offset.y = clearRects[i].top;
+-                clearRect.rect.extent.width = clearRects[i].right - clearRects[i].left;
+-                clearRect.rect.extent.height = clearRects[i].bottom - clearRects[i].top;
++                clearRect.rect.offset.x = left;
++                clearRect.rect.offset.y = top;
++                clearRect.rect.extent.width = uint32_t(right - left);
++                clearRect.rect.extent.height = uint32_t(bottom - top);
+                 clearRect.baseArrayLayer = 0;
+                 clearRect.layerCount = 1;
+                 rectVector.emplace_back(clearRect);
+@@ -3144,10 +3407,13 @@
+         assert(attachmentIndex < targetFramebuffer->colorAttachments.size());
+         assert((clearRectsCount == 0) || (clearRects != nullptr));
+ 
+-        checkActiveRenderPass();
+-
+         thread_local std::vector<VkClearRect> rectVector;
+         clearCommonRectVector(targetFramebuffer->getWidth(), targetFramebuffer->getHeight(), clearRects, clearRectsCount, rectVector);
++        if (rectVector.empty()) {
++            return;
++        }
++
++        checkActiveRenderPass();
+ 
+         VkClearAttachment attachment = {};
+         auto &rgba = attachment.clearValue.color.float32;
+@@ -3168,6 +3434,9 @@
+ 
+         thread_local std::vector<VkClearRect> rectVector;
+         clearCommonRectVector(targetFramebuffer->getWidth(), targetFramebuffer->getHeight(), clearRects, clearRectsCount, rectVector);
++        if (rectVector.empty()) {
++            return;
++        }
+ 
+         VkClearAttachment attachment = {};
+         attachment.clearValue.depthStencil.depth = depthValue;
+@@ -3229,6 +3498,51 @@
+             imageCopy.imageExtent.depth = srcLocation.placedFootprint.depth;
+             vkCmdCopyBufferToImage(vk, srcBuffer->vk, dstTexture->vk, toImageLayout(dstTexture->textureLayout), 1, &imageCopy);
+         }
++        else if ((dstLocation.type == RenderTextureCopyType::PLACED_FOOTPRINT) && (srcLocation.type == RenderTextureCopyType::SUBRESOURCE)) {
++            assert(dstBuffer != nullptr);
++            assert(srcTexture != nullptr);
++
++            const uint32_t blockWidth = RenderFormatBlockWidth(srcTexture->desc.format);
++            VkBufferImageCopy imageCopy = {};
++            imageCopy.bufferOffset = dstLocation.placedFootprint.offset;
++            imageCopy.bufferRowLength = ((dstLocation.placedFootprint.rowWidth + blockWidth - 1) / blockWidth) * blockWidth;
++            imageCopy.bufferImageHeight = ((dstLocation.placedFootprint.height + blockWidth - 1) / blockWidth) * blockWidth;
++            imageCopy.imageSubresource.aspectMask = toAspectFlags(srcTexture->desc.format, srcTexture->desc.flags);
++            imageCopy.imageSubresource.baseArrayLayer = srcLocation.subresource.arrayIndex;
++            imageCopy.imageSubresource.layerCount = 1;
++            imageCopy.imageSubresource.mipLevel = srcLocation.subresource.mipLevel;
++
++            if (srcBox != nullptr) {
++                imageCopy.imageOffset.x = srcBox->left;
++                imageCopy.imageOffset.y = srcBox->top;
++                imageCopy.imageOffset.z = srcBox->front;
++                imageCopy.imageExtent.width = srcBox->right - srcBox->left;
++                imageCopy.imageExtent.height = srcBox->bottom - srcBox->top;
++                imageCopy.imageExtent.depth = srcBox->back - srcBox->front;
++            }
++            else {
++                imageCopy.imageExtent.width = dstLocation.placedFootprint.width;
++                imageCopy.imageExtent.height = dstLocation.placedFootprint.height;
++                imageCopy.imageExtent.depth = dstLocation.placedFootprint.depth;
++            }
++
++            // Vulkan has no destination texel offset for image-to-buffer copies.
++            // Fold the Plume destination coordinates into the buffer byte offset
++            // while preserving the placed footprint's row and image strides.
++            assert((dstX % blockWidth) == 0);
++            assert((dstY % blockWidth) == 0);
++            assert((dstX + imageCopy.imageExtent.width) <= dstLocation.placedFootprint.width);
++            assert((dstY + imageCopy.imageExtent.height) <= dstLocation.placedFootprint.height);
++            assert((dstZ + imageCopy.imageExtent.depth) <= dstLocation.placedFootprint.depth);
++            const uint64_t rowBlockCount = imageCopy.bufferRowLength / blockWidth;
++            const uint64_t imageBlockRowCount = imageCopy.bufferImageHeight / blockWidth;
++            const uint64_t destinationBlockOffset =
++                ((uint64_t(dstZ) * imageBlockRowCount + (dstY / blockWidth)) * rowBlockCount) +
++                (dstX / blockWidth);
++            imageCopy.bufferOffset += destinationBlockOffset * RenderFormatSize(srcTexture->desc.format);
++
++            vkCmdCopyImageToBuffer(vk, srcTexture->vk, toImageLayout(srcTexture->textureLayout), dstBuffer->vk, 1, &imageCopy);
++        }
+         else {
+             VkImageCopy imageCopy = {};
+             imageCopy.srcSubresource.aspectMask = toAspectFlags(srcTexture->desc.format, srcTexture->desc.flags);
+@@ -3575,9 +3889,11 @@
          thread_local std::vector<VkSemaphore> waitSemaphoreVector;
          thread_local std::vector<VkSemaphore> signalSemaphoreVector;
          thread_local std::vector<VkCommandBuffer> commandBuffers;
@@ -239,7 +534,7 @@ index f1dd503..311a134 100644
  
          for (uint32_t i = 0; i < waitSemaphoreCount; i++) {
              VulkanCommandSemaphore *interfaceSemaphore = static_cast<VulkanCommandSemaphore *>(waitSemaphores[i]);
-@@ -3601,11 +3703,22 @@ namespace plume {
+@@ -3601,11 +3917,22 @@
          submitInfo.pCommandBuffers = commandBuffers.data();
          submitInfo.commandBufferCount = uint32_t(commandBuffers.size());
  
@@ -264,7 +559,7 @@ index f1dd503..311a134 100644
          }
  
          if (!signalSemaphoreVector.empty()) {
-@@ -3620,12 +3733,61 @@ namespace plume {
+@@ -3620,12 +3947,76 @@
          }
  
          VkResult res;
@@ -275,8 +570,23 @@ index f1dd503..311a134 100644
          {
              const std::scoped_lock queueLock(*queue->mutex);
              res = vkQueueSubmit(queue->vk, 1, &submitInfo, submitFence);
-         }
- 
+-        }
++#if defined(__SWITCH__)
++            if (res == VK_SUCCESS) {
++                VulkanQueue::SubmitRecord &record =
++                    queue->submittedHistory[queue->submittedHistoryCursor % queue->submittedHistory.size()];
++                recordSwitchSubmit(record, submitSequence, SwitchSubmitContext);
++                queue->submittedHistoryCursor++;
++                if (signalFence != nullptr) {
++                    VulkanCommandFence *interfaceFence = static_cast<VulkanCommandFence *>(signalFence);
++                    interfaceFence->switchSubmitSequence = submitSequence;
++                    std::snprintf(interfaceFence->switchSubmitContext,
++                        sizeof(interfaceFence->switchSubmitContext), "%s", SwitchSubmitContext);
++                }
++            }
++#endif
++        }
++
 +#if defined(__SWITCH__)
 +        if ((res == VK_SUCCESS) && ((submitSequence % 1024U) == 0U) && (device->allocator != VK_NULL_HANDLE)) {
 +            VmaBudget heapBudgets[VK_MAX_MEMORY_HEAPS]{};
@@ -311,7 +621,7 @@ index f1dd503..311a134 100644
 +            switch_log_checkpoint(memoryMessage, false);
 +        }
 +#endif
-+
+ 
          if (res != VK_SUCCESS) {
 +#if defined(__SWITCH__)
 +            char message[512]{};
@@ -321,12 +631,13 @@ index f1dd503..311a134 100644
 +                waitSemaphoreCount, signalSemaphoreCount, SwitchSubmitContext,
 +                int(res), unsigned(res));
 +            switch_log_checkpoint(message, false);
++            logSwitchSubmitHistory(queue);
 +            std::_Exit(EXIT_FAILURE);
 +#endif
              fprintf(stderr, "vkQueueSubmit failed with error code 0x%X.\n", res);
              return;
          }
-@@ -3635,8 +3797,24 @@ namespace plume {
+@@ -3635,12 +4026,40 @@
          assert(fence != nullptr);
  
          VulkanCommandFence *interfaceFence = static_cast<VulkanCommandFence *>(fence);
@@ -343,15 +654,31 @@ index f1dd503..311a134 100644
 +#if defined(__SWITCH__)
 +            char message[384]{};
 +            std::snprintf(message, sizeof(message),
-+                "fatal: Plume fence wait context='%s' failed: %d (0x%08X)",
-+                SwitchSubmitContext, int(res), unsigned(res));
++                "fatal: Plume fence wait submit=#%u context='%s' failed: %d (0x%08X)",
++                interfaceFence->switchSubmitSequence, interfaceFence->switchSubmitContext,
++                int(res), unsigned(res));
 +            switch_log_checkpoint(message, false);
++            logSwitchSubmitHistory(queue);
 +            std::_Exit(EXIT_FAILURE);
 +#endif
              fprintf(stderr, "vkWaitForFences failed with error code 0x%X.\n", res);
              return;
          }
-@@ -3944,7 +4122,14 @@ namespace plume {
+ 
++#if defined(__SWITCH__)
++        {
++            const std::scoped_lock queueLock(*queue->mutex);
++            VulkanQueue::SubmitRecord &record =
++                queue->completedHistory[queue->completedHistoryCursor % queue->completedHistory.size()];
++            recordSwitchSubmit(record, interfaceFence->switchSubmitSequence,
++                interfaceFence->switchSubmitContext);
++            queue->completedHistoryCursor++;
++        }
++#endif
+         vkResetFences(device->vk, 1, &interfaceFence->vk);
+     }
+ 
+@@ -3944,7 +4363,14 @@
              createDeviceChain = &layoutFeatures;
          }
  
@@ -366,28 +693,45 @@ index f1dd503..311a134 100644
          if (presentWaitSupported) {
              presentIdFeatures.pNext = createDeviceChain;
              createDeviceChain = &presentIdFeatures;
-@@ -4055,6 +4240,20 @@ namespace plume {
+@@ -4054,6 +4480,37 @@
+             fprintf(stderr, "vkCreateDevice failed with error code 0x%X.\n", res);
              return;
          }
- 
++
 +#if defined(__SWITCH__)
++        std::vector<uint8_t> pipelineCacheBytes;
++        bool pipelineCacheLoaded = loadSwitchPipelineCache(pipelineCacheBytes);
 +        VkPipelineCacheCreateInfo pipelineCacheInfo{};
 +        pipelineCacheInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
++        pipelineCacheInfo.initialDataSize = pipelineCacheBytes.size();
++        pipelineCacheInfo.pInitialData = pipelineCacheBytes.empty() ? nullptr : pipelineCacheBytes.data();
 +        res = vkCreatePipelineCache(vk, &pipelineCacheInfo, nullptr, &pipelineCache);
 +
++        if ((res != VK_SUCCESS) && pipelineCacheLoaded) {
++            pipelineCacheInfo.initialDataSize = 0;
++            pipelineCacheInfo.pInitialData = nullptr;
++            res = vkCreatePipelineCache(vk, &pipelineCacheInfo, nullptr, &pipelineCache);
++            pipelineCacheLoaded = false;
++            switch_log_checkpoint("plume: saved Vulkan pipeline cache rejected; rebuilding", false);
++        }
++
 +        if (res == VK_SUCCESS) {
-+            switch_log_checkpoint("plume: transient Vulkan pipeline cache ready", false);
++            char pipelineCacheMessage[128]{};
++            std::snprintf(pipelineCacheMessage, sizeof(pipelineCacheMessage),
++                pipelineCacheLoaded ? "plume: Vulkan pipeline cache loaded bytes=%zu"
++                                    : "plume: Vulkan pipeline cache cold",
++                pipelineCacheBytes.size());
++            switch_log_checkpoint(pipelineCacheMessage, false);
 +        }
 +        else {
 +            pipelineCache = VK_NULL_HANDLE;
 +            switch_log_checkpoint("plume: Vulkan pipeline cache unavailable", false);
 +        }
 +#endif
-+
+ 
          for (uint32_t i = 0; i < queueFamilyCount; i++) {
              for (uint32_t j = 0; j < queueFamilies[i].queues.size(); j++) {
-                 vkGetDeviceQueue(vk, i, j, &queueFamilies[i].queues[j].vk);
-@@ -4173,14 +4372,23 @@ namespace plume {
+@@ -4173,14 +4630,53 @@
      }
  
      std::unique_ptr<RenderPipeline> VulkanDevice::createComputePipeline(const RenderComputePipelineDesc &desc) {
@@ -404,6 +748,36 @@ index f1dd503..311a134 100644
          return std::make_unique<VulkanGraphicsPipeline>(this, desc);
      }
  
++#if defined(__SWITCH__)
++    void VulkanDevice::savePipelineCache() {
++        const std::lock_guard<std::mutex> lock(pipelineCreationMutex);
++        if (pipelineCache == VK_NULL_HANDLE) {
++            return;
++        }
++
++        size_t byteCount = 0;
++        VkResult res = vkGetPipelineCacheData(vk, pipelineCache, &byteCount, nullptr);
++        if ((res != VK_SUCCESS) || (byteCount == 0) ||
++            (byteCount > SwitchPipelineCacheSizeLimit)) {
++            return;
++        }
++
++        std::vector<uint8_t> bytes(byteCount);
++        res = vkGetPipelineCacheData(vk, pipelineCache, &byteCount, bytes.data());
++        if ((res != VK_SUCCESS) || (byteCount == 0)) {
++            return;
++        }
++
++        bytes.resize(byteCount);
++        if (storeSwitchPipelineCache(bytes.data(), bytes.size())) {
++            char message[128]{};
++            std::snprintf(message, sizeof(message),
++                "plume: Vulkan pipeline cache saved bytes=%zu", bytes.size());
++            switch_log_checkpoint(message, false);
++        }
++    }
++#endif
++
      std::unique_ptr<RenderPipeline> VulkanDevice::createRaytracingPipeline(const RenderRaytracingPipelineDesc &desc, const RenderPipeline *previousPipeline) {
 +#if defined(__SWITCH__)
 +        const std::lock_guard<std::mutex> lock(pipelineCreationMutex);
@@ -411,7 +785,7 @@ index f1dd503..311a134 100644
          return std::make_unique<VulkanRaytracingPipeline>(this, desc, previousPipeline);
      }
  
-@@ -4438,6 +4646,12 @@ namespace plume {
+@@ -4438,6 +4934,12 @@
          }
  
          if (vk != VK_NULL_HANDLE) {
@@ -424,7 +798,7 @@ index f1dd503..311a134 100644
              vkDestroyDevice(vk, nullptr);
              vk = VK_NULL_HANDLE;
          }
-@@ -4464,7 +4678,12 @@ namespace plume {
+@@ -4464,7 +4966,12 @@
  #else
      VulkanInterface::VulkanInterface() {
  #endif
@@ -437,7 +811,7 @@ index f1dd503..311a134 100644
          if (res != VK_SUCCESS) {
              fprintf(stderr, "volkInitialize failed with error code 0x%X.\n", res);
              return;
-@@ -4500,7 +4719,7 @@ namespace plume {
+@@ -4500,7 +5007,7 @@
          const std::unordered_set<std::string> dlssExtensions = DLSS::getRequiredInstanceExtensionsVulkan();
  #   endif
  
@@ -447,24 +821,64 @@ index f1dd503..311a134 100644
          // SDL2 has this awkward requirement for the window to pull the extensions from. 
          // This can be removed when upgrading to SDL3.
 diff --git a/plume_vulkan.h b/plume_vulkan.h
-index 0a1edbe..4e5e295 100644
 --- a/plume_vulkan.h
 +++ b/plume_vulkan.h
-@@ -9,6 +9,7 @@
+@@ -9,6 +9,8 @@
  
  #include "plume_render_interface.h"
  
++#include <array>
 +#include <atomic>
  #include <mutex>
  #include <set>
  #include <unordered_map>
-@@ -417,6 +418,10 @@ namespace plume {
+@@ -54,6 +56,9 @@
+         VulkanPool *pool = nullptr;
+         VmaAllocation allocation = VK_NULL_HANDLE;
+         VmaAllocationInfo allocationInfo = {};
++#if defined(__SWITCH__)
++        void *switchMappedData = nullptr;
++#endif
+         RenderBufferDesc desc;
+         RenderBarrierStages barrierStages = RenderBarrierStage::NONE;
+ 
+@@ -350,6 +355,10 @@
+     struct VulkanCommandFence : RenderCommandFence {
+         VkFence vk = VK_NULL_HANDLE;
+         VulkanDevice *device = nullptr;
++#if defined(__SWITCH__)
++        uint32_t switchSubmitSequence = 0;
++        char switchSubmitContext[512] = "unlabeled";
++#endif
+ 
+         VulkanCommandFence(VulkanDevice *device);
+         ~VulkanCommandFence() override;
+@@ -393,6 +402,17 @@
+         VkQueue vk;
+         std::unique_ptr<std::mutex> mutex;
+         std::unordered_set<const VulkanCommandQueue *> virtualQueues;
++#if defined(__SWITCH__)
++        struct SubmitRecord {
++            uint32_t sequence = 0;
++            char context[512] = "unlabeled";
++        };
++
++        std::array<SubmitRecord, 4> submittedHistory{};
++        std::array<SubmitRecord, 4> completedHistory{};
++        uint32_t submittedHistoryCursor = 0;
++        uint32_t completedHistoryCursor = 0;
++#endif
+     };
+ 
+     struct VulkanQueueFamily {
+@@ -417,6 +437,11 @@
          std::unique_ptr<RenderBuffer> nullBuffer;
          bool loadStoreOpNoneSupported = false;
          bool nullDescriptorSupported = false;
 +#if defined(__SWITCH__)
 +        VkPipelineCache pipelineCache = VK_NULL_HANDLE;
 +        std::mutex pipelineCreationMutex;
++        void savePipelineCache() override;
 +#endif
  
          VulkanDevice(VulkanInterface *renderInterface, const std::string &preferredDeviceName);

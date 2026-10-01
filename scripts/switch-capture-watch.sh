@@ -17,7 +17,8 @@ TEMP_PATH="${LOG_DIR}/.manual-screenshot-$$.jpg"
 cleanup() {
     rm -f "${TEMP_PATH}"
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+trap 'exit 0' INT TERM
 
 echo "R3 screenshot watcher active for ${SWITCH_ADDRESS}"
 while true; do

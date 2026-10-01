@@ -1,8 +1,7 @@
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index d43917b..a5b6835 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
-@@ -42,8 +42,8 @@ if (WIN32)
+@@ -42,8 +42,8 @@
      # Dependencies that must be next to the DLL.
      configure_file("${PROJECT_SOURCE_DIR}/src/contrib/dxc/bin/x64/dxcompiler.dll" "dxcompiler.dll" COPYONLY)
      configure_file("${PROJECT_SOURCE_DIR}/src/contrib/dxc/bin/x64/dxil.dll" "dxil.dll" COPYONLY)
@@ -13,7 +12,7 @@ index d43917b..a5b6835 100644
          # find zlib and include in dyld path
          find_library(ZLIB_LIBRARY NAMES z)
          get_filename_component(ZLIB_PATH ${ZLIB_LIBRARY} DIRECTORY)
-@@ -66,12 +66,27 @@ set(ZSTD_LEGACY_SUPPORT OFF)
+@@ -66,12 +66,27 @@
  set(ZSTD_BUILD_STATIC ON)
  set(ZSTD_BUILD_SHARED OFF)
  
@@ -44,7 +43,7 @@ index d43917b..a5b6835 100644
      set(PLUME_SDL_VULKAN_ENABLED TRUE)
  elseif (APPLE)
      set(PLUME_APPLE_RETINA_ENABLED ON)
-@@ -287,7 +302,12 @@ if (WIN32)
+@@ -287,7 +302,12 @@
      set(SDL2_LIBRARIES "SDL2" "SDL2main")
      link_directories("${PROJECT_SOURCE_DIR}/src/contrib/mupen64plus-win32-deps/SDL2-2.26.3/lib/x64")
  else()
@@ -58,13 +57,20 @@ index d43917b..a5b6835 100644
  endif()
  
  message(STATUS "${SDL2_INCLUDE_DIRS} ${SDL2_LIBRARIES}")
-@@ -555,4 +575,3 @@ build_pixel_shader(  rt64 "src/shaders/Im3DPS.hlsl")
+@@ -540,6 +560,7 @@
+ build_pixel_shader(  rt64 "src/shaders/RtCopyDepthToColorPS.hlsl" "src/shaders/RtCopyDepthToColor2XPS.hlsl" "-D SAMPLES_2X")
+ build_pixel_shader(  rt64 "src/shaders/RtCopyDepthToColorPS.hlsl" "src/shaders/RtCopyDepthToColor4XPS.hlsl" "-D SAMPLES_4X")
+ build_pixel_shader(  rt64 "src/shaders/RtCopyDepthToColorPS.hlsl" "src/shaders/RtCopyDepthToColor8XPS.hlsl" "-D SAMPLES_8X")
++build_pixel_shader(  rt64 "src/shaders/SwitchFramebufferColorCopyPS.hlsl")
+ build_pixel_shader(  rt64 "src/shaders/TextureCopyPS.hlsl")
+ build_compute_shader(rt64 "src/shaders/TextureDecodeCS.hlsl")
+ build_pixel_shader(  rt64 "src/shaders/TextureResolvePS.hlsl" "src/shaders/TextureResolveSamples2XPS.hlsl" "-D SAMPLES_2X")
+@@ -555,4 +576,3 @@
  build_pixel_shader(  rt64 "src/shaders/PostProcessPS.hlsl")
  
  target_include_directories(rt64 PRIVATE ${CMAKE_BINARY_DIR}/src)
 -
 diff --git a/src/common/rt64_mapped_file.cpp b/src/common/rt64_mapped_file.cpp
-index c5e9978..ba74810 100644
 --- a/src/common/rt64_mapped_file.cpp
 +++ b/src/common/rt64_mapped_file.cpp
 @@ -7,6 +7,7 @@
@@ -75,7 +81,7 @@ index c5e9978..ba74810 100644
  #   include <fcntl.h>
  #   include <unistd.h>
  #endif
-@@ -33,6 +34,10 @@ namespace RT64 {
+@@ -33,6 +34,10 @@
          if (fileHandle != nullptr) {
              CloseHandle(fileHandle);
          }
@@ -86,7 +92,7 @@ index c5e9978..ba74810 100644
  #   else
          if (fileView != MAP_FAILED) {
              munmap(fileView, fileSize);
-@@ -80,6 +85,30 @@ namespace RT64 {
+@@ -80,6 +85,30 @@
          }
  
          return true;
@@ -117,7 +123,7 @@ index c5e9978..ba74810 100644
  #   else
          fileHandle = ::open(path.c_str(), O_RDONLY);
          if (fileHandle == -1) {
-@@ -110,6 +139,8 @@ namespace RT64 {
+@@ -110,6 +139,8 @@
      bool MappedFile::isOpen() const {
  #   if defined(_WIN32)
          return (fileView != nullptr);
@@ -126,7 +132,7 @@ index c5e9978..ba74810 100644
  #   else
          return (fileView != MAP_FAILED);
  #   endif
-@@ -122,6 +153,8 @@ namespace RT64 {
+@@ -122,6 +153,8 @@
      size_t MappedFile::size() const {
  #   if defined(_WIN32)
          return fileSize.QuadPart;
@@ -136,7 +142,6 @@ index c5e9978..ba74810 100644
          return static_cast<size_t>(fileSize);
  #   endif
 diff --git a/src/common/rt64_mapped_file.h b/src/common/rt64_mapped_file.h
-index ff1c45a..0097918 100644
 --- a/src/common/rt64_mapped_file.h
 +++ b/src/common/rt64_mapped_file.h
 @@ -8,7 +8,7 @@
@@ -148,7 +153,7 @@ index ff1c45a..0097918 100644
  #   include <sys/mman.h>
  #endif
  
-@@ -19,6 +19,9 @@ namespace RT64 {
+@@ -19,6 +19,9 @@
          HANDLE fileMappingHandle = nullptr;
          LPVOID fileView = nullptr;
          LARGE_INTEGER fileSize = {};
@@ -158,7 +163,7 @@ index ff1c45a..0097918 100644
  #else
          int fileHandle = -1;
          void *fileView = MAP_FAILED;
-@@ -33,4 +36,4 @@ namespace RT64 {
+@@ -33,4 +36,4 @@
          uint8_t *data() const;
          size_t size() const;
      };
@@ -166,10 +171,9 @@ index ff1c45a..0097918 100644
 \ No newline at end of file
 +};
 diff --git a/src/common/rt64_thread.cpp b/src/common/rt64_thread.cpp
-index c4b080b..a78a470 100644
 --- a/src/common/rt64_thread.cpp
 +++ b/src/common/rt64_thread.cpp
-@@ -47,6 +47,8 @@ namespace RT64 {
+@@ -47,6 +47,8 @@
          pthread_setname_np(pthread_self(), str.c_str());
  #   elif defined(__APPLE__)
          pthread_setname_np(str.c_str());
@@ -178,7 +182,7 @@ index c4b080b..a78a470 100644
  #   else
          static_assert(false, "Unimplemented");
  #   endif
-@@ -55,7 +57,7 @@ namespace RT64 {
+@@ -55,7 +57,7 @@
      void Thread::setCurrentThreadPriority(Priority priority) {
  #   if defined(_WIN32)
          SetThreadPriority(GetCurrentThread(), toWindowsPriority(priority));
@@ -187,8 +191,52 @@ index c4b080b..a78a470 100644
          // On Linux, thread priorities can't be changed under the default scheduler policy (SCHED_OTHER) and the other policies
          // that are available without root privileges are lower priority. Instead you can set the thread's "nice" value, which ranges
          // from -20 to 19 (lower being higher priority). However, by strict POSIX spec "nice" is meant to be per-process instead of
+diff --git a/src/gbi/rt64_gbi.cpp b/src/gbi/rt64_gbi.cpp
+--- a/src/gbi/rt64_gbi.cpp
++++ b/src/gbi/rt64_gbi.cpp
+@@ -6,6 +6,11 @@
+ 
+ #include <cassert>
+ #include <cinttypes>
++#include <cstdio>
++
++#if defined(__SWITCH__)
++void switch_log_checkpoint(const char*, bool);
++#endif
+ 
+ #include "rt64_gbi_extended.h"
+ #include "rt64_gbi_f3d.h"
+@@ -459,6 +464,22 @@
+             return nullptr;
+         }
+ 
++#if defined(__SWITCH__)
++        {
++            static uint32_t loggedUCodeMask = 0;
++            const uint32_t ucodeIndex = uint32_t(matchingInstance->ucode);
++            const uint32_t ucodeBit = (ucodeIndex < 32) ? (1U << ucodeIndex) : 0U;
++            if ((ucodeBit == 0U) || ((loggedUCodeMask & ucodeBit) == 0U)) {
++                char message[192]{};
++                std::snprintf(message, sizeof(message),
++                    "rt64 gbi: detected '%s' type=%u text=0x%06X data=0x%06X",
++                    matchingInstance->name, ucodeIndex, textAddress, dataAddress);
++                switch_log_checkpoint(message, false);
++                loggedUCodeMask |= ucodeBit;
++            }
++        }
++#endif
++
+         GBI &gbi = gbiCache[uint32_t(matchingInstance->ucode)];
+         if (gbi.ucode == GBIUCode::Unknown) {
+             gbi.ucode = matchingInstance->ucode;
+@@ -558,4 +579,4 @@
+     GBIFunction GBIManager::getExtendedFunction() const {
+         return &GBI_EXTENDED::extendedOp;
+     }
+-};
+\ No newline at end of file
++};
 diff --git a/src/gui/rt64_file_dialog.cpp b/src/gui/rt64_file_dialog.cpp
-index 72faede..fd3cc2a 100644
 --- a/src/gui/rt64_file_dialog.cpp
 +++ b/src/gui/rt64_file_dialog.cpp
 @@ -6,13 +6,36 @@
@@ -228,7 +276,7 @@ index 72faede..fd3cc2a 100644
      void FileDialog::initialize() {
          NFD_Init();
      }
-@@ -76,4 +99,5 @@ namespace RT64 {
+@@ -76,4 +99,5 @@
          isOpen = false;
          return path;
      }
@@ -237,24 +285,23 @@ index 72faede..fd3cc2a 100644
 +#endif
 +};
 diff --git a/src/hle/rt64_application.cpp b/src/hle/rt64_application.cpp
-index 785de27..c173e93 100644
 --- a/src/hle/rt64_application.cpp
 +++ b/src/hle/rt64_application.cpp
-@@ -12,6 +12,13 @@
+@@ -11,6 +11,13 @@
+ #include "common/rt64_dynamic_libraries.h"
  #include "common/rt64_elapsed_timer.h"
  #include "common/rt64_math.h"
- 
++
 +#if defined(__SWITCH__)
 +void switch_log_checkpoint(const char*, bool);
 +#define RT64_SWITCH_CHECKPOINT(message) ::switch_log_checkpoint(message, false)
 +#else
 +#define RT64_SWITCH_CHECKPOINT(message) ((void)0)
 +#endif
-+
+ 
  #if RT_ENABLED
  #   include "res/bluenoise/LDR_64_64_64_RGB1.h"
- #endif
-@@ -87,6 +94,7 @@ namespace RT64 {
+@@ -87,6 +94,7 @@
      }
  
      Application::SetupResult Application::setup(uint32_t threadId) {
@@ -262,7 +309,7 @@ index 785de27..c173e93 100644
  #   ifdef _WIN64
          if (!DynamicLibraries::load()) {
              fprintf(stderr, "Failed to load dynamic libraries. Make sure the dependencies are next to the Plugin's DLL.\n");
-@@ -98,11 +106,13 @@ namespace RT64 {
+@@ -98,11 +106,13 @@
          if (!loadConfiguration()) {
              saveConfiguration();
          }
@@ -276,7 +323,7 @@ index 785de27..c173e93 100644
  
  #   if SCRIPT_ENABLED
          // Create the script API and library and check if there's a compatible game script with the current ROM.
-@@ -125,12 +135,15 @@ namespace RT64 {
+@@ -125,12 +135,15 @@
          else {
              appWindow->setup(windowTitle, this);
          }
@@ -292,7 +339,7 @@ index 785de27..c173e93 100644
  
  #   ifdef _WIN64
          // Windows can try falling back to the other API option in case of failure.
-@@ -174,7 +187,9 @@ namespace RT64 {
+@@ -174,7 +187,9 @@
                  return SetupResult::InvalidGraphicsAPI;
  #       endif
              case UserConfiguration::GraphicsAPI::Vulkan:
@@ -302,7 +349,7 @@ index 785de27..c173e93 100644
                  break;
              default:
                  fprintf(stderr, "Unknown Graphics API specified in configuration.\n");
-@@ -183,7 +198,9 @@ namespace RT64 {
+@@ -183,7 +198,9 @@
  
              if (renderInterface != nullptr) {
                  // Create the render device.
@@ -312,7 +359,7 @@ index 785de27..c173e93 100644
              }
          }
  
-@@ -199,6 +216,7 @@ namespace RT64 {
+@@ -199,6 +216,7 @@
  
          // Print device information to console.
          RenderDeviceDescription deviceDescription = device->getDescription();
@@ -320,7 +367,7 @@ index 785de27..c173e93 100644
          fprintf(stdout, "Device Name: %s\n", deviceDescription.name.c_str());
          fprintf(stdout, "Device Vendor: 0x%X\n", deviceDescription.vendor);
          fprintf(stdout, "Driver Version: 0x%" PRIx64 "\n", deviceDescription.driverVersion);
-@@ -297,7 +315,9 @@ namespace RT64 {
+@@ -297,7 +315,9 @@
          // Call the init hook if one was attached.
          RenderHookInit *initHook = GetRenderHookInit();
          if (initHook != nullptr) {
@@ -330,7 +377,7 @@ index 785de27..c173e93 100644
          }
  
          // Create all the render workers.
-@@ -312,6 +332,7 @@ namespace RT64 {
+@@ -312,6 +332,7 @@
          textureCopyWorker = std::make_unique<RenderWorker>(device.get(), "Texture Copy", RenderCommandListType::COPY);
          workloadGraphicsWorker = std::make_unique<RenderWorker>(device.get(), "Workload Graphics", RenderCommandListType::DIRECT);
          presentGraphicsWorker = std::make_unique<RenderWorker>(device.get(), "Present Graphics", RenderCommandListType::DIRECT);
@@ -338,7 +385,7 @@ index 785de27..c173e93 100644
  
          // Create the swap chain with the texture count specified from the configuration.
          RenderSwapChainDesc swapChainDesc;
-@@ -326,12 +347,28 @@ namespace RT64 {
+@@ -326,12 +347,28 @@
          // updating to using plume, this was corrected, but it exposed an issue with NVIDIA drivers (since 580.105.08 only on Linux)
          // where the wait() will take far more time than expected and cause stuttering. While this seems to work fine everywhere else,
          // we stick to the pre-plume approach to be safe.
@@ -367,7 +414,7 @@ index 785de27..c173e93 100644
  
          // Before configuring multisampling, make sure the device actually supports it for the formats we'll use. If it doesn't, turn off antialiasing in the configuration.
          const RenderSampleCounts colorSampleCounts = device->getSampleCountsSupported(RenderTarget::colorBufferFormat(usesHDR));
-@@ -346,14 +383,25 @@ namespace RT64 {
+@@ -346,14 +383,35 @@
          shaderLibrary = std::make_unique<ShaderLibrary>(usesHDR, usesHardwareResolve);
          shaderLibrary->setupCommonShaders(renderInterface.get(), device.get());
          shaderLibrary->setupMultisamplingShaders(renderInterface.get(), device.get(), multisampling);
@@ -384,16 +431,26 @@ index 785de27..c173e93 100644
          const uint32_t rasterShaderThreads = std::max(threadsAvailable / 2U, 1U);
 +#endif
          const uint32_t ubershaderThreads = uint32_t(std::max(int(threadsAvailable) - 2, 1));
++#if defined(__SWITCH__)
++        const std::filesystem::path switchShaderDescriptionCachePath =
++            "sdmc:/switch/snowboardkids2-recompiled/cache/rt64-raster-shaders-v1.bin";
++        rasterShaderCache = std::make_unique<RasterShaderCache>(rasterShaderThreads,
++            ubershaderThreads, switchShaderDescriptionCachePath);
++#else
          rasterShaderCache = std::make_unique<RasterShaderCache>(rasterShaderThreads, ubershaderThreads);
++#endif
          rasterShaderCache->setup(device.get(), renderInterface->getCapabilities().shaderFormat, shaderLibrary.get(), multisampling);
 +        RT64_SWITCH_CHECKPOINT("rt64 setup: raster shader cache ready");
 +#if defined(__SWITCH__)
-+        RT64_SWITCH_CHECKPOINT("rt64 setup: serialized runtime-specialized raster shaders enabled");
++        // Runtime-specialized pipelines are serialized through one large-stack
++        // worker. Until each pipeline is ready, rendering falls back to the
++        // precompiled ubershaders.
++        RT64_SWITCH_CHECKPOINT("rt64 setup: precompiled ubershader fallback; serialized runtime raster compilation enabled");
 +#endif
  
  #   if RT_ENABLED
          if (device->getCapabilities().raytracing) {
-@@ -369,6 +417,7 @@ namespace RT64 {
+@@ -369,6 +427,7 @@
          const uint64_t MinimumTexturePoolSize = 512 * 1024 * 1024;
          uint64_t texturePoolSize = std::max((deviceDescription.dedicatedVideoMemory * 2) / 3, MinimumTexturePoolSize);
          textureCache->setReplacementPoolMaxSize(texturePoolSize);
@@ -401,7 +458,7 @@ index 785de27..c173e93 100644
  
  #   if RT_ENABLED
          // Create the blue noise texture, upload it and wait for it to finish.
-@@ -423,6 +472,7 @@ namespace RT64 {
+@@ -423,6 +482,7 @@
          presentExt.shaderLibrary = shaderLibrary.get();
          presentExt.createdGraphicsAPI = chosenGraphicsAPI;
          presentQueue->setup(presentExt);
@@ -409,7 +466,7 @@ index 785de27..c173e93 100644
  
          // Configure the state to use all the created components.
          State::External stateExt;
-@@ -451,9 +501,11 @@ namespace RT64 {
+@@ -451,9 +511,11 @@
          stateExt.rtConfig = &rtConfig;
  #   endif
          state->setup(stateExt);
@@ -422,7 +479,6 @@ index 785de27..c173e93 100644
          return SetupResult::Success;
      }
 diff --git a/src/hle/rt64_application_window.cpp b/src/hle/rt64_application_window.cpp
-index 08f83e5..c77bf74 100755
 --- a/src/hle/rt64_application_window.cpp
 +++ b/src/hle/rt64_application_window.cpp
 @@ -19,6 +19,8 @@
@@ -434,7 +490,7 @@ index 08f83e5..c77bf74 100755
  #endif
  
  #include "common/rt64_common.h"
-@@ -51,7 +53,7 @@ namespace RT64 {
+@@ -51,7 +53,7 @@
  
          windowHandle = window;
  
@@ -443,7 +499,7 @@ index 08f83e5..c77bf74 100755
          sdlWindow = window;
  #   endif
  
-@@ -80,6 +82,10 @@ namespace RT64 {
+@@ -80,6 +82,10 @@
      }
  
      void ApplicationWindow::setup(const char *windowTitle, Listener *listener) {
@@ -454,7 +510,7 @@ index 08f83e5..c77bf74 100755
          assert(windowTitle != nullptr);
  
          // Find the right window dimension and placement.
-@@ -124,18 +130,13 @@ namespace RT64 {
+@@ -124,18 +130,13 @@
  #   else
          static_assert(false && "Unimplemented");
  #   endif
@@ -476,15 +532,15 @@ index 08f83e5..c77bf74 100755
          sdlWindow = SDL_CreateWindow(windowTitle, bounds.left, bounds.top, bounds.width, bounds.height, flags);
          assert((sdlWindow != nullptr) && "Failed to open window with SDL");
  
-@@ -168,6 +169,7 @@ namespace RT64 {
-         setup(windowHandle, listener, tid);
+@@ -169,6 +170,7 @@
  #   else
          setup(windowHandle, listener, pthread_self());
-+#   endif
  #   endif
++#   endif
      }
  
-@@ -229,6 +231,8 @@ namespace RT64 {
+     void ApplicationWindow::setFullScreen(bool newFullScreen) {
+@@ -229,6 +231,8 @@
          fullScreen = newFullScreen;
  #   elif defined(__APPLE__)
          windowWrapper->toggleFullscreen();
@@ -493,7 +549,7 @@ index 08f83e5..c77bf74 100755
  #   elif defined(RT64_SDL_WINDOW_VULKAN)
          if (newFullScreen) {
              SDL_SetWindowFullscreen(windowHandle, SDL_WINDOW_FULLSCREEN_DESKTOP);
-@@ -279,6 +283,8 @@ namespace RT64 {
+@@ -279,6 +283,8 @@
          if ((refreshRate % 10) == 9) {
              refreshRate++;
          }
@@ -502,7 +558,7 @@ index 08f83e5..c77bf74 100755
  #   elif defined(RT64_SDL_WINDOW_VULKAN)
          int displayIndex = SDL_GetWindowDisplayIndex(windowHandle);
          if (displayIndex < 0) {
-@@ -347,6 +353,8 @@ namespace RT64 {
+@@ -347,6 +353,8 @@
          GetWindowRect(windowHandle, &rect);
          newWindowLeft = rect.left;
          newWindowTop = rect.top;
@@ -511,11 +567,96 @@ index 08f83e5..c77bf74 100755
  #   elif defined(RT64_SDL_WINDOW_VULKAN)
          SDL_GetWindowPosition(windowHandle, &newWindowLeft, &newWindowTop);
  #   elif defined(__linux__)
+diff --git a/src/hle/rt64_framebuffer.cpp b/src/hle/rt64_framebuffer.cpp
+--- a/src/hle/rt64_framebuffer.cpp
++++ b/src/hle/rt64_framebuffer.cpp
+@@ -174,6 +174,54 @@
+ #   endif
+     }
+ 
++#if defined(__SWITCH__)
++    bool Framebuffer::copyRenderTargetToNativeCPU(RenderWorker *worker, RenderTarget *target, uint32_t dstRowWidth, uint32_t dstRowStart, uint32_t dstRowEnd, uint8_t fmt, uint32_t ditherRandomSeed, const ShaderLibrary *shaderLibrary) {
++        assert(worker != nullptr);
++        assert(target != nullptr);
++        assert(dstRowStart < height);
++        assert(dstRowEnd <= height);
++
++        return nativeTarget.copyToNativeCPU(worker, target, dstRowWidth, dstRowStart, dstRowEnd, siz, fmt, bestDitherPattern(), ditherRandomSeed, shaderLibrary);
++    }
++
++    void Framebuffer::copyNativeToRAMCPU(uint8_t *dst, uint32_t dstRowWidth, uint32_t dstRowStart, uint32_t dstRowEnd) {
++        assert(dst != nullptr);
++        assert(dstRowStart < height);
++        assert(dstRowEnd <= height);
++
++        uint8_t *dstBytes = dst + dstRowStart * imageRowBytes(dstRowWidth);
++        uint32_t *dstWords = reinterpret_cast<uint32_t *>(dstBytes);
++        const uint32_t bytesToSwap = (dstRowEnd - dstRowStart) * imageRowBytes(dstRowWidth);
++        uint32_t dstFirstWord = dstWords[0];
++        nativeTarget.copyToRAMCPU(dstBytes);
++
++        if (bytesToSwap >= sizeof(uint32_t)) {
++            uint32_t wordsToSwap = bytesToSwap / sizeof(uint32_t);
++            while (wordsToSwap > 0) {
++                *dstWords = _byteswap_ulong(*dstWords);
++                wordsToSwap--;
++                dstWords++;
++            }
++        }
++        else {
++            uint8_t *dstFirstWordU8 = reinterpret_cast<uint8_t *>(&dstFirstWord);
++            for (uint32_t i = 0; i < bytesToSwap; i++) {
++                dstFirstWordU8[i ^ 3] = dstBytes[i];
++            }
++
++            dstWords[0] = dstFirstWord;
++        }
++
++#   ifdef DUMP_RAW_RDRAM
++        char path[1024];
++        snprintf(path, sizeof(path), "dumps/FB_0x%X_W_%d_H_%d_SIZ_%d.rdram", addressStart, dstRowWidth, height, siz);
++        FILE *fp = fopen(path, "wb");
++        fwrite(dst, imageRowBytes(dstRowWidth) * dstRowEnd, 1, fp);
++        fclose(fp);
++#   endif
++    }
++#endif
++
+     void Framebuffer::clearChanged() {
+         widthChanged = false;
+         sizChanged = false;
+@@ -199,4 +247,4 @@
+     uint64_t FramebufferTile::hash() const {
+         return XXH3_64bits(this, sizeof(FramebufferTile));
+     }
+-};
+\ No newline at end of file
++};
+diff --git a/src/hle/rt64_framebuffer.h b/src/hle/rt64_framebuffer.h
+--- a/src/hle/rt64_framebuffer.h
++++ b/src/hle/rt64_framebuffer.h
+@@ -74,6 +74,10 @@
+ 
+         void copyRenderTargetToNative(RenderWorker *worker, RenderTarget *target, uint32_t dstRowWidth, uint32_t dstRowStart, uint32_t dstRowEnd, uint8_t fmt, uint32_t ditherRandomSeed, const ShaderLibrary *shaderLibrary);
+         void copyNativeToRAM(uint8_t *dst, uint32_t dstRowWidth, uint32_t dstRowStart, uint32_t dstRowEnd);
++#if defined(__SWITCH__)
++        bool copyRenderTargetToNativeCPU(RenderWorker *worker, RenderTarget *target, uint32_t dstRowWidth, uint32_t dstRowStart, uint32_t dstRowEnd, uint8_t fmt, uint32_t ditherRandomSeed, const ShaderLibrary *shaderLibrary);
++        void copyNativeToRAMCPU(uint8_t *dst, uint32_t dstRowWidth, uint32_t dstRowStart, uint32_t dstRowEnd);
++#endif
+         void clearChanged();
+         void addDitherPatterns(const std::array<uint32_t, 4> &extraPatterns);
+         uint32_t bestDitherPattern() const;
+@@ -93,4 +97,4 @@
+         bool valid() const;
+         uint64_t hash() const;
+     };
+-};
+\ No newline at end of file
++};
 diff --git a/src/hle/rt64_framebuffer_manager.cpp b/src/hle/rt64_framebuffer_manager.cpp
-index 7d385fa..86866f8 100644
 --- a/src/hle/rt64_framebuffer_manager.cpp
 +++ b/src/hle/rt64_framebuffer_manager.cpp
-@@ -120,7 +120,7 @@ namespace RT64 {
+@@ -120,7 +120,7 @@
          tileCopy.left = std::clamp<long>(lround(fbTile.left * resolutionScale.x), 0, RenderTarget::MaxDimension);
          tileCopy.top = std::clamp<long>(lround(fbTile.top * resolutionScale.y), 0, RenderTarget::MaxDimension);
          tileCopy.ulScaleS = true;
@@ -524,7 +665,7 @@ index 7d385fa..86866f8 100644
          tileCopy.texelShift = { 0, 0 };
          tileCopy.texelMask = { UINT_MAX, UINT_MAX };
          tileCopy.ditherOffset = { tileCopy.left, tileCopy.top };
-@@ -277,7 +277,7 @@ namespace RT64 {
+@@ -277,7 +277,7 @@
          TileCopy &dstTile = tileCopies[op.reinterpretTile.dstId];
          dstTile.id = op.reinterpretTile.dstId;
          dstTile.ulScaleS = op.reinterpretTile.ulScaleS;
@@ -533,18 +674,88 @@ index 7d385fa..86866f8 100644
          dstTile.texelShift = op.reinterpretTile.texelShift;
          dstTile.texelMask = op.reinterpretTile.texelMask;
          dstTile.usedWidth = dstTileWidth;
-@@ -1058,4 +1058,4 @@ namespace RT64 {
+@@ -1058,4 +1058,4 @@
      uint64_t FramebufferManager::nextWriteTimestamp() {
          return ++writeTimestamp;
      }
 -};
 \ No newline at end of file
 +};
+diff --git a/src/hle/rt64_interpreter.cpp b/src/hle/rt64_interpreter.cpp
+--- a/src/hle/rt64_interpreter.cpp
++++ b/src/hle/rt64_interpreter.cpp
+@@ -4,7 +4,13 @@
+ 
+ #include "rt64_interpreter.h"
+ 
++#include <array>
+ #include <cassert>
++#include <cstdio>
++
++#if defined(__SWITCH__)
++void switch_log_checkpoint(const char*, bool);
++#endif
+ 
+ //#define DUMP_DISPLAY_LISTS
+ 
+@@ -186,6 +192,53 @@
+                     func(state, &dl);
+                 }
+                 else {
++#if defined(__SWITCH__)
++                    struct UnknownOpcodeSample {
++                        uint32_t ucode = 0;
++                        uint32_t w0 = 0;
++                        uint32_t w1 = 0;
++                        uint32_t occurrences = 0;
++                    };
++                    static std::array<UnknownOpcodeSample, 16> unknownOpcodeSamples{};
++                    static uint32_t unknownOpcodeSampleCount = 0;
++                    UnknownOpcodeSample *sample = nullptr;
++                    for (uint32_t i = 0; i < unknownOpcodeSampleCount; i++) {
++                        UnknownOpcodeSample &candidate = unknownOpcodeSamples[i];
++                        if ((candidate.ucode == uint32_t(hleGBI->ucode)) &&
++                            (candidate.w0 == dl->w0) && (candidate.w1 == dl->w1))
++                        {
++                            sample = &candidate;
++                            break;
++                        }
++                    }
++
++                    if ((sample == nullptr) && (unknownOpcodeSampleCount < unknownOpcodeSamples.size())) {
++                        sample = &unknownOpcodeSamples[unknownOpcodeSampleCount++];
++                        sample->ucode = uint32_t(hleGBI->ucode);
++                        sample->w0 = dl->w0;
++                        sample->w1 = dl->w1;
++                    }
++
++                    if (sample != nullptr) {
++                        sample->occurrences++;
++                    }
++
++                    // Log every distinct command once, then only powers of two
++                    // after 64 occurrences. This preserves useful S2DEX words
++                    // without letting one repeated opcode consume the log.
++                    const uint32_t occurrences = (sample != nullptr) ? sample->occurrences : 0;
++                    const bool periodicSample = (occurrences >= 64) && ((occurrences & (occurrences - 1)) == 0);
++                    if ((occurrences == 1) || periodicSample) {
++                        char message[192]{};
++                        const uint32_t commandOffset = uint32_t(dl - dlStart) * sizeof(DisplayList);
++                        std::snprintf(message, sizeof(message),
++                            "warning: unknown GBI opcode type=%u opcode=0x%02X dl=0x%08X cmd=0x%08X w0=0x%08X w1=0x%08X occurrences=%u",
++                            uint32_t(hleGBI->ucode), opCode, state->displayListAddress,
++                            state->displayListAddress + commandOffset, dl->w0, dl->w1,
++                            occurrences);
++                        switch_log_checkpoint(message, false);
++                    }
++#endif
+                     RT64_LOG_PRINTF("DL Parser ran into an unknown opCode (GBI %u): %u / 0x%X", uint32_t(hleGBI->ucode), opCode, opCode);
+                 }
+             }
 diff --git a/src/hle/rt64_present_queue.cpp b/src/hle/rt64_present_queue.cpp
-index 3227ab1..13fca08 100644
 --- a/src/hle/rt64_present_queue.cpp
 +++ b/src/hle/rt64_present_queue.cpp
-@@ -4,11 +4,26 @@
+@@ -4,10 +4,28 @@
  
  #include "rt64_present_queue.h"
  
@@ -559,19 +770,21 @@ index 3227ab1..13fca08 100644
  #include "rhi/rt64_render_hooks.h"
  
  #include "rt64_workload_queue.h"
- 
++
 +#if defined(__SWITCH__)
 +void switch_log_checkpoint(const char*, bool);
 +extern "C" void plume_switch_set_submit_context(const char *context);
++extern "C" bool switch_screenshot_capture_requested();
++extern "C" void switch_screenshot_capture_complete(const void *pixels, size_t size,
++    uint32_t width, uint32_t height);
 +#define RT64_PRESENT_SWITCH_CHECKPOINT(message) ::switch_log_checkpoint(message, false)
 +#else
 +#define RT64_PRESENT_SWITCH_CHECKPOINT(message) ((void)0)
 +#endif
-+
+ 
  namespace RT64 {
      // PresentQueue
- 
-@@ -20,10 +35,16 @@ namespace RT64 {
+@@ -20,10 +38,16 @@
          presentThreadRunning = false;
          cursorCondition.notify_all();
  
@@ -588,7 +801,7 @@ index 3227ab1..13fca08 100644
  
          presentIdCondition.notify_all();
      }
-@@ -39,15 +60,17 @@ namespace RT64 {
+@@ -39,15 +63,17 @@
          int nextWriteCursor = (writeCursor + 1) % presents.size();
  
          // Stall the thread until the barrier is lifted if we're trying to write on a present being used by the GPU.
@@ -614,7 +827,7 @@ index 3227ab1..13fca08 100644
              writeCursor = nextWriteCursor;
          }
  
-@@ -89,10 +112,46 @@ namespace RT64 {
+@@ -89,10 +115,48 @@
          viRenderer = std::make_unique<VIRenderer>();
  
          presentThreadRunning = true;
@@ -634,6 +847,7 @@ index 3227ab1..13fca08 100644
 +        RT64_PRESENT_SWITCH_CHECKPOINT("rt64 queue: large-stack present thread spawned");
 +#else
          presentThread = new std::thread(&PresentQueue::threadLoop, this);
+-    }
 +#endif
 +    }
 +
@@ -641,7 +855,7 @@ index 3227ab1..13fca08 100644
 +    void *PresentQueue::switchPresentThreadEntry(void *argument) {
 +        static_cast<PresentQueue *>(argument)->threadLoop();
 +        return nullptr;
-     }
++    }
 +#endif
  
      void PresentQueue::threadPresent(const Present &present, bool &swapChainValid) {
@@ -655,13 +869,15 @@ index 3227ab1..13fca08 100644
 +        static int64_t perfAcquireTimeUs = 0;
 +        static int64_t perfPresentTimeUs = 0;
 +        static int64_t perfGpuWaitTimeUs = 0;
++        static int64_t perfMaxFrameTimeUs = 0;
++        static int64_t perfMaxGpuWaitTimeUs = 0;
 +#else
 +        constexpr bool tracePresent = false;
 +#endif
          FramebufferManager &fbManager = ext.sharedResources->framebufferManager;
          RenderTargetManager &targetManager = ext.sharedResources->renderTargetManager;
          const bool usingMSAA = (targetManager.multisampling.sampleCount > 1);
-@@ -113,6 +172,7 @@ namespace RT64 {
+@@ -113,6 +177,7 @@
              viOriginalRate = ext.sharedResources->viOriginalRate;
              targetRate = ext.sharedResources->targetRate;
          }
@@ -669,7 +885,7 @@ index 3227ab1..13fca08 100644
  
          RenderTarget *colorTarget = nullptr;
          int32_t framesToPresent = 1;
-@@ -127,18 +187,21 @@ namespace RT64 {
+@@ -127,18 +192,21 @@
          
          // Perform any external write operations indicated by the event.
          if (!present.fbOperations.empty()) {
@@ -691,7 +907,7 @@ index 3227ab1..13fca08 100644
              Framebuffer *viFb = nullptr;
              if (!viewRDRAM) {
                  viFb = fbManager.find(present.screenVI.fbAddress());
-@@ -254,19 +317,32 @@ namespace RT64 {
+@@ -254,19 +322,35 @@
                      viHistory.pushVI(present.screenVI, fbSize.x);
                  }
              }
@@ -720,11 +936,14 @@ index 3227ab1..13fca08 100644
 +            int64_t perfAcquireUs = 0;
 +            int64_t perfPresentUs = 0;
 +            int64_t perfGpuWaitUs = 0;
++            bool screenshotCapture = false;
++            uint32_t screenshotWidth = 0;
++            uint32_t screenshotHeight = 0;
 +#endif
              uint32_t frameCountersNextPresented = 0;
              if ((framesToPresent > 1) && (usingMSAA || (i > 0))) {
                  // Stall until the interpolated color target is available.
-@@ -300,10 +376,17 @@ namespace RT64 {
+@@ -300,10 +384,17 @@
              uint32_t swapChainIndex = 0;
              const bool presentFrame = (i < framesToPresent) && swapChainValid;
              if (presentFrame) {
@@ -742,7 +961,7 @@ index 3227ab1..13fca08 100644
                  // Draw the framebuffer with the VI renderer.
                  RenderTexture *swapChainTexture = ext.swapChain->getTexture(swapChainIndex);
                  RenderFramebuffer *swapChainFramebuffer = swapChainFramebuffers[swapChainIndex].get();
-@@ -339,18 +422,36 @@ namespace RT64 {
+@@ -339,18 +430,36 @@
                          renderParams.textureHeight = colorTarget->height;
                      }
                  }
@@ -782,9 +1001,36 @@ index 3227ab1..13fca08 100644
                  }
  
                  {
-@@ -361,11 +462,23 @@ namespace RT64 {
-                     
-                     commandList->barriers(RenderBarrierStage::NONE, RenderTextureBarrier(swapChainTexture, RenderTextureLayout::PRESENT));
+@@ -358,14 +467,48 @@
+                     if (inspector != nullptr) {
+                         inspector->draw(commandList);
+                     }
+-                    
+-                    commandList->barriers(RenderBarrierStage::NONE, RenderTextureBarrier(swapChainTexture, RenderTextureLayout::PRESENT));
++
++#if defined(__SWITCH__)
++                    screenshotCapture = switch_screenshot_capture_requested();
++                    if (screenshotCapture) {
++                        screenshotWidth = ext.swapChain->getWidth();
++                        screenshotHeight = ext.swapChain->getHeight();
++                        const uint32_t requiredSize = screenshotWidth * screenshotHeight * 4;
++                        if (screenshotReadbackBufferSize < requiredSize) {
++                            screenshotReadbackBuffer = ext.device->createBuffer(
++                                RenderBufferDesc::ReadbackBuffer(requiredSize));
++                            screenshotReadbackBufferSize = requiredSize;
++                        }
++
++                        commandList->barriers(RenderBarrierStage::COPY,
++                            RenderBufferBarrier(screenshotReadbackBuffer.get(), RenderBufferAccess::WRITE),
++                            RenderTextureBarrier(swapChainTexture, RenderTextureLayout::COPY_SOURCE));
++                        commandList->copyTextureRegion(
++                            RenderTextureCopyLocation::PlacedFootprint(screenshotReadbackBuffer.get(),
++                                RenderFormat::B8G8R8A8_UNORM, screenshotWidth, screenshotHeight, 1, screenshotWidth),
++                            RenderTextureCopyLocation::Subresource(swapChainTexture));
++                    }
++#endif
++                    commandList->barriers(RenderBarrierStage::NONE,
++                        RenderTextureBarrier(swapChainTexture, RenderTextureLayout::PRESENT));
                      commandList->end();
 +                    if (tracePresent) RT64_PRESENT_SWITCH_CHECKPOINT("rt64 present: command recording returned");
                      const RenderCommandList *commandList = ext.presentGraphicsWorker->commandList.get();
@@ -806,7 +1052,7 @@ index 3227ab1..13fca08 100644
                  }
              }
  
-@@ -386,13 +499,32 @@ namespace RT64 {
+@@ -386,13 +529,32 @@
              // As soon as we're done with the first render target, we notify the workload queue it can proceed.
              if (i == 0) {
                  notifyPresentId(present);
@@ -839,7 +1085,7 @@ index 3227ab1..13fca08 100644
  
                  if (presentWaitEnabled) {
                      ext.swapChain->wait();
-@@ -400,10 +532,67 @@ namespace RT64 {
+@@ -400,10 +562,84 @@
  
                  RenderCommandSemaphore *waitSemaphore = drawSemaphores[swapChainIndex].get();
                  presentTimestamp = Timer::current();
@@ -870,25 +1116,40 @@ index 3227ab1..13fca08 100644
 +                    Timer::current() - perfStageStart).count();
 +                if (tracePresent) RT64_PRESENT_SWITCH_CHECKPOINT("rt64 present: deferred GPU wait returned");
 +
-+                perfFrameCount++;
-+                perfFrameTimeUs += std::chrono::duration_cast<std::chrono::microseconds>(
++                if (screenshotCapture && (screenshotReadbackBuffer != nullptr)) {
++                    const uint32_t screenshotSize = screenshotWidth * screenshotHeight * 4;
++                    RenderRange screenshotRange(0, screenshotSize);
++                    const void *pixels = screenshotReadbackBuffer->map(0, &screenshotRange);
++                    switch_screenshot_capture_complete(pixels, screenshotSize,
++                        screenshotWidth, screenshotHeight);
++                    screenshotReadbackBuffer->unmap();
++                }
++
++                const int64_t perfFrameUs = std::chrono::duration_cast<std::chrono::microseconds>(
 +                    Timer::current() - perfFrameStart).count();
++                perfFrameCount++;
++                perfFrameTimeUs += perfFrameUs;
 +                perfAcquireTimeUs += perfAcquireUs;
 +                perfPresentTimeUs += perfPresentUs;
 +                perfGpuWaitTimeUs += perfGpuWaitUs;
++                perfMaxFrameTimeUs = std::max(perfMaxFrameTimeUs, perfFrameUs);
++                perfMaxGpuWaitTimeUs = std::max(perfMaxGpuWaitTimeUs, perfGpuWaitUs);
 +
 +                const int64_t perfWindowUs = std::chrono::duration_cast<std::chrono::microseconds>(
 +                    Timer::current() - perfWindowStart).count();
 +                if (perfWindowUs >= 2'000'000 && perfFrameCount > 0) {
-+                    char message[256]{};
++                    char message[320]{};
 +                    const double divisor = double(perfFrameCount) * 1000.0;
 +                    std::snprintf(message, sizeof(message),
-+                        "perf: %.2f fps, frame %.2f ms, acquire %.2f ms, present %.2f ms, GPU wait %.2f ms",
++                        "perf: %.2f fps, frame %.2f ms, acquire %.2f ms, present %.2f ms, GPU wait %.2f ms, max frame %.2f ms, max GPU wait %.2f ms, samples %u",
 +                        (double(perfFrameCount) * 1'000'000.0) / double(perfWindowUs),
 +                        double(perfFrameTimeUs) / divisor,
 +                        double(perfAcquireTimeUs) / divisor,
 +                        double(perfPresentTimeUs) / divisor,
-+                        double(perfGpuWaitTimeUs) / divisor);
++                        double(perfGpuWaitTimeUs) / divisor,
++                        double(perfMaxFrameTimeUs) / 1000.0,
++                        double(perfMaxGpuWaitTimeUs) / 1000.0,
++                        perfFrameCount);
 +                    RT64_PRESENT_SWITCH_CHECKPOINT(message);
 +                    perfWindowStart = Timer::current();
 +                    perfFrameCount = 0;
@@ -896,6 +1157,8 @@ index 3227ab1..13fca08 100644
 +                    perfAcquireTimeUs = 0;
 +                    perfPresentTimeUs = 0;
 +                    perfGpuWaitTimeUs = 0;
++                    perfMaxFrameTimeUs = 0;
++                    perfMaxGpuWaitTimeUs = 0;
 +                }
 +#endif
                  presentProfiler.logAndRestart();
@@ -907,7 +1170,7 @@ index 3227ab1..13fca08 100644
      }
  
      void PresentQueue::skipInterpolation() {
-@@ -426,11 +615,16 @@ namespace RT64 {
+@@ -426,11 +662,16 @@
      }
      
      void PresentQueue::threadAdvanceBarrier() {
@@ -926,7 +1189,7 @@ index 3227ab1..13fca08 100644
          Thread::setCurrentThreadName("RT64 Present");
  
          // Create the semaphore the acquire method will use.
-@@ -449,6 +643,10 @@ namespace RT64 {
+@@ -449,6 +690,10 @@
          uint32_t displayTimingRate = UINT32_MAX;
          const bool displayTiming = ext.device->getCapabilities().displayTiming;
          bool swapChainValid = !ext.swapChain->needsResize();
@@ -937,7 +1200,7 @@ index 3227ab1..13fca08 100644
          while (presentThreadRunning) {
              {
                  std::unique_lock<std::mutex> cursorLock(cursorMutex);
-@@ -464,6 +662,7 @@ namespace RT64 {
+@@ -464,6 +709,7 @@
              }
  
              if (processCursor >= 0) {
@@ -945,7 +1208,7 @@ index 3227ab1..13fca08 100644
                  std::unique_lock<std::mutex> threadLock(threadMutex);
                  const bool needsResize = ext.swapChain->needsResize() || !swapChainValid;
                  if (needsResize) {
-@@ -505,6 +704,7 @@ namespace RT64 {
+@@ -505,6 +751,7 @@
  
                  Present &present = presents[processCursor];
                  ext.workloadQueue->waitForWorkloadId(present.workloadId);
@@ -953,15 +1216,17 @@ index 3227ab1..13fca08 100644
  
                  if (!presentThreadRunning) {
                      continue;
-@@ -515,20 +715,43 @@ namespace RT64 {
+@@ -515,20 +762,43 @@
                      notifyPresentId(present);
                  }
                  else {
 +                    if (firstPresent) RT64_PRESENT_SWITCH_CHECKPOINT("rt64 queue: first threadPresent entered");
                      threadPresent(present, swapChainValid);
+-                }
+-
 +                    if (firstPresent) RT64_PRESENT_SWITCH_CHECKPOINT("rt64 queue: first threadPresent returned");
-                 }
- 
++                }
++
 +#if defined(__SWITCH__)
 +                const bool tracePresentCleanup = tracedPresentLoops < 8;
 +                if (tracePresentCleanup) RT64_PRESENT_SWITCH_CHECKPOINT("rt64 queue: present cleanup entered");
@@ -974,11 +1239,13 @@ index 3227ab1..13fca08 100644
                          const std::scoped_lock lock(screenFbChangePoolMutex);
                          screenFbChangePool.release(present.fbOperations.front().writeChanges.id);
                          present.fbOperations.clear();
+-                    }
+-
 +#if defined(__SWITCH__)
 +                        if (tracePresentCleanup) RT64_PRESENT_SWITCH_CHECKPOINT("rt64 queue: framebuffer operation release returned");
 +#endif
-                     }
- 
++                    }
++
 +#if defined(__SWITCH__)
 +                    if (tracePresentCleanup) RT64_PRESENT_SWITCH_CHECKPOINT("rt64 queue: present barrier advance entered");
 +#endif
@@ -997,7 +1264,7 @@ index 3227ab1..13fca08 100644
              }
          }
  
-@@ -542,6 +765,9 @@ namespace RT64 {
+@@ -542,6 +812,9 @@
  
              const RenderCommandList *commandList = ext.presentGraphicsWorker->commandList.get();
              RenderCommandSemaphore *waitSemaphore = acquiredSemaphore.get();
@@ -1008,27 +1275,28 @@ index 3227ab1..13fca08 100644
              ext.presentGraphicsWorker->wait();
          }
 diff --git a/src/hle/rt64_present_queue.h b/src/hle/rt64_present_queue.h
-index e08b02c..a93d655 100644
 --- a/src/hle/rt64_present_queue.h
 +++ b/src/hle/rt64_present_queue.h
-@@ -4,6 +4,10 @@
+@@ -3,6 +3,10 @@
+ //
  
  #pragma once
- 
++
 +#if defined(__SWITCH__)
 +#include <pthread.h>
 +#endif
-+
+ 
  #include "common/rt64_profiling_timer.h"
  #include "gui/rt64_inspector.h"
- #include "render/rt64_vi_renderer.h"
-@@ -39,7 +43,13 @@ namespace RT64 {
+@@ -39,7 +43,15 @@
          uint64_t presentId;
          std::mutex presentIdMutex;
          std::condition_variable presentIdCondition;
 +#if defined(__SWITCH__)
 +        pthread_t presentThread{};
 +        bool presentThreadStarted = false;
++        std::unique_ptr<RenderBuffer> screenshotReadbackBuffer;
++        uint32_t screenshotReadbackBufferSize = 0;
 +        static void *switchPresentThreadEntry(void *argument);
 +#else
          std::thread *presentThread = nullptr;
@@ -1036,7 +1304,7 @@ index e08b02c..a93d655 100644
          std::mutex threadMutex;
          std::atomic<bool> presentThreadRunning = false;
          std::recursive_mutex inspectorMutex;
-@@ -73,4 +83,4 @@ namespace RT64 {
+@@ -73,4 +85,4 @@
          void threadAdvanceBarrier();
          void threadLoop();
      };
@@ -1044,7 +1312,6 @@ index e08b02c..a93d655 100644
 \ No newline at end of file
 +};
 diff --git a/src/hle/rt64_state.cpp b/src/hle/rt64_state.cpp
-index d249a97..4d71041 100644
 --- a/src/hle/rt64_state.cpp
 +++ b/src/hle/rt64_state.cpp
 @@ -21,8 +21,22 @@
@@ -1063,14 +1330,14 @@ index d249a97..4d71041 100644
 +#if defined(__SWITCH__)
 +// Forced per-pair submits caused excessive waits/submits and still lost the NVK
 +// device in hardware logs. Use dependency-driven synchronization instead.
-+#define SYNC_ON_EVERY_FB_PAIR 0
-+#else
  #define SYNC_ON_EVERY_FB_PAIR 0
++#else
++#define SYNC_ON_EVERY_FB_PAIR 0
 +#endif
  
  #define MI_INTR_DP          0x00000020
  #define MI_INTR_SP          0x00000001
-@@ -436,14 +450,20 @@ namespace RT64 {
+@@ -436,14 +450,20 @@
      }
  
      void State::flush() {
@@ -1079,9 +1346,9 @@ index d249a97..4d71041 100644
 +            RT64_STATE_SWITCH_CHECKPOINT("rt64 state: flush had no triangles");
              return;
          }
- 
-+        RT64_STATE_SWITCH_CHECKPOINT("rt64 state: flush has triangles");
 +
++        RT64_STATE_SWITCH_CHECKPOINT("rt64 state: flush has triangles");
+ 
          // Assign some parameters to the draw call.
          const int workloadCursor = ext.workloadQueue->writeCursor;
          Workload &workload = ext.workloadQueue->workloads[workloadCursor];
@@ -1091,7 +1358,7 @@ index d249a97..4d71041 100644
          drawCall.cullBothMask = rsp->cullBothMask;
          drawCall.shadingSmoothMask = rsp->shadingSmoothMask;
          drawCall.NoN = rsp->NoN;
-@@ -454,6 +474,7 @@ namespace RT64 {
+@@ -454,6 +474,7 @@
          GameCall gameCall;
          gameCall.callDesc = drawCall;
          fbPair.addGameCall(gameCall);
@@ -1099,7 +1366,7 @@ index d249a97..4d71041 100644
  
          // Assign the indices or increase the count of the active sprite command if it exists.
          if (activeSpriteCommand.replacementHash != 0) {
-@@ -502,23 +523,29 @@ namespace RT64 {
+@@ -502,23 +523,29 @@
          drawCall.minWorldMatrix = USHRT_MAX;
          drawCall.maxWorldMatrix = 0;
          drawCall.triangleCount = 0;
@@ -1129,7 +1396,7 @@ index d249a97..4d71041 100644
  
          if (!fbPair.drawColorRect.isEmpty()) {
              auto &colorImg = fbPair.colorImage;
-@@ -527,6 +554,7 @@ namespace RT64 {
+@@ -527,6 +554,7 @@
              uint32_t colorWriteWidth = (colorHeight > 1) ? colorImg.width : std::min(fbPair.drawColorRect.right(true), int32_t(colorImg.width));
              uint32_t depthWriteWidth = 0;
              RT64::Framebuffer *colorFb = &framebufferManager.get(colorImg.address, colorImg.siz, colorImg.width, colorHeight);
@@ -1137,7 +1404,7 @@ index d249a97..4d71041 100644
              colorImg.formatChanged = colorFb->widthChanged || colorFb->sizChanged || colorFb->rdramChanged;
              colorFb->clearChanged();
              colorFb->addDitherPatterns(fbPair.ditherPatterns);
-@@ -587,6 +615,7 @@ namespace RT64 {
+@@ -587,6 +615,7 @@
  
          // Increase the submitted framebuffer counter.
          workload.fbPairSubmitted++;
@@ -1145,7 +1412,7 @@ index d249a97..4d71041 100644
      }
      
      void State::checkRDRAM() {
-@@ -604,7 +633,8 @@ namespace RT64 {
+@@ -604,7 +633,8 @@
              framebufferManager.storeRAM(workload.fbStorage, RDRAM, fbPairIndex);
              framebufferManager.checkRAM(RDRAM, differentFbs, true);
              if (!differentFbs.empty()) {
@@ -1155,7 +1422,7 @@ index d249a97..4d71041 100644
                  framebufferManager.uploadRAM(ext.framebufferGraphicsWorker, differentFbs.data(), differentFbs.size(), workload.fbChangePool, RDRAM, true, drawFbOperations, drawFbDiscards, ext.shaderLibrary);
              }
  
-@@ -763,12 +793,20 @@ namespace RT64 {
+@@ -763,12 +793,20 @@
      }
  
      void State::fullSync() {
@@ -1176,7 +1443,7 @@ index d249a97..4d71041 100644
          if (hasFramebufferOperationsPending()) {
              // If no framebuffer pair is present to do this, we make a placeholder one with the current images.
              if (workload.fbPairCount == 0) {
-@@ -782,6 +820,7 @@ namespace RT64 {
+@@ -782,6 +820,7 @@
          // Copy the current state's extended parameters into the workload.
          workload.extended.ditherNoiseStrength = extended.ditherNoiseStrength;
          workload.extended.texcoordWrapPoint = extended.texcoordWrapPoint;
@@ -1184,7 +1451,7 @@ index d249a97..4d71041 100644
  
          auto emitTileWarning = [&](CommandWarning warning, size_t tileIndex) {
              warning.indexType = CommandWarning::IndexType::TileIndex;
-@@ -911,6 +950,7 @@ namespace RT64 {
+@@ -911,6 +950,7 @@
                      "due to using a big mask or big clamp coordinates. Unable to provide a fast path for texture sampling.", t), t);
              }
          }
@@ -1192,7 +1459,7 @@ index d249a97..4d71041 100644
  
          // Fill out all the rendering data for the framebuffer pairs that will be uploaded.
          const UserConfiguration::Upscale2D upscale2D = ext.userConfig->upscale2D;
-@@ -1092,20 +1132,25 @@ namespace RT64 {
+@@ -1092,20 +1132,25 @@
                  }
              }
          }
@@ -1218,7 +1485,7 @@ index d249a97..4d71041 100644
  
          if (renderToRDRAM) {
              // Run RSP processor.
-@@ -1124,10 +1169,12 @@ namespace RT64 {
+@@ -1124,10 +1169,12 @@
          uint32_t rdpTileCursor = uint32_t(workload.drawRanges.rdpTiles.first);
          uint32_t gpuTileCursor = rdpTileCursor;
          workload.nextDrawDataRanges();
@@ -1231,7 +1498,7 @@ index d249a97..4d71041 100644
  
          if (renderToRDRAM) {
              const hlslpp::float2 resolutionScale(1.0f, 1.0f);
-@@ -1172,7 +1219,6 @@ namespace RT64 {
+@@ -1172,7 +1219,6 @@
                          depthRowStart = fbPair.drawDepthRect.top(false);
                          depthRowEnd = fbPair.drawDepthRect.bottom(true);
                      }
@@ -1239,7 +1506,7 @@ index d249a97..4d71041 100644
                      return true;
                  }
                  else {
-@@ -1218,6 +1264,8 @@ namespace RT64 {
+@@ -1218,6 +1264,8 @@
  
              thread_local std::unordered_set<RenderTarget *> resizedTargets;
              thread_local std::vector<std::pair<RenderTarget *, RenderTarget *>> colorDepthPairs;
@@ -1248,13 +1515,22 @@ index d249a97..4d71041 100644
              uint32_t framebufferPairCursor = 0;
              bool firstSynchronizationPerformed = false;
              auto checkRenderTargetSafety = [&](bool checkPairs) {
-@@ -1236,13 +1284,17 @@ namespace RT64 {
+@@ -1236,107 +1284,127 @@
                  resizedTargets.clear();
              };
  
 -            auto renderAndSynchronize = [&](uint32_t maxFramebufferPair) {
 +            auto renderAndSynchronize = [&](uint32_t maxFramebufferPair, uint32_t minGameCall = 0, uint32_t maxGameCall = UINT_MAX,
 +                bool firstPairChunk = true, bool lastPairChunk = true) {
++#if defined(__SWITCH__)
++                const bool switchCopybackOnly = lastPairChunk && (minGameCall == maxGameCall);
++                const bool switchDrawAndColorCopyback = lastPairChunk && (minGameCall < maxGameCall);
++                bool switchDepthCopybackPending = false;
++                bool switchColorCPUReadback = false;
++                bool switchDepthCPUReadback = false;
++                thread_local std::vector<std::pair<uint32_t, uint32_t>> switchDepthCopybackSeeds;
++                switchDepthCopybackSeeds.clear();
++#endif
                  // Preprocess all the framebuffer operations.
                  uint32_t pairCursor = framebufferPairCursor;
                  while (pairCursor < maxFramebufferPair) {
@@ -1269,17 +1545,162 @@ index d249a97..4d71041 100644
                      pairCursor++;
                  }
  
-@@ -1275,7 +1327,8 @@ namespace RT64 {
-                         drawParams.ubershadersOnly = false;
-                         drawParams.postBlendNoise = ext.emulatorConfig->dither.postBlendNoise;
-                         drawParams.postBlendNoiseNegative = ext.emulatorConfig->dither.postBlendNoiseNegative;
--                        drawParams.maxGameCall = UINT_MAX;
-+                        drawParams.minGameCall = minGameCall;
-+                        drawParams.maxGameCall = maxGameCall;
-                         framebufferRenderer->addFramebuffer(drawParams);
-                     }
+                 checkRenderTargetSafety(!resizedTargets.empty());
  
-@@ -1326,17 +1379,19 @@ namespace RT64 {
+-                // Add all framebuffers for rendering.
+-                pairCursor = framebufferPairCursor;
+-                while (pairCursor < maxFramebufferPair) {
+-                    const FramebufferPair &fbPair = workload.fbPairs[pairCursor];
+-                    if (getTargetsFromPair(pairCursor)) {
+-                        RenderFramebufferStorage &fbStorage = renderFramebufferManager->get(fbKey, colorTarget, (depthTarget != nullptr) ? depthTarget : dummyDepthTarget.get());
+-                        FramebufferRenderer::DrawParams drawParams;
+-                        drawParams.worker = ext.framebufferGraphicsWorker;
+-                        drawParams.fbStorage = &fbStorage;
+-                        drawParams.curWorkload = &workload;
+-                        drawParams.fbPairIndex = pairCursor;
+-                        drawParams.fbWidth = fbPair.colorImage.width;
+-                        drawParams.fbHeight = colorHeight;
+-                        drawParams.targetWidth = fbPair.colorImage.width;
+-                        drawParams.targetHeight = colorHeight;
+-                        drawParams.rasterShaderCache = ext.rasterShaderCache;
+-                        drawParams.resolutionScale = resolutionScale;
+-                        drawParams.aspectRatioSource = 1.0f;
+-                        drawParams.aspectRatioTarget = 1.0f;
+-                        drawParams.extAspectPercentage = 0.0f;
+-                        drawParams.horizontalMisalignment = 0.0f;
+-                        drawParams.rtEnabled = false;
+-                        drawParams.submissionFrame = workload.submissionFrame;
+-                        drawParams.deltaTimeMs = 0.0f;
+-                        drawParams.ubershadersOnly = false;
+-                        drawParams.postBlendNoise = ext.emulatorConfig->dither.postBlendNoise;
+-                        drawParams.postBlendNoiseNegative = ext.emulatorConfig->dither.postBlendNoiseNegative;
+-                        drawParams.maxGameCall = UINT_MAX;
+-                        framebufferRenderer->addFramebuffer(drawParams);
+-                    }
+-
+-                    pairCursor++;
+-                }
+-
+-                // Synchronize all texture uploads before filling out the GPU tiles and update the texture cache on the framebuffer renderer.
+-                ext.textureCache->waitForGPUUploads();
+-                framebufferRenderer->updateTextureCache(ext.textureCache);
+-
+-                thread_local std::vector<BufferUploader *> bufferUploaders;
+-                bufferUploaders.clear();
+-
+-                // Create all GPU tile mappings and upload them.
+-                bool uploadGPUTiles = (gpuTileCursor < rdpTileCursor);
+-                if (uploadGPUTiles) {
+-                    std::pair<size_t, size_t> gpuTileRange;
+-                    gpuTileRange.first = gpuTileCursor;
+-                    gpuTileRange.second = rdpTileCursor;
+-                    framebufferRenderer->createGPUTiles(&workload.drawData.callTiles[gpuTileCursor], rdpTileCursor - gpuTileCursor,
+-                        &workload.drawData.gpuTiles[gpuTileCursor], &framebufferManager, ext.textureCache, workload.submissionFrame);
+-
+-                    // Upload the GPU tiles.
+-                    ext.tilesUploader->submit(ext.framebufferGraphicsWorker, {
+-                        { workload.drawData.gpuTiles.data(), gpuTileRange, sizeof(interop::GPUTile), RenderBufferFlag::STORAGE, { }, &workload.drawBuffers.gpuTilesBuffer}
+-                    });
+-
+-                    gpuTileCursor = rdpTileCursor;
+-
+-                    // Queue tile uploader.
+-                    bufferUploaders.emplace_back(ext.tilesUploader);
+-                }
+-
+-                // Synchronize the draw data uploaders and the processors the first time.
+-                RSPProcessor *queuedProcessor = nullptr;
+-                if (!firstSynchronizationPerformed) {
+-                    bufferUploaders.emplace_back(ext.drawDataUploader);
+-                    bufferUploaders.emplace_back(ext.transformsUploader);
+-                    queuedProcessor = rspProcessor.get();
+-                    firstSynchronizationPerformed = true;
+-                }
+-
+-                // Record all setup previous to drawing any of the recorded framebuffers.
+-                framebufferRenderer->endFramebuffers(ext.framebufferGraphicsWorker, &workload.drawBuffers, &workload.outputBuffers, false);
+-                framebufferRenderer->recordSetup(ext.framebufferGraphicsWorker, bufferUploaders, queuedProcessor, nullptr, &workload.outputBuffers, false);
+-
++#if defined(__SWITCH__)
++                if (!switchCopybackOnly)
++#endif
++                {
++                    // Add all framebuffers for rendering.
++                    pairCursor = framebufferPairCursor;
++                    while (pairCursor < maxFramebufferPair) {
++                        const FramebufferPair &fbPair = workload.fbPairs[pairCursor];
++                        if (getTargetsFromPair(pairCursor)) {
++                            RenderFramebufferStorage &fbStorage = renderFramebufferManager->get(fbKey, colorTarget, (depthTarget != nullptr) ? depthTarget : dummyDepthTarget.get());
++                            FramebufferRenderer::DrawParams drawParams;
++                            drawParams.worker = ext.framebufferGraphicsWorker;
++                            drawParams.fbStorage = &fbStorage;
++                            drawParams.curWorkload = &workload;
++                            drawParams.fbPairIndex = pairCursor;
++                            drawParams.fbWidth = fbPair.colorImage.width;
++                            drawParams.fbHeight = colorHeight;
++                            drawParams.targetWidth = fbPair.colorImage.width;
++                            drawParams.targetHeight = colorHeight;
++                            drawParams.rasterShaderCache = ext.rasterShaderCache;
++                            drawParams.resolutionScale = resolutionScale;
++                            drawParams.aspectRatioSource = 1.0f;
++                            drawParams.aspectRatioTarget = 1.0f;
++                            drawParams.extAspectPercentage = 0.0f;
++                            drawParams.horizontalMisalignment = 0.0f;
++                            drawParams.rtEnabled = false;
++                            drawParams.submissionFrame = workload.submissionFrame;
++                            drawParams.deltaTimeMs = 0.0f;
++                            drawParams.ubershadersOnly = false;
++                            drawParams.postBlendNoise = ext.emulatorConfig->dither.postBlendNoise;
++                            drawParams.postBlendNoiseNegative = ext.emulatorConfig->dither.postBlendNoiseNegative;
++                            drawParams.minGameCall = minGameCall;
++                            drawParams.maxGameCall = maxGameCall;
++                            framebufferRenderer->addFramebuffer(drawParams);
++                        }
++
++                        pairCursor++;
++                    }
++
++                    // Synchronize all texture uploads before filling out the GPU tiles and update the texture cache on the framebuffer renderer.
++                    ext.textureCache->waitForGPUUploads();
++                    framebufferRenderer->updateTextureCache(ext.textureCache);
++
++                    thread_local std::vector<BufferUploader *> bufferUploaders;
++                    bufferUploaders.clear();
++
++                    // Create all GPU tile mappings and upload them.
++                    bool uploadGPUTiles = (gpuTileCursor < rdpTileCursor);
++                    if (uploadGPUTiles) {
++                        std::pair<size_t, size_t> gpuTileRange;
++                        gpuTileRange.first = gpuTileCursor;
++                        gpuTileRange.second = rdpTileCursor;
++                        framebufferRenderer->createGPUTiles(&workload.drawData.callTiles[gpuTileCursor], rdpTileCursor - gpuTileCursor,
++                            &workload.drawData.gpuTiles[gpuTileCursor], &framebufferManager, ext.textureCache, workload.submissionFrame);
++
++                        // Upload the GPU tiles.
++                        ext.tilesUploader->submit(ext.framebufferGraphicsWorker, {
++                            { workload.drawData.gpuTiles.data(), gpuTileRange, sizeof(interop::GPUTile), RenderBufferFlag::STORAGE, { }, &workload.drawBuffers.gpuTilesBuffer}
++                        });
++
++                        gpuTileCursor = rdpTileCursor;
++
++                        // Queue tile uploader.
++                        bufferUploaders.emplace_back(ext.tilesUploader);
++                    }
++
++                    // Synchronize the draw data uploaders and the processors the first time.
++                    RSPProcessor *queuedProcessor = nullptr;
++                    if (!firstSynchronizationPerformed) {
++                        bufferUploaders.emplace_back(ext.drawDataUploader);
++                        bufferUploaders.emplace_back(ext.transformsUploader);
++                        queuedProcessor = rspProcessor.get();
++                        firstSynchronizationPerformed = true;
++                    }
++
++                    // Record all setup previous to drawing any of the recorded framebuffers.
++                    framebufferRenderer->endFramebuffers(ext.framebufferGraphicsWorker, &workload.drawBuffers, &workload.outputBuffers, false);
++                    framebufferRenderer->recordSetup(ext.framebufferGraphicsWorker, bufferUploaders, queuedProcessor, nullptr, &workload.outputBuffers, false);
++                }
+                 // Record the command list for the framebuffer pairs.
                  pairCursor = framebufferPairCursor;
                  while (pairCursor < maxFramebufferPair) {
                      FramebufferPair &fbPair = workload.fbPairs[pairCursor];
@@ -1303,7 +1724,7 @@ index d249a97..4d71041 100644
                              RenderTargetKey otherColorTargetKey(colorFb->addressStart, colorFb->width, colorFb->siz, colorFb->lastWriteType);
                              RenderTarget &otherColorTarget = renderTargetManager.get(otherColorTargetKey);
                              if (!otherColorTarget.isEmpty()) {
-@@ -1348,12 +1403,12 @@ namespace RT64 {
+@@ -1348,12 +1416,12 @@
                          }
  
                          // Determine if it needs to read the entire target from RAM or just a portion of it.
@@ -1318,7 +1739,7 @@ index d249a97..4d71041 100644
                              uint32_t readRowBytes = colorFb->imageRowBytes(colorImg.width);
                              uint32_t readRowCount = colorFb->height - colorFb->readHeight;
                              uint32_t readFbBytes = readRowBytes * readRowCount;
-@@ -1376,11 +1431,11 @@ namespace RT64 {
+@@ -1376,11 +1444,11 @@
                          if (depthFb != nullptr) {
                              depthFbTypeChanged = (depthFb->lastWriteType == Framebuffer::Type::Color);
  
@@ -1332,7 +1753,7 @@ index d249a97..4d71041 100644
                                  RenderTargetKey otherDepthTargetKey(depthFb->addressStart, depthFb->width, depthFb->siz, depthFb->lastWriteType);
                                  RenderTarget &otherDepthTarget = renderTargetManager.get(otherDepthTargetKey);
                                  if (!otherDepthTarget.isEmpty()) {
-@@ -1392,12 +1447,12 @@ namespace RT64 {
+@@ -1392,12 +1460,12 @@
                              }
  
                              // Determine if it needs to read the entire target from RAM or just a portion of it.
@@ -1347,7 +1768,7 @@ index d249a97..4d71041 100644
                                  uint32_t readRowBytes = depthFb->imageRowBytes(colorImg.width);
                                  uint32_t readRowCount = depthFb->height - depthFb->readHeight;
                                  uint32_t readFbBytes = readRowBytes * readRowCount;
-@@ -1409,6 +1464,7 @@ namespace RT64 {
+@@ -1409,57 +1477,304 @@
                                  if (depthFbChange != nullptr) {
                                      depthTarget->copyFromChanges(ext.framebufferGraphicsWorker, *depthFbChange, depthFb->width, readRowCount, depthFb->readHeight, ext.shaderLibrary);
                                      depthFbChanged = true;
@@ -1355,10 +1776,11 @@ index d249a97..4d71041 100644
                                  }
  
                                  depthFb->readHeight = depthFb->height;
-@@ -1417,49 +1473,122 @@ namespace RT64 {
+                             }
+                         }
  
-                         framebufferRenderer->recordFramebuffer(ext.framebufferGraphicsWorker, framebufferIndex++);
- 
+-                        framebufferRenderer->recordFramebuffer(ext.framebufferGraphicsWorker, framebufferIndex++);
+-
 -                        const uint64_t writeTimestamp = framebufferManager.nextWriteTimestamp();
 -                        colorFb->lastWriteRect.merge(fbPair.drawColorRect);
 -                        colorFb->lastWriteType = Framebuffer::Type::Color;
@@ -1367,14 +1789,30 @@ index d249a97..4d71041 100644
 -                        if (depthWrite && (depthWriteWidth > 0)) {
 -                            depthFb->lastWriteRect.merge(fbPair.drawDepthRect);
 -                            depthFb->lastWriteType = Framebuffer::Type::Depth;
+-                        }
+-
+-                        // Copy results from render targets back to RAM.
+-                        colorFb->copyRenderTargetToNative(ext.framebufferGraphicsWorker, colorTarget, colorWriteWidth, colorRowStart, colorRowEnd, colorImg.fmt, ditherRandomSeed++, ext.shaderLibrary);
+-
+-                        if (depthWriteWidth > 0) {
+-                            depthFb->copyRenderTargetToNative(ext.framebufferGraphicsWorker, depthTarget, depthWriteWidth, depthRowStart, depthRowEnd, G_IM_FMT_DEPTH, ditherRandomSeed++, ext.shaderLibrary);
+-                        }
+-                    }
+-
+-                    framebufferManager.recordOperations(ext.framebufferGraphicsWorker, &workload.fbChangePool, &workload.fbStorage, ext.shaderLibrary, ext.textureCache,
+-                        fbPair.endFbOperations, renderTargetManager, resolutionScale, pairCursor, workload.submissionFrame);
++#if defined(__SWITCH__)
++                        if (!switchCopybackOnly)
++#endif
++                        {
++                            framebufferRenderer->recordFramebuffer(ext.framebufferGraphicsWorker, framebufferIndex++);
++                        }
 +                        if (!lastPairChunk && colorTarget->usesResolve()) {
 +                            colorTarget->resolveTarget(ext.framebufferGraphicsWorker, ext.shaderLibrary);
 +                            ext.framebufferGraphicsWorker->commandList->barriers(RenderBarrierStage::GRAPHICS,
 +                                RenderTextureBarrier(colorTarget->getResolvedTexture(), RenderTextureLayout::SHADER_READ));
-                         }
- 
--                        // Copy results from render targets back to RAM.
--                        colorFb->copyRenderTargetToNative(ext.framebufferGraphicsWorker, colorTarget, colorWriteWidth, colorRowStart, colorRowEnd, colorImg.fmt, ditherRandomSeed++, ext.shaderLibrary);
++                        }
++
 +                        if (lastPairChunk) {
 +                            const uint64_t writeTimestamp = framebufferManager.nextWriteTimestamp();
 +                            colorFb->lastWriteRect.merge(fbPair.drawColorRect);
@@ -1385,23 +1823,68 @@ index d249a97..4d71041 100644
 +                                depthFb->lastWriteRect.merge(fbPair.drawDepthRect);
 +                                depthFb->lastWriteType = Framebuffer::Type::Depth;
 +                            }
- 
--                        if (depthWriteWidth > 0) {
--                            depthFb->copyRenderTargetToNative(ext.framebufferGraphicsWorker, depthTarget, depthWriteWidth, depthRowStart, depthRowEnd, G_IM_FMT_DEPTH, ditherRandomSeed++, ext.shaderLibrary);
++
 +                            // Copy results from render targets back to RAM.
++#if defined(__SWITCH__)
++                            const uint32_t colorDitherSeed = ditherRandomSeed++;
++                            bool switchColorEncoded = false;
++                            if ((colorFb->siz == G_IM_SIZ_16b) && (colorImg.fmt == G_IM_FMT_RGBA) &&
++                                (colorTarget->multisampling.sampleCount == 1))
++                            {
++                                if (switchColorCopyTarget == nullptr) {
++                                    switchColorCopyTarget = std::make_unique<RenderTarget>(0, Framebuffer::Type::Color,
++                                        RenderMultisampling(), false);
++                                    switchColorCopyTarget->setupColor(ext.framebufferGraphicsWorker, rtWidth, rtHeight);
++                                }
++                                else {
++                                    switchColorCopyTarget->resize(ext.framebufferGraphicsWorker, rtWidth, rtHeight);
++                                }
++
++                                switchColorEncoded = switchColorCopyTarget->encodeColorToNativeBytes(ext.framebufferGraphicsWorker,
++                                    colorTarget, colorWriteWidth, colorRowStart, colorRowEnd, colorFb->bestDitherPattern(),
++                                    colorDitherSeed, ext.shaderLibrary);
++                            }
++
++                            if (switchColorEncoded) {
++                                switchColorCPUReadback = colorFb->nativeTarget.copyToNativeCPU(ext.framebufferGraphicsWorker,
++                                    switchColorCopyTarget.get(), colorWriteWidth, colorRowStart, colorRowEnd,
++                                    colorFb->siz, G_IM_FMT_RGBA, 3, colorDitherSeed, ext.shaderLibrary, true);
++                            }
++                            else {
++                                switchColorCPUReadback = colorFb->copyRenderTargetToNativeCPU(ext.framebufferGraphicsWorker,
++                                    colorTarget, colorWriteWidth, colorRowStart, colorRowEnd, colorImg.fmt,
++                                    colorDitherSeed, ext.shaderLibrary);
++                            }
++                            if (!switchColorCPUReadback) {
++                                colorFb->copyRenderTargetToNative(ext.framebufferGraphicsWorker, colorTarget, colorWriteWidth, colorRowStart, colorRowEnd, colorImg.fmt, colorDitherSeed, ext.shaderLibrary);
++                            }
++#else
 +                            colorFb->copyRenderTargetToNative(ext.framebufferGraphicsWorker, colorTarget, colorWriteWidth, colorRowStart, colorRowEnd, colorImg.fmt, ditherRandomSeed++, ext.shaderLibrary);
++#endif
 +
 +                            if (depthWriteWidth > 0) {
++#if defined(__SWITCH__)
++                                // Keep depth conversion and readback out of the
++                                // color copyback submission. Besides reducing
++                                // each NVK command buffer, a timeout now names
++                                // the exact copyback path that failed.
++                                switchDepthCopybackPending = true;
++                                switchDepthCopybackSeeds.emplace_back(pairCursor, ditherRandomSeed++);
++#else
 +                                depthFb->copyRenderTargetToNative(ext.framebufferGraphicsWorker, depthTarget, depthWriteWidth, depthRowStart, depthRowEnd, G_IM_FMT_DEPTH, ditherRandomSeed++, ext.shaderLibrary);
++#endif
 +                            }
-                         }
-                     }
- 
--                    framebufferManager.recordOperations(ext.framebufferGraphicsWorker, &workload.fbChangePool, &workload.fbStorage, ext.shaderLibrary, ext.textureCache,
--                        fbPair.endFbOperations, renderTargetManager, resolutionScale, pairCursor, workload.submissionFrame);
++                        }
++                    }
++
 +                    if (lastPairChunk) {
-+                        framebufferManager.recordOperations(ext.framebufferGraphicsWorker, &workload.fbChangePool, &workload.fbStorage, ext.shaderLibrary, ext.textureCache,
-+                            fbPair.endFbOperations, renderTargetManager, resolutionScale, pairCursor, workload.submissionFrame);
++#if defined(__SWITCH__)
++                        if (!switchDepthCopybackPending)
++#endif
++                        {
++                            framebufferManager.recordOperations(ext.framebufferGraphicsWorker, &workload.fbChangePool, &workload.fbStorage, ext.shaderLibrary, ext.textureCache,
++                                fbPair.endFbOperations, renderTargetManager, resolutionScale, pairCursor, workload.submissionFrame);
++                        }
 +                    }
  
                      pairCursor++;
@@ -1410,15 +1893,20 @@ index d249a97..4d71041 100644
                  ext.framebufferGraphicsWorker->commandList->end();
                  framebufferRenderer->waitForUploaders();
 +#if defined(__SWITCH__)
-+                char switchSubmitContext[256]{};
++                char switchSubmitContext[512]{};
 +                uint32_t switchSliceCalls = 0;
 +                uint32_t switchSliceIndices = 0;
 +                uint32_t switchStartOperations = 0;
 +                uint32_t switchEndOperations = 0;
 +                bool switchDepthActive = false;
++                bool switchTestZAtStart = false;
++                bool switchTestZAtEnd = false;
++                uint32_t switchTestZMarkers = 0;
++                const GameCall *switchFirstSliceCall = nullptr;
 +                for (uint32_t pairIndex = framebufferPairCursor; pairIndex < maxFramebufferPair; pairIndex++) {
 +                    const FramebufferPair &diagnosticPair = workload.fbPairs[pairIndex];
 +                    uint32_t diagnosticCallIndex = 0;
++                    bool diagnosticTestZActive = false;
 +                    for (uint32_t projectionIndex = 0; projectionIndex < diagnosticPair.projectionCount; projectionIndex++) {
 +                        const Projection &diagnosticProjection = diagnosticPair.projections[projectionIndex];
 +                        if (diagnosticProjection.scissorRect.isNull()) {
@@ -1427,12 +1915,34 @@ index d249a97..4d71041 100644
 +
 +                        for (uint32_t drawIndex = 0; drawIndex < diagnosticProjection.gameCallCount; drawIndex++) {
 +                            const GameCall &diagnosticCall = diagnosticProjection.gameCalls[drawIndex];
++                            if (diagnosticCallIndex == minGameCall) {
++                                switchTestZAtStart = switchTestZAtStart || diagnosticTestZActive;
++                            }
++
 +                            if ((diagnosticCallIndex >= minGameCall) && (diagnosticCallIndex < maxGameCall)) {
++                                if (switchFirstSliceCall == nullptr) {
++                                    switchFirstSliceCall = &diagnosticCall;
++                                }
 +                                switchSliceCalls++;
 +                                switchSliceIndices += diagnosticCall.callDesc.triangleCount * 3;
++                                if ((diagnosticCall.callDesc.extendedType == DrawExtendedType::VertexTestZ) ||
++                                    (diagnosticCall.callDesc.extendedType == DrawExtendedType::EndVertexTestZ))
++                                {
++                                    switchTestZMarkers++;
++                                }
++                            }
++
++                            if (diagnosticCall.callDesc.extendedType == DrawExtendedType::VertexTestZ) {
++                                diagnosticTestZActive = true;
++                            }
++                            else if (diagnosticCall.callDesc.extendedType == DrawExtendedType::EndVertexTestZ) {
++                                diagnosticTestZActive = false;
 +                            }
 +
 +                            diagnosticCallIndex++;
++                            if (diagnosticCallIndex == maxGameCall) {
++                                switchTestZAtEnd = switchTestZAtEnd || diagnosticTestZActive;
++                            }
 +                        }
 +                    }
 +
@@ -1449,72 +1959,167 @@ index d249a97..4d71041 100644
 +                const FramebufferPair *switchFirstPair = (framebufferPairCursor < maxFramebufferPair)
 +                    ? &workload.fbPairs[framebufferPairCursor]
 +                    : nullptr;
-+                std::snprintf(switchSubmitContext, sizeof(switchSubmitContext),
-+                    "FB RDRAM frame=%" PRIu64 " pair=%u calls=[%u,%u) sliceCalls=%u indices=%u color=%ux%u depth=%u ops=%u/%u",
-+                    workload.submissionFrame, framebufferPairCursor, minGameCall, maxGameCall,
-+                    switchSliceCalls, switchSliceIndices,
-+                    (switchFirstPair != nullptr) ? uint32_t(switchFirstPair->colorImage.width) : 0U,
-+                    (switchFirstPair != nullptr) ? uint32_t(std::max(switchFirstPair->drawColorRect.bottom(true), 0)) : 0U,
-+                    switchDepthActive ? 1U : 0U, switchStartOperations, switchEndOperations);
-+                ElapsedTimer switchFramebufferTimer;
-+                ext.framebufferGraphicsWorker->execute(switchSubmitContext);
++                static uint32_t switchSlowFramebufferCount = 0;
++                auto submitSwitchFramebuffer = [&](const char *switchSubmitPhase, uint32_t startOperationCount, uint32_t endOperationCount) {
++                    const DrawCall *switchFirstDraw = (switchFirstSliceCall != nullptr)
++                        ? &switchFirstSliceCall->callDesc
++                        : nullptr;
++                    std::snprintf(switchSubmitContext, sizeof(switchSubmitContext),
++                        "FB RDRAM %s frame=%" PRIu64 " pair=%u calls=[%u,%u) sliceCalls=%u indices=%u color=%ux%u depth=%u ops=%u/%u tz=%u/%u/%u uid=%u shader=%016" PRIx64 " tile=%u/%u om=%08x/%08x geom=%08x ext=%u",
++                        switchSubmitPhase, workload.submissionFrame, framebufferPairCursor, minGameCall, maxGameCall,
++                        switchSliceCalls, switchSliceIndices,
++                        (switchFirstPair != nullptr) ? uint32_t(switchFirstPair->colorImage.width) : 0U,
++                        (switchFirstPair != nullptr) ? uint32_t(std::max(switchFirstPair->drawColorRect.bottom(true), 0)) : 0U,
++                        switchDepthActive ? 1U : 0U, startOperationCount, endOperationCount,
++                        switchTestZAtStart ? 1U : 0U, switchTestZMarkers, switchTestZAtEnd ? 1U : 0U,
++                        (switchFirstDraw != nullptr) ? switchFirstDraw->uid : 0U,
++                        (switchFirstSliceCall != nullptr) ? switchFirstSliceCall->shaderDesc.hash() : 0ULL,
++                        (switchFirstDraw != nullptr) ? switchFirstDraw->tileIndex : 0U,
++                        (switchFirstDraw != nullptr) ? switchFirstDraw->tileCount : 0U,
++                        (switchFirstDraw != nullptr) ? switchFirstDraw->otherMode.L : 0U,
++                        (switchFirstDraw != nullptr) ? switchFirstDraw->otherMode.H : 0U,
++                        (switchFirstDraw != nullptr) ? switchFirstDraw->geometryMode : 0U,
++                        (switchFirstDraw != nullptr) ? uint32_t(switchFirstDraw->extendedType) : 0U);
++                    ElapsedTimer switchFramebufferTimer;
++                    ElapsedTimer switchFramebufferSubmitTimer;
++                    ext.framebufferGraphicsWorker->execute(switchSubmitContext);
++                    const double switchFramebufferSubmitMilliseconds = switchFramebufferSubmitTimer.elapsedMilliseconds();
++                    ElapsedTimer switchFramebufferFenceTimer;
++                    ext.framebufferGraphicsWorker->wait();
++                    const double switchFramebufferFenceMilliseconds = switchFramebufferFenceTimer.elapsedMilliseconds();
++
++                    const double switchFramebufferMilliseconds = switchFramebufferTimer.elapsedMilliseconds();
++                    if ((switchFramebufferMilliseconds >= 20.0) && ((switchSlowFramebufferCount++ % 16U) == 0U)) {
++                        char switchSlowMessage[768]{};
++                        std::snprintf(switchSlowMessage, sizeof(switchSlowMessage),
++                            "slow: %s total=%.2f ms submit=%.2f ms fence=%.2f ms",
++                            switchSubmitContext, switchFramebufferMilliseconds,
++                            switchFramebufferSubmitMilliseconds, switchFramebufferFenceMilliseconds);
++                        switch_log_checkpoint(switchSlowMessage, false);
++                    }
++                };
++                submitSwitchFramebuffer(switchCopybackOnly ? "color copyback" :
++                    (switchDrawAndColorCopyback ? "draw+color copyback" : "draw"), switchStartOperations,
++                    switchDepthCopybackPending ? 0U : switchEndOperations);
 +#else
                  ext.framebufferGraphicsWorker->execute();
-+#endif
                  ext.framebufferGraphicsWorker->wait();
-+#if defined(__SWITCH__)
-+                const double switchFramebufferMilliseconds = switchFramebufferTimer.elapsedMilliseconds();
-+                static uint32_t switchSlowFramebufferCount = 0;
-+                if ((switchFramebufferMilliseconds >= 20.0) && ((switchSlowFramebufferCount++ % 16U) == 0U)) {
-+                    char switchSlowMessage[320]{};
-+                    std::snprintf(switchSlowMessage, sizeof(switchSlowMessage),
-+                        "slow: %s wait=%.2f ms", switchSubmitContext, switchFramebufferMilliseconds);
-+                    switch_log_checkpoint(switchSlowMessage, false);
-+                }
-+#endif
- 
+-
 -                pairCursor = framebufferPairCursor;
 -                while (pairCursor < maxFramebufferPair) {
 -                    if (getFramebufferPairs(pairCursor)) {
 -                        colorFb->copyNativeToRAM(&RDRAM[colorFb->addressStart], colorWriteWidth, colorRowStart, std::min(colorRowEnd, colorFb->height));
+-
+-                        if (depthWriteWidth > 0) {
+-                            depthFb->copyNativeToRAM(&RDRAM[depthFb->addressStart], depthWriteWidth, depthRowStart, std::min(depthRowEnd, depthFb->height));
+-                        }
+-                    }
+-
+-                    pairCursor++;
+-                }
+-
+-                framebufferPairCursor = maxFramebufferPair;
++#endif
++
 +                if (lastPairChunk) {
 +                    pairCursor = framebufferPairCursor;
 +                    while (pairCursor < maxFramebufferPair) {
 +                        if (getFramebufferPairs(pairCursor)) {
++#if defined(__SWITCH__)
++                            if (switchColorCPUReadback) {
++                                colorFb->copyNativeToRAMCPU(&RDRAM[colorFb->addressStart], colorWriteWidth, colorRowStart, std::min(colorRowEnd, colorFb->height));
++                            }
++                            else {
++                                colorFb->copyNativeToRAM(&RDRAM[colorFb->addressStart], colorWriteWidth, colorRowStart, std::min(colorRowEnd, colorFb->height));
++                            }
++#else
 +                            colorFb->copyNativeToRAM(&RDRAM[colorFb->addressStart], colorWriteWidth, colorRowStart, std::min(colorRowEnd, colorFb->height));
- 
--                        if (depthWriteWidth > 0) {
--                            depthFb->copyNativeToRAM(&RDRAM[depthFb->addressStart], depthWriteWidth, depthRowStart, std::min(depthRowEnd, depthFb->height));
 +                            if (depthWriteWidth > 0) {
 +                                depthFb->copyNativeToRAM(&RDRAM[depthFb->addressStart], depthWriteWidth, depthRowStart, std::min(depthRowEnd, depthFb->height));
 +                            }
-                         }
++#endif
++                        }
 +
 +                        pairCursor++;
-                     }
- 
--                    pairCursor++;
++                    }
++
++#if defined(__SWITCH__)
++                    if (switchDepthCopybackPending) {
++                        ext.framebufferGraphicsWorker->commandList->begin();
++                        pairCursor = framebufferPairCursor;
++                        size_t depthCopybackIndex = 0;
++                        while (pairCursor < maxFramebufferPair) {
++                            if (getTargetsFromPair(pairCursor) && (depthWriteWidth > 0)) {
++                                assert(depthCopybackIndex < switchDepthCopybackSeeds.size());
++                                assert(switchDepthCopybackSeeds[depthCopybackIndex].first == pairCursor);
++
++                                if (switchDepthCopyTarget == nullptr) {
++                                    switchDepthCopyTarget = std::make_unique<RenderTarget>(0, Framebuffer::Type::Color,
++                                        RenderMultisampling(), false);
++                                    switchDepthCopyTarget->setupColor(ext.framebufferGraphicsWorker, rtWidth, rtHeight);
++                                }
++                                else {
++                                    switchDepthCopyTarget->resize(ext.framebufferGraphicsWorker, rtWidth, rtHeight);
++                                }
++
++                                // Avoid both NVK failure paths observed on
++                                // hardware: D32 image readback and the depth
++                                // framebuffer compute encoder. Existing graphics
++                                // shader encodes exact depth16 into RGBA8 first.
++                                switchDepthCopyTarget->copyFromTarget(ext.framebufferGraphicsWorker, depthTarget,
++                                    0, depthRowStart, depthWriteWidth, depthRowEnd - depthRowStart, ext.shaderLibrary);
++                                switchDepthCPUReadback = depthFb->nativeTarget.copyToNativeCPU(ext.framebufferGraphicsWorker,
++                                    switchDepthCopyTarget.get(), depthWriteWidth, depthRowStart, depthRowEnd,
++                                    depthFb->siz, G_IM_FMT_RGBA, 3,
++                                    switchDepthCopybackSeeds[depthCopybackIndex].second, ext.shaderLibrary);
++                                if (!switchDepthCPUReadback) {
++                                    depthFb->copyRenderTargetToNative(ext.framebufferGraphicsWorker, depthTarget,
++                                        depthWriteWidth, depthRowStart, depthRowEnd, G_IM_FMT_DEPTH,
++                                        switchDepthCopybackSeeds[depthCopybackIndex].second, ext.shaderLibrary);
++                                }
++                                depthCopybackIndex++;
++                            }
++
++                            framebufferManager.recordOperations(ext.framebufferGraphicsWorker, &workload.fbChangePool, &workload.fbStorage, ext.shaderLibrary, ext.textureCache,
++                                workload.fbPairs[pairCursor].endFbOperations, renderTargetManager, resolutionScale, pairCursor, workload.submissionFrame);
++                            pairCursor++;
++                        }
++                        assert(depthCopybackIndex == switchDepthCopybackSeeds.size());
++
++                        ext.framebufferGraphicsWorker->commandList->end();
++                        submitSwitchFramebuffer("depth copyback", 0, switchEndOperations);
++
++                        pairCursor = framebufferPairCursor;
++                        while (pairCursor < maxFramebufferPair) {
++                            if (getFramebufferPairs(pairCursor) && (depthWriteWidth > 0)) {
++                                if (switchDepthCPUReadback) {
++                                    depthFb->copyNativeToRAMCPU(&RDRAM[depthFb->addressStart], depthWriteWidth, depthRowStart, std::min(depthRowEnd, depthFb->height));
++                                }
++                                else {
++                                    depthFb->copyNativeToRAM(&RDRAM[depthFb->addressStart], depthWriteWidth, depthRowStart, std::min(depthRowEnd, depthFb->height));
++                                }
++                            }
++
++                            pairCursor++;
++                        }
++                    }
++#endif
++
 +                    framebufferPairCursor = maxFramebufferPair;
-                 }
--
--                framebufferPairCursor = maxFramebufferPair;
++                }
              };
  
              // Before performing any rendering, render targets must be resized to their maximum possible size during the workload.
-@@ -1515,6 +1644,97 @@ namespace RT64 {
+@@ -1515,6 +1830,53 @@
              renderSetup();
  
              // Start loading tiles, sampling tiles and drawing the framebuffer pairs as required.
 +#if defined(__SWITCH__)
-+            constexpr uint32_t SwitchFramebufferCallBudget = 64;
-+            constexpr uint32_t SwitchFramebufferIndexBudget = 4096;
-+            thread_local std::vector<std::pair<uint32_t, uint32_t>> switchCallRanges;
 +            thread_local std::vector<const GameCall *> switchPairCalls;
 +            for (uint32_t f = 0; f < workload.fbPairCount; f++) {
 +                FramebufferPair &fbPair = workload.fbPairs[f];
 +                fullSyncFramebufferPairTiles(workload, fbPair, loadOpCursor, rdpTileCursor);
 +
-+                switchCallRanges.clear();
 +                switchPairCalls.clear();
 +                for (uint32_t pr = 0; pr < fbPair.projectionCount; pr++) {
 +                    const Projection &proj = fbPair.projections[pr];
@@ -1527,68 +2132,28 @@ index d249a97..4d71041 100644
 +                    }
 +                }
 +
-+                uint32_t rangeStart = 0;
-+                uint32_t rangeCallCount = 0;
-+                uint32_t rangeIndexCount = 0;
-+                uint32_t globalCallIndex = 0;
-+                auto closeSwitchCallRange = [&]() {
-+                    if (rangeCallCount > 0) {
-+                        switchCallRanges.emplace_back(rangeStart, globalCallIndex);
-+                        rangeStart = globalCallIndex;
-+                        rangeCallCount = 0;
-+                        rangeIndexCount = 0;
-+                    }
-+                };
-+
-+                uint32_t callCursor = 0;
-+                while (callCursor < switchPairCalls.size()) {
-+                    uint32_t protectedRangeEnd = callCursor + 1;
-+                    if (switchPairCalls[callCursor]->callDesc.extendedType == DrawExtendedType::VertexTestZ) {
-+                        while (protectedRangeEnd < switchPairCalls.size()) {
-+                            const DrawExtendedType extendedType = switchPairCalls[protectedRangeEnd]->callDesc.extendedType;
-+                            protectedRangeEnd++;
-+                            if (extendedType == DrawExtendedType::EndVertexTestZ) {
-+                                break;
-+                            }
-+                        }
-+                    }
-+
-+                    const uint32_t protectedCallCount = protectedRangeEnd - callCursor;
-+                    uint32_t protectedIndexCount = 0;
-+                    for (uint32_t protectedCallIndex = callCursor; protectedCallIndex < protectedRangeEnd; protectedCallIndex++) {
-+                        protectedIndexCount += switchPairCalls[protectedCallIndex]->callDesc.triangleCount * 3;
-+                    }
-+
-+                    if ((rangeCallCount > 0) &&
-+                        (((rangeCallCount + protectedCallCount) > SwitchFramebufferCallBudget) ||
-+                            ((rangeIndexCount + protectedIndexCount) > SwitchFramebufferIndexBudget)))
-+                    {
-+                        closeSwitchCallRange();
-+                    }
-+
-+                    rangeCallCount += protectedCallCount;
-+                    rangeIndexCount += protectedIndexCount;
-+                    globalCallIndex = protectedRangeEnd;
-+                    callCursor = protectedRangeEnd;
-+                    if ((rangeCallCount >= SwitchFramebufferCallBudget) || (rangeIndexCount >= SwitchFramebufferIndexBudget)) {
-+                        closeSwitchCallRange();
-+                    }
++                // Keep the framebuffer draw intact. Slicing the draw list reset
++                // RT64's per-framebuffer scene state, produced visible bands,
++                // and repeatedly wedged the same continuation range. The
++                // crash-sensitive depth path keeps draw, color, and depth
++                // isolated so a fence failure identifies the failing phase.
++                const uint32_t pairCallCount = uint32_t(switchPairCalls.size());
++                const bool switchDepthActive = fbPair.depthRead || fbPair.depthWrite;
++                if (switchDepthActive) {
++                    renderAndSynchronize(f + 1, 0, pairCallCount, true, false);
++                    renderSetup();
++                    renderAndSynchronize(f + 1, pairCallCount, pairCallCount, false, true);
++                }
++                else {
++                    // Cheap color-only pairs were flooding NVK with two tiny
++                    // synchronous submissions. Keep their draw intact and
++                    // append color copyback to that submission. Depth-active
++                    // pairs retain fully isolated draw/color/depth work.
++                    renderAndSynchronize(f + 1, 0, pairCallCount, true, true);
 +                }
 +
-+                closeSwitchCallRange();
-+                if (switchCallRanges.empty()) {
-+                    switchCallRanges.emplace_back(0, 0);
-+                }
-+
-+                for (uint32_t rangeIndex = 0; rangeIndex < switchCallRanges.size(); rangeIndex++) {
-+                    const bool firstPairChunk = (rangeIndex == 0);
-+                    const bool lastPairChunk = (rangeIndex == (switchCallRanges.size() - 1));
-+                    renderAndSynchronize(f + 1, switchCallRanges[rangeIndex].first, switchCallRanges[rangeIndex].second,
-+                        firstPairChunk, lastPairChunk);
-+
-+                    if (!lastPairChunk || ((f + 1) < workload.fbPairCount)) {
-+                        renderSetup();
-+                    }
++                if ((f + 1) < workload.fbPairCount) {
++                    renderSetup();
 +                }
 +            }
 +
@@ -1599,7 +2164,7 @@ index d249a97..4d71041 100644
              for (uint32_t f = 0; f < workload.fbPairCount; f++) {
                  FramebufferPair &fbPair = workload.fbPairs[f];
                  const bool gpuCopiesEnabled = ext.emulatorConfig->framebuffer.copyWithGPU;
-@@ -1535,6 +1755,7 @@ namespace RT64 {
+@@ -1535,6 +1897,7 @@
  
              // Render any remaining batches of framebuffers.
              renderAndSynchronize(workload.fbPairCount);
@@ -1607,7 +2172,7 @@ index d249a97..4d71041 100644
          }
          else {
              // Process all tiles.
-@@ -1553,7 +1774,16 @@ namespace RT64 {
+@@ -1553,7 +1916,16 @@
              ext.framebufferGraphicsWorker->commandList->end();
              ext.drawDataUploader->wait();
              ext.transformsUploader->wait();
@@ -1624,7 +2189,7 @@ index d249a97..4d71041 100644
              ext.framebufferGraphicsWorker->wait();
              ext.textureCache->waitForGPUUploads();
          }
-@@ -1748,8 +1978,11 @@ namespace RT64 {
+@@ -1748,8 +2120,11 @@
          }
          
          // Advance the workload queue at the end of a full synchronization.
@@ -1636,7 +2201,7 @@ index d249a97..4d71041 100644
  
          // Make sure the profiler starts after the workload is advanced to ignore any waiting time.
          dlCpuProfiler.reset();
-@@ -1806,6 +2039,11 @@ namespace RT64 {
+@@ -1806,6 +2181,11 @@
          // Extended GBI must be enabled again when the display list starts.
          disableExtendedGBI();
          clearExtended();
@@ -1648,18 +2213,49 @@ index d249a97..4d71041 100644
      }
      
      void State::updateScreen(const VI &newVI, bool fromEarlyPresent) {
-@@ -2774,4 +3012,4 @@ namespace RT64 {
+@@ -1944,6 +2324,10 @@
+         renderTargetManager.destroyAll();
+         renderTargetManager.setMultisampling(multisampling);
+         dummyDepthTarget.reset();
++#if defined(__SWITCH__)
++        switchColorCopyTarget.reset();
++        switchDepthCopyTarget.reset();
++#endif
+         framebufferRenderer->updateMultisampling();
+         updateRenderFlagSampleCount();
+     }
+@@ -2774,4 +3158,4 @@
              break;
          }
      }
 -};
 \ No newline at end of file
 +};
+diff --git a/src/hle/rt64_state.h b/src/hle/rt64_state.h
+--- a/src/hle/rt64_state.h
++++ b/src/hle/rt64_state.h
+@@ -83,6 +83,10 @@
+         uint64_t workloadCounter;
+         std::vector<uint64_t> evictedTextureHashes;
+         std::unique_ptr<RenderTarget> dummyDepthTarget;
++#if defined(__SWITCH__)
++        std::unique_ptr<RenderTarget> switchColorCopyTarget;
++        std::unique_ptr<RenderTarget> switchDepthCopyTarget;
++#endif
+         DrawCall drawCall;
+         DrawStatus drawStatus;
+         SpriteCommand activeSpriteCommand;
+@@ -174,4 +178,4 @@
+         void clearExtended();
+         void updateRenderFlagSampleCount();
+     };
+-};
+\ No newline at end of file
++};
 diff --git a/src/hle/rt64_workload_queue.cpp b/src/hle/rt64_workload_queue.cpp
-index 5a331aa..72dfd74 100644
 --- a/src/hle/rt64_workload_queue.cpp
 +++ b/src/hle/rt64_workload_queue.cpp
-@@ -4,12 +4,24 @@
+@@ -4,11 +4,23 @@
  
  #include "rt64_workload_queue.h"
  
@@ -1673,18 +2269,17 @@ index 5a331aa..72dfd74 100644
  #include "rt64_present_queue.h"
  
  #define ENABLE_HIGH_RESOLUTION_RENDERER 1
- 
++
 +#if defined(__SWITCH__)
 +void switch_log_checkpoint(const char*, bool);
 +#define RT64_WORKLOAD_SWITCH_CHECKPOINT(message) ::switch_log_checkpoint(message, false)
 +#else
 +#define RT64_WORKLOAD_SWITCH_CHECKPOINT(message) ((void)0)
 +#endif
-+
+ 
  namespace RT64 {
      // WorkloadQueue
- 
-@@ -22,6 +34,15 @@ namespace RT64 {
+@@ -22,6 +34,15 @@
          cursorCondition.notify_all();
          idleCondition.notify_all();
  
@@ -1700,7 +2295,7 @@ index 5a331aa..72dfd74 100644
          if (renderThread != nullptr) {
              renderThread->join();
              delete renderThread;
-@@ -31,6 +52,7 @@ namespace RT64 {
+@@ -31,6 +52,7 @@
              idleThread->join();
              delete idleThread;
          }
@@ -1708,7 +2303,7 @@ index 5a331aa..72dfd74 100644
  
          workloadIdCondition.notify_all();
      }
-@@ -51,15 +73,17 @@ namespace RT64 {
+@@ -51,15 +73,17 @@
          int nextWriteCursor = (writeCursor + 1) % workloads.size();
  
          // Stall the thread until the barrier is lifted if we're trying to write on a workload being used by the GPU.
@@ -1734,7 +2329,7 @@ index 5a331aa..72dfd74 100644
              writeCursor = nextWriteCursor;
          }
  
-@@ -110,10 +134,43 @@ namespace RT64 {
+@@ -110,9 +134,42 @@
          lookAtProcessor.setup(ext.workloadGraphicsWorker);
  
          threadsRunning = true;
@@ -1760,9 +2355,10 @@ index 5a331aa..72dfd74 100644
 +#else
          renderThread = new std::thread(&WorkloadQueue::renderThreadLoop, this);
          idleThread = new std::thread(&WorkloadQueue::idleThreadLoop, this);
+-    }
 +#endif
-     }
- 
++    }
++
 +#if defined(__SWITCH__)
 +    void *WorkloadQueue::switchRenderThreadEntry(void *argument) {
 +        static_cast<WorkloadQueue *>(argument)->renderThreadLoop();
@@ -1774,11 +2370,10 @@ index 5a331aa..72dfd74 100644
 +        return nullptr;
 +    }
 +#endif
-+
+ 
      void WorkloadQueue::updateMultisampling() {
          renderFramebufferManager->destroyAll();
-         dummyDepthTarget.reset();
-@@ -275,7 +332,16 @@ namespace RT64 {
+@@ -275,7 +332,16 @@
  
          if (ext.sharedResources->userConfigChanged) {
              idleMutex.lock();
@@ -1795,10 +2390,11 @@ index 5a331aa..72dfd74 100644
              idleMutex.unlock();
              idleCondition.notify_all();
          }
-@@ -300,6 +366,19 @@ namespace RT64 {
+@@ -299,6 +365,19 @@
+         FramebufferManager &fbManager = ext.sharedResources->framebufferManager;
          RenderTargetManager &targetManager = ext.sharedResources->renderTargetManager;
          const bool usingMSAA = (targetManager.multisampling.sampleCount > 1);
- 
++
 +#if defined(__SWITCH__)
 +        static bool firstNativeDiagnosticWorkload = true;
 +        const char *nativeDiagnosticEnvironment = std::getenv("SK2_SWITCH_DIAGNOSTIC_NATIVE_RESOLUTION");
@@ -1811,14 +2407,14 @@ index 5a331aa..72dfd74 100644
 +            RT64_WORKLOAD_SWITCH_CHECKPOINT("rt64 1x diagnostic: first workload entered");
 +        }
 +#endif
-+
+ 
          rendererCPUProfiler.start();
  
-         const bool aspectRatioAdjustment = (abs(workloadConfig.aspectRatioScale - 1.0f) > 1e-6f);
-@@ -465,6 +544,25 @@ namespace RT64 {
+@@ -464,6 +543,25 @@
+ 
                      fixedResScale = RenderTarget::computeFixedResolutionScale(colorImg.width, fixedResScale);
                      RenderTarget::computeScaledSize(nativeColorWidth, nativeColorHeight, fixedResScale, targetWidth, targetHeight, targetMisalignX);
- 
++
 +#if defined(__SWITCH__)
 +                    if (traceNativeDiagnostic && !nativeTargetLogged) {
 +                        const unsigned int diagnosticNativeWidth = static_cast<unsigned int>(nativeColorWidth);
@@ -1837,11 +2433,10 @@ index 5a331aa..72dfd74 100644
 +                        nativeTargetLogged = true;
 +                    }
 +#endif
-+
+ 
                      rtWidth = targetWidth;
                      rtHeight = targetHeight;
- 
-@@ -703,6 +801,20 @@ namespace RT64 {
+@@ -703,6 +801,20 @@
              ext.workloadGraphicsWorker->commandList->writeTimestamp(queryPool.get(), 0);
              framebufferRenderer->endFramebuffers(ext.workloadGraphicsWorker, &workload.drawBuffers, &workload.outputBuffers, workloadConfig.raytracingEnabled);
              framebufferRenderer->recordSetup(ext.workloadGraphicsWorker, bufferUploaders, processRSP ? rspProcessor.get() : nullptr, processWorldVertices ? vertexProcessor.get() : nullptr, &workload.outputBuffers, workloadConfig.raytracingEnabled);
@@ -1862,7 +2457,7 @@ index 5a331aa..72dfd74 100644
              
              // Record all framebuffer pairs.
              uint32_t framebufferIndex = 0;
-@@ -840,8 +952,36 @@ namespace RT64 {
+@@ -840,8 +952,36 @@
              ext.workloadGraphicsWorker->commandList->writeTimestamp(queryPool.get(), 1);
              ext.workloadGraphicsWorker->commandList->end();
              framebufferRenderer->waitForUploaders();
@@ -1899,7 +2494,7 @@ index 5a331aa..72dfd74 100644
              workerMutex.unlock();
  
              // Update the GPU profiler with the results from the timestamps of the frame.
-@@ -861,12 +1001,22 @@ namespace RT64 {
+@@ -861,12 +1001,22 @@
          rendererCPUProfiler.end();
          rendererCPUProfiler.log();
          rendererCPUProfiler.reset();
@@ -1924,7 +2519,7 @@ index 5a331aa..72dfd74 100644
      }
  
      void WorkloadQueue::threadAdvanceWorkloadId(uint64_t newWorkloadId) {
-@@ -879,6 +1029,7 @@ namespace RT64 {
+@@ -879,6 +1029,7 @@
      }
  
      void WorkloadQueue::renderThreadLoop() {
@@ -1932,7 +2527,7 @@ index 5a331aa..72dfd74 100644
          Thread::setCurrentThreadName("RT64 Workload");
  
          WorkloadConfiguration workloadConfig;
-@@ -888,6 +1039,7 @@ namespace RT64 {
+@@ -888,6 +1039,7 @@
          uint32_t displayRateForTicks = 0;
          int processCursor = -1;
          bool frameReduction = false;
@@ -1940,7 +2535,7 @@ index 5a331aa..72dfd74 100644
          while (threadsRunning) {
              {
                  std::unique_lock<std::mutex> cursorLock(cursorMutex);
-@@ -902,9 +1054,11 @@ namespace RT64 {
+@@ -902,9 +1054,11 @@
              }
  
              if (processCursor >= 0) {
@@ -1952,7 +2547,7 @@ index 5a331aa..72dfd74 100644
  
                  if (!threadsRunning) {
                      continue;
-@@ -913,6 +1067,7 @@ namespace RT64 {
+@@ -913,6 +1067,7 @@
                  ElapsedTimer workloadTimer;
                  workloadProfiler.start();
                  threadConfigurationUpdate(workload.viFbSize, workloadConfig);
@@ -1960,7 +2555,7 @@ index 5a331aa..72dfd74 100644
  
                  // FIXME: This is a very hacky way to find out if we need to advance the frame if the workload was paused for the first time.
                  if (!workload.paused || (!gameFrames[curFrameIndex].workloads.empty() && (gameFrames[curFrameIndex].workloads[0] != (uint32_t)processCursor))) {
-@@ -925,6 +1080,7 @@ namespace RT64 {
+@@ -925,6 +1080,7 @@
                  const GameFrame &prevFrame = gameFrames[prevFrameIndex];
                  uint32_t workloadIndex = processCursor;
                  curFrame.set(*this, &workloadIndex, 1);
@@ -1968,7 +2563,7 @@ index 5a331aa..72dfd74 100644
  
                  // Detect the color image to interpolate for this workload.
                  RenderTargetKey interpolationTargetKey;
-@@ -1117,8 +1273,10 @@ namespace RT64 {
+@@ -1117,8 +1273,10 @@
                      }
  
                      int64_t renderTimeMicro = workloadTimer.elapsedMicroseconds();
@@ -1979,7 +2574,7 @@ index 5a331aa..72dfd74 100644
  
                      // Add total time the frame took to render.
                      renderTimeTotalMicro += workloadTimer.elapsedMicroseconds() - renderTimeMicro;
-@@ -1126,6 +1284,7 @@ namespace RT64 {
+@@ -1126,6 +1284,7 @@
                      // After one frame is rendered, we indicate the workload has been processed so the present thread can start presenting frames as soon as it can.
                      if (frame == 0) {
                          threadAdvanceWorkloadId(workload.workloadId);
@@ -1987,7 +2582,7 @@ index 5a331aa..72dfd74 100644
                      }
  
                      // For every additional frame, we increase the frames available and notify the present queue.
-@@ -1172,11 +1331,13 @@ namespace RT64 {
+@@ -1172,11 +1331,13 @@
                  workloadProfiler.end();
                  workloadProfiler.log();
                  workloadProfiler.reset();
@@ -2001,7 +2596,7 @@ index 5a331aa..72dfd74 100644
          // Beware traveler as you enter the zone of dirty driver hacks. Given N64 games are not exactly a demanding thing to render
          // nowadays for modern GPUs and due to how the plugin's cooperative multiqueue system works, it's sometimes just not possible
          // to keep the GPU busy at all times. It is often the case that the GPU might've already rendered all the frames it needed to
-@@ -1221,4 +1382,4 @@ namespace RT64 {
+@@ -1221,4 +1382,4 @@
              }
          }
      }
@@ -2009,7 +2604,6 @@ index 5a331aa..72dfd74 100644
 \ No newline at end of file
 +};
 diff --git a/src/hle/rt64_workload_queue.h b/src/hle/rt64_workload_queue.h
-index bde2f03..224b125 100644
 --- a/src/hle/rt64_workload_queue.h
 +++ b/src/hle/rt64_workload_queue.h
 @@ -5,6 +5,9 @@
@@ -2022,7 +2616,7 @@ index bde2f03..224b125 100644
  
  #include "common/rt64_enhancement_configuration.h"
  #include "common/rt64_profiling_timer.h"
-@@ -71,8 +74,17 @@ namespace RT64 {
+@@ -71,8 +74,17 @@
          uint64_t lastPresentId;
          std::mutex workloadIdMutex;
          std::condition_variable workloadIdCondition;
@@ -2040,7 +2634,7 @@ index bde2f03..224b125 100644
          bool idleActive = false;
          std::mutex idleMutex;
          std::condition_variable idleCondition;
-@@ -123,4 +135,4 @@ namespace RT64 {
+@@ -123,4 +135,4 @@
          void renderThreadLoop();
          void idleThreadLoop();
      };
@@ -2048,24 +2642,101 @@ index bde2f03..224b125 100644
 \ No newline at end of file
 +};
 diff --git a/src/render/rt64_framebuffer_renderer.cpp b/src/render/rt64_framebuffer_renderer.cpp
-index 9fae0d4..5abd535 100644
 --- a/src/render/rt64_framebuffer_renderer.cpp
 +++ b/src/render/rt64_framebuffer_renderer.cpp
-@@ -1449,6 +1449,7 @@ namespace RT64 {
+@@ -312,7 +312,14 @@
+         
+         const bool createSet = (descTextureSet == nullptr) || (descTextureSet->textureCacheSize < (textureCacheSize + 1));
+         if (createSet) {
+-            descTextureSet = std::make_unique<FramebufferRendererDescriptorTextureSet>(worker->device, ((textureCacheSize + 1) * 3) / 2);
++            const uint32_t descriptorCount = ((textureCacheSize + 1) * 3) / 2;
++            descTextureSet = std::make_unique<FramebufferRendererDescriptorTextureSet>(worker->device, descriptorCount);
++#if defined(__SWITCH__)
++            // Keep 1D raw TMEM views out of the 2D texture descriptor set. NVK
++            // can otherwise alias the mixed image-view types when the same set
++            // is bound to both shader spaces.
++            descTMEMSet = std::make_unique<FramebufferRendererDescriptorTextureSet>(worker->device, descriptorCount);
++#endif
+         }
+ 
+         if (createSet || (descriptorTextureReplacementMapEnabled != textureCacheReplacementMapEnabled)) {
+@@ -401,7 +408,11 @@
+                     descTextureSet->setTexture(i, textureCacheTextures[i]->texture.get(), RenderTextureLayout::SHADER_READ);
+                 }
+                 else {
++#if defined(__SWITCH__)
++                    descTMEMSet->setTexture(i, textureCacheTextures[i]->tmem.get(), RenderTextureLayout::SHADER_READ);
++#else
+                     descTextureSet->setTexture(i, textureCacheTextures[i]->tmem.get(), RenderTextureLayout::SHADER_READ);
++#endif
+                 }
+             }
+ 
+@@ -482,7 +493,11 @@
+             worker->commandList->setGraphicsPipelineLayout(rendererPipelineLayout);
+             worker->commandList->setGraphicsDescriptorSet(descCommonSet->get(), 0);
+             worker->commandList->setGraphicsDescriptorSet(descTextureSet->get(), 1);
++#if defined(__SWITCH__)
++            worker->commandList->setGraphicsDescriptorSet(descTMEMSet->get(), 2);
++#else
+             worker->commandList->setGraphicsDescriptorSet(descTextureSet->get(), 2);
++#endif
+             worker->commandList->setGraphicsDescriptorSet(depthState ? descRealFbSet : descDummyFbSet, 3);
+             worker->commandList->setViewports(framebuffer.viewport);
+         };
+@@ -749,7 +764,11 @@
+         
+         Framebuffer &framebuffer = framebufferVector[framebufferCount - 1];
+         RenderDescriptorSet *descRealDepthSet = framebuffer.descRealFbSet->get();
++#if defined(__SWITCH__)
++        RenderDescriptorSet *descriptorSets[] = { descCommonSet->get(), descTextureSet->get(), descTMEMSet->get(), descRealDepthSet };
++#else
+         RenderDescriptorSet *descriptorSets[] = { descCommonSet->get(), descTextureSet->get(), descTextureSet->get(), descRealDepthSet };
++#endif
+         rtResources->updateTopLevelASResources(worker, instanceDrawCallVector, rtScene.instanceIndices);
+         rtResources->createShaderBindingTable(worker, rtState, descriptorSets, uint32_t(std::size(descriptorSets)), hitGroupVector);
+         rtResources->updateLightsBuffer(worker, rtScene);
+@@ -810,7 +829,11 @@
+         worker->commandList->setRaytracingPipelineLayout(rtPipelineLayout);
+         worker->commandList->setRaytracingDescriptorSet(descCommonSet->get(), 0);
+         worker->commandList->setRaytracingDescriptorSet(descTextureSet->get(), 1);
++#if defined(__SWITCH__)
++        worker->commandList->setRaytracingDescriptorSet(descTMEMSet->get(), 2);
++#else
+         worker->commandList->setRaytracingDescriptorSet(descTextureSet->get(), 2);
++#endif
+         worker->commandList->setRaytracingDescriptorSet(descRealFbSet, 3);
+         worker->commandList->traceRays(rtResources->textureWidth, rtResources->textureHeight, 1, rtResources->shaderBindingTableBuffer->at(0), rtResources->shaderBindingTableInfo.groups);
+ 
+@@ -1140,7 +1163,11 @@
+             worker->commandList->setGraphicsPipelineLayout(debugShader.pipelineLayout.get());
+             worker->commandList->setGraphicsDescriptorSet(descCommonSet->get(), 0);
+             worker->commandList->setGraphicsDescriptorSet(descTextureSet->get(), 1);
++#if defined(__SWITCH__)
++            worker->commandList->setGraphicsDescriptorSet(descTMEMSet->get(), 2);
++#else
+             worker->commandList->setGraphicsDescriptorSet(descTextureSet->get(), 2);
++#endif
+             worker->commandList->setGraphicsDescriptorSet(descRealFbSet, 3);
+             worker->commandList->drawInstanced(3, 1, 0, 0);
+         }
+@@ -1449,6 +1476,8 @@
          const float extOriginPercentage = p.extAspectPercentage;
          uint32_t vertexTestZFaceIndicesStart = 0;
          int32_t vertexTestZCallIndex = -1;
 +        bool skippedVertexTestZActive = false;
++        uint32_t skippedVertexTestZVertexIndex = 0;
          RenderViewport viewportClip;
          for (uint32_t pr = 0; (pr < fbPair.projectionCount) && (globalCallIndex < p.maxGameCall); pr++) {
              const Projection &proj = fbPair.projections[pr];
-@@ -1508,6 +1509,23 @@ namespace RT64 {
+@@ -1508,6 +1537,55 @@
  
              for (uint32_t d = 0; (d < proj.gameCallCount) && (globalCallIndex < p.maxGameCall); d++) {
                  const GameCall &call = proj.gameCalls[d];
 +                if (globalCallIndex < p.minGameCall) {
 +                    if (call.callDesc.extendedType == DrawExtendedType::VertexTestZ) {
 +                        skippedVertexTestZActive = true;
++                        skippedVertexTestZVertexIndex = call.callDesc.extendedData.vertexTestZ.vertexIndex;
 +                    }
 +                    else if (call.callDesc.extendedType == DrawExtendedType::EndVertexTestZ) {
 +                        skippedVertexTestZActive = false;
@@ -2080,10 +2751,55 @@ index 9fae0d4..5abd535 100644
 +                    continue;
 +                }
 +
++                // A Switch framebuffer slice may begin in the middle of a
++                // VertexTestZ range. Recreate the compute prepass for the part
++                // contained in this slice; merely carrying the destination
++                // index offset would make the continuation read stale indices
++                // from testZIndexBuffer.
++                const bool indexedProjection = (proj.type == Projection::Type::Perspective) ||
++                    (proj.type == Projection::Type::Orthographic);
++                const bool recreateSkippedVertexTestZ = skippedVertexTestZActive && indexedProjection &&
++                    (vertexTestZCallIndex < 0) &&
++                    (call.callDesc.extendedType == DrawExtendedType::None);
++                if (recreateSkippedVertexTestZ) {
++                    interop::RenderIndices syntheticRenderIndices{};
++                    syntheticRenderIndices.instanceIndex = call.callDesc.callIndex;
++                    syntheticRenderIndices.faceIndicesStart = call.meshDesc.faceIndicesStart;
++                    syntheticRenderIndices.rdpTileIndex = call.callDesc.tileIndex;
++                    syntheticRenderIndices.rdpTileCount = call.callDesc.tileCount;
++                    syntheticRenderIndices.highlightColor = 0;
++                    renderIndicesVector.push_back(syntheticRenderIndices);
++
++                    InstanceDrawCall syntheticVertexTestZ;
++                    syntheticVertexTestZ.type = InstanceDrawCall::Type::VertexTestZ;
++                    syntheticVertexTestZ.vertexTestZ.vertexIndex = skippedVertexTestZVertexIndex;
++                    syntheticVertexTestZ.vertexTestZ.resolutionScale = p.resolutionScale;
++                    syntheticVertexTestZ.vertexTestZ.srcIndexStart = call.meshDesc.faceIndicesStart;
++                    syntheticVertexTestZ.vertexTestZ.dstIndexStart = vertexTestZFaceIndicesStart;
++                    syntheticVertexTestZ.vertexTestZ.indexCount = 0;
++                    vertexTestZCallIndex = int32_t(instanceDrawCallVector.size());
++                    rasterScene.instanceIndices.push_back(uint32_t(vertexTestZCallIndex));
++                    instanceDrawCallVector.push_back(syntheticVertexTestZ);
++                }
++
                  renderIndices.instanceIndex = call.callDesc.callIndex;
                  renderIndices.faceIndicesStart = call.meshDesc.faceIndicesStart;
                  renderIndices.rdpTileIndex = call.callDesc.tileIndex;
-@@ -1917,4 +1935,4 @@ namespace RT64 {
+@@ -1559,10 +1637,13 @@
+                         instanceDrawCall.vertexTestZ.dstIndexStart = vertexTestZFaceIndicesStart;
+                         instanceDrawCall.vertexTestZ.indexCount = 0;
+                         vertexTestZCallIndex = int32_t(instanceDrawCallVector.size());
++                        skippedVertexTestZActive = true;
++                        skippedVertexTestZVertexIndex = call.callDesc.extendedData.vertexTestZ.vertexIndex;
+                         break;
+                     case DrawExtendedType::EndVertexTestZ:
+                         instanceDrawCall.type = InstanceDrawCall::Type::Unknown;
+                         vertexTestZCallIndex = -1;
++                        skippedVertexTestZActive = false;
+                         break;
+                     default:
+                         assert(false && "Unknown extended type.");
+@@ -1917,4 +1998,4 @@
          unsigned int im3dVertexCount;
      };
  };
@@ -2091,10 +2807,19 @@ index 9fae0d4..5abd535 100644
 \ No newline at end of file
 +*/
 diff --git a/src/render/rt64_framebuffer_renderer.h b/src/render/rt64_framebuffer_renderer.h
-index 3add9c3..a80ad80 100644
 --- a/src/render/rt64_framebuffer_renderer.h
 +++ b/src/render/rt64_framebuffer_renderer.h
-@@ -146,6 +146,7 @@ namespace RT64 {
+@@ -89,6 +89,9 @@
+         RenderPipeline *postBlendDitherNoiseSubNegativePipeline = nullptr;
+         std::unique_ptr<FramebufferRendererDescriptorCommonSet> descCommonSet;
+         std::unique_ptr<FramebufferRendererDescriptorTextureSet> descTextureSet;
++#if defined(__SWITCH__)
++        std::unique_ptr<FramebufferRendererDescriptorTextureSet> descTMEMSet;
++#endif
+         std::unique_ptr<RenderTexture> dummyColorTarget;
+         std::unique_ptr<RenderTexture> dummyDepthTarget;
+         std::unique_ptr<RenderTextureView> dummyColorTargetView;
+@@ -146,6 +149,7 @@
              bool ubershadersOnly;
              bool postBlendNoise;
              bool postBlendNoiseNegative;
@@ -2102,36 +2827,275 @@ index 3add9c3..a80ad80 100644
              uint32_t maxGameCall;
          };
  
-@@ -179,4 +180,4 @@ namespace RT64 {
+@@ -179,4 +183,4 @@
          void setRaytracingConfig(const RaytracingConfiguration &rtConfig, bool resolutionChanged);
  #   endif
      };
 -};
 \ No newline at end of file
 +};
+diff --git a/src/render/rt64_native_target.cpp b/src/render/rt64_native_target.cpp
+--- a/src/render/rt64_native_target.cpp
++++ b/src/render/rt64_native_target.cpp
+@@ -2,6 +2,8 @@
+ // RT64
+ //
+ 
++#include <algorithm>
++#include <cmath>
+ #include <cstring>
+ 
+ #include "rt64_native_target.h"
+@@ -11,6 +13,80 @@
+ 
+ #include "rt64_render_target.h"
+ #include "rt64_render_worker.h"
++
++#if defined(__SWITCH__)
++namespace {
++    constexpr uint32_t SwitchDitherPatternBayer[16] = {
++        0, 4, 1, 5,
++        4, 0, 5, 1,
++        3, 7, 2, 6,
++        7, 3, 6, 2
++    };
++
++    constexpr uint32_t SwitchDitherPatternMagicSquare[16] = {
++        0, 6, 1, 7,
++        4, 2, 5, 3,
++        3, 5, 2, 4,
++        7, 1, 6, 0
++    };
++
++    uint32_t switchInitRand(uint32_t value0, uint32_t value1) {
++        uint32_t sum = 0;
++        for (uint32_t iteration = 0; iteration < 16; iteration++) {
++            sum += 0x9e3779b9U;
++            value0 += ((value1 << 4) + 0xa341316cU) ^ (value1 + sum) ^ ((value1 >> 5) + 0xc8013ea4U);
++            value1 += ((value0 << 4) + 0xad90777dU) ^ (value0 + sum) ^ ((value0 >> 5) + 0x7e95761eU);
++        }
++
++        return value0;
++    }
++
++    uint32_t switchDitherValue(uint32_t pattern, uint32_t x, uint32_t y, uint32_t randomSeed) {
++        const uint32_t index = ((y & 3U) << 2U) + (x & 3U);
++        switch (pattern) {
++        case 0:
++            return SwitchDitherPatternMagicSquare[index];
++        case 1:
++            return SwitchDitherPatternBayer[index];
++        case 2:
++            return randomSeed & 7U;
++        default:
++            return 0;
++        }
++    }
++
++    uint16_t switchEncodeRGBA16(const uint8_t *source, uint32_t dither) {
++        uint32_t red = source[0];
++        uint32_t green = source[1];
++        uint32_t blue = source[2];
++        const uint32_t alpha = (uint32_t(source[3]) & 4U) ? 1U : 0U;
++        red = std::min(red + dither, 255U) >> 3U;
++        green = std::min(green + dither, 255U) >> 3U;
++        blue = std::min(blue + dither, 255U) >> 3U;
++        return uint16_t((red << 11U) | (green << 6U) | (blue << 1U) | alpha);
++    }
++
++    uint16_t switchEncodeDepth16(float inputDepth) {
++        if (!std::isfinite(inputDepth)) {
++            inputDepth = 0.0f;
++        }
++
++        const float depth = std::clamp(inputDepth, 0.0f, 1.0f);
++        const uint32_t fixedDepth = uint32_t(std::nearbyint(depth * (32768.0f * 8.0f - 1.0f)));
++        const uint32_t invertedShiftedDepth = ~(fixedDepth << 14U);
++        uint32_t exponent = 0;
++        uint32_t leadingMask = 0x80000000U;
++        while ((exponent < 7U) && ((invertedShiftedDepth & leadingMask) == 0U)) {
++            exponent++;
++            leadingMask >>= 1U;
++        }
++
++        const uint32_t mantissa = fixedDepth >> (6U - std::min(6U, exponent));
++        return uint16_t((exponent << 13U) | ((mantissa << 2U) & 0x1FFCU));
++    }
++
++}
++#endif
+ 
+ namespace RT64 {
+     // NativeTarget
+@@ -369,4 +445,108 @@
+         writeBuffer.nativeReadbackBuffer->unmap();
+         writeBufferHistoryIndex++;
+     }
+-};
+\ No newline at end of file
++
++#if defined(__SWITCH__)
++    bool NativeTarget::copyToNativeCPU(RenderWorker *worker, RenderTarget *srcTarget, uint32_t rowWidth, uint32_t rowStart, uint32_t rowEnd, uint8_t siz, uint8_t fmt,
++        uint32_t ditherPattern, uint32_t ditherRandomSeed, const ShaderLibrary *shaderLibrary, bool encodedBytes)
++    {
++        assert(worker != nullptr);
++        assert(srcTarget != nullptr);
++        assert(shaderLibrary != nullptr);
++        assert(rowWidth > 0);
++        assert(rowWidth <= srcTarget->width);
++        assert(rowStart < rowEnd);
++        assert(rowEnd <= srcTarget->height);
++        const bool supportedSizeAndFormat = (siz == G_IM_SIZ_16b) &&
++            ((fmt == G_IM_FMT_RGBA) || (fmt == G_IM_FMT_DEPTH));
++        if (!supportedSizeAndFormat || (srcTarget->multisampling.sampleCount != 1) || (shaderLibrary->usesHDR && !encodedBytes)) {
++            return false;
++        }
++
++        srcTarget->resolveTarget(worker, shaderLibrary);
++        RenderTexture *sourceTexture = srcTarget->getResolvedTexture();
++        const RenderFormat sourceFormat = srcTarget->format;
++        const bool supportedColor = (fmt == G_IM_FMT_RGBA) && (sourceFormat == RenderFormat::R8G8B8A8_UNORM);
++        const bool supportedDepth = (fmt == G_IM_FMT_DEPTH) && (sourceFormat == RenderFormat::D32_FLOAT);
++        if (!supportedColor && !supportedDepth) {
++            return false;
++        }
++
++        const uint32_t rowCount = rowEnd - rowStart;
++        const uint32_t sourcePixelSize = RenderFormatSize(sourceFormat);
++        const uint32_t requiredBufferSize = rowWidth * rowCount * sourcePixelSize;
++        if (switchTextureReadbackBufferSize < requiredBufferSize) {
++            switchTextureReadbackBuffer = worker->device->createBuffer(RenderBufferDesc::ReadbackBuffer(requiredBufferSize));
++            switchTextureReadbackBufferSize = requiredBufferSize;
++        }
++
++        switchTextureReadbackRowWidth = rowWidth;
++        switchTextureReadbackRowStart = rowStart;
++        switchTextureReadbackRowEnd = rowEnd;
++        switchTextureReadbackSize = siz;
++        switchTextureReadbackN64Format = fmt;
++        switchTextureReadbackDitherPattern = ditherPattern;
++        switchTextureReadbackDitherSeed = ditherRandomSeed;
++        switchTextureReadbackRenderFormat = sourceFormat;
++        switchTextureReadbackEncodedBytes = encodedBytes;
++
++        worker->commandList->barriers(RenderBarrierStage::COPY,
++            RenderBufferBarrier(switchTextureReadbackBuffer.get(), RenderBufferAccess::WRITE),
++            RenderTextureBarrier(sourceTexture, RenderTextureLayout::COPY_SOURCE));
++        const RenderTextureCopyLocation destination = RenderTextureCopyLocation::PlacedFootprint(
++            switchTextureReadbackBuffer.get(), sourceFormat, rowWidth, rowCount, 1, rowWidth);
++        const RenderTextureCopyLocation source = RenderTextureCopyLocation::Subresource(sourceTexture);
++        const RenderBox sourceBox(0, rowStart, rowWidth, rowEnd);
++        worker->commandList->copyTextureRegion(destination, source, 0, 0, 0, &sourceBox);
++        return true;
++    }
++
++    void NativeTarget::copyToRAMCPU(uint8_t *data) {
++        assert(data != nullptr);
++        assert(switchTextureReadbackBuffer != nullptr);
++        assert(switchTextureReadbackSize == G_IM_SIZ_16b);
++        assert((switchTextureReadbackN64Format == G_IM_FMT_RGBA) || (switchTextureReadbackN64Format == G_IM_FMT_DEPTH));
++
++        const uint32_t rowWidth = switchTextureReadbackRowWidth;
++        const uint32_t rowStart = switchTextureReadbackRowStart;
++        const uint32_t rowCount = switchTextureReadbackRowEnd - rowStart;
++        const uint32_t sourcePixelSize = RenderFormatSize(switchTextureReadbackRenderFormat);
++        const uint32_t sourceByteCount = rowWidth * rowCount * sourcePixelSize;
++        assert(sourceByteCount <= switchTextureReadbackBufferSize);
++
++        RenderRange readRange(0, sourceByteCount);
++        const uint8_t *readback = reinterpret_cast<const uint8_t *>(switchTextureReadbackBuffer->map(0, &readRange));
++        uint8_t *destination = data;
++
++        for (uint32_t y = 0; y < rowCount; y++) {
++            const uint32_t framebufferY = rowStart + y;
++            for (uint32_t x = 0; x < rowWidth; x++) {
++                const uint32_t pixelIndex = y * rowWidth + x;
++                const uint8_t *sourcePixel = readback + pixelIndex * sourcePixelSize;
++                uint16_t nativeValue = 0;
++                if (switchTextureReadbackEncodedBytes) {
++                    nativeValue = uint16_t(uint16_t(sourcePixel[0]) << 8U) | sourcePixel[1];
++                }
++                else if (switchTextureReadbackN64Format == G_IM_FMT_DEPTH) {
++                    float depth;
++                    std::memcpy(&depth, sourcePixel, sizeof(depth));
++                    nativeValue = switchEncodeDepth16(depth);
++                }
++                else {
++                    const uint32_t destinationIndex = framebufferY * rowWidth + x;
++                    const uint32_t randomSeed = (switchTextureReadbackDitherPattern == 2)
++                        ? switchInitRand(switchTextureReadbackDitherSeed, destinationIndex)
++                        : 0;
++                    const uint32_t dither = switchDitherValue(switchTextureReadbackDitherPattern, x, framebufferY, randomSeed);
++                    nativeValue = switchEncodeRGBA16(sourcePixel, dither);
++                }
++
++                destination[pixelIndex * 2] = uint8_t(nativeValue >> 8U);
++                destination[pixelIndex * 2 + 1] = uint8_t(nativeValue);
++            }
++        }
++
++        switchTextureReadbackBuffer->unmap();
++    }
++#endif
++};
+diff --git a/src/render/rt64_native_target.h b/src/render/rt64_native_target.h
+--- a/src/render/rt64_native_target.h
++++ b/src/render/rt64_native_target.h
+@@ -44,6 +44,19 @@
+         uint32_t readBufferHistoryCount = 0;
+         uint32_t writeBufferHistoryCount = 0;
+         uint32_t writeBufferHistoryIndex = 0;
++#if defined(__SWITCH__)
++        std::unique_ptr<RenderBuffer> switchTextureReadbackBuffer;
++        uint32_t switchTextureReadbackBufferSize = 0;
++        uint32_t switchTextureReadbackRowWidth = 0;
++        uint32_t switchTextureReadbackRowStart = 0;
++        uint32_t switchTextureReadbackRowEnd = 0;
++        uint8_t switchTextureReadbackSize = 0;
++        uint8_t switchTextureReadbackN64Format = 0;
++        uint32_t switchTextureReadbackDitherPattern = 0;
++        uint32_t switchTextureReadbackDitherSeed = 0;
++        RenderFormat switchTextureReadbackRenderFormat = RenderFormat::UNKNOWN;
++        bool switchTextureReadbackEncodedBytes = false;
++#endif
+ 
+         NativeTarget();
+         ~NativeTarget();
+@@ -56,7 +69,11 @@
+         uint32_t copyFromRAM(RenderWorker *worker, FramebufferChange &emptyFbChange, uint32_t width, uint32_t height, uint32_t rowStart, uint8_t siz, uint8_t fmt, const uint8_t *data, bool invalidateTargets, const ShaderLibrary *shaderLibrary);
+         void copyToNative(RenderWorker *worker, RenderTarget *srcTarget, uint32_t rowWidth, uint32_t rowStart, uint32_t rowEnd, uint8_t siz, uint8_t fmt, uint32_t ditherPattern, uint32_t ditherRandomSeed, const ShaderLibrary *shaderLibrary);
+         void copyToRAM(uint32_t rowStart, uint32_t rowEnd, uint32_t width, uint8_t siz, uint8_t *data);
++#if defined(__SWITCH__)
++        bool copyToNativeCPU(RenderWorker *worker, RenderTarget *srcTarget, uint32_t rowWidth, uint32_t rowStart, uint32_t rowEnd, uint8_t siz, uint8_t fmt, uint32_t ditherPattern, uint32_t ditherRandomSeed, const ShaderLibrary *shaderLibrary, bool encodedBytes = false);
++        void copyToRAMCPU(uint8_t *data);
++#endif
+ 
+         static uint32_t getNativeSize(uint32_t width, uint32_t height, uint8_t siz);
+     };
+-};
+\ No newline at end of file
++};
 diff --git a/src/render/rt64_raster_shader.cpp b/src/render/rt64_raster_shader.cpp
-index 721a01e..97838f2 100644
 --- a/src/render/rt64_raster_shader.cpp
 +++ b/src/render/rt64_raster_shader.cpp
-@@ -4,8 +4,17 @@
+@@ -4,7 +4,16 @@
  
  #include "rt64_raster_shader.h"
  
 +#include <cstdlib>
 +
  #include "xxHash/xxh3.h"
- 
++
 +#if defined(__SWITCH__)
 +void switch_log_checkpoint(const char*, bool);
 +#define RT64_RASTER_SWITCH_CHECKPOINT(message) ::switch_log_checkpoint(message, false)
 +#else
 +#define RT64_RASTER_SWITCH_CHECKPOINT(message) ((void)0)
 +#endif
-+
+ 
  #include "shaders/RenderParams.hlsli.rw.h"
  #include "shaders/RasterPSDynamic.hlsl.spirv.h"
- #include "shaders/RasterPSDynamicMS.hlsl.spirv.h"
-@@ -307,6 +316,7 @@ namespace RT64 {
+@@ -307,6 +316,7 @@
      }
      
      std::unique_ptr<RenderPipeline> RasterShader::createPipeline(const PipelineCreation &c) {
@@ -2139,7 +3103,7 @@ index 721a01e..97838f2 100644
          RenderGraphicsPipelineDesc pipelineDesc;
          pipelineDesc.renderTargetBlend[0] = RenderBlendDesc::Copy();
          pipelineDesc.renderTargetFormat[0] = RenderTarget::colorBufferFormat(c.usesHDR);
-@@ -344,7 +354,10 @@ namespace RT64 {
+@@ -344,7 +354,10 @@
              targetBlend.dstBlendAlpha = RenderBlend::ONE;
          }
  
@@ -2151,7 +3115,15 @@ index 721a01e..97838f2 100644
      }
      
      RenderMultisampling RasterShader::generateMultisamplingPattern(RenderSampleCounts sampleCount, bool sampleLocationsSupported) {
-@@ -487,8 +500,33 @@ namespace RT64 {
+@@ -406,6 +419,7 @@
+ 
+     RasterShaderUber::RasterShaderUber(RenderDevice *device, RenderShaderFormat shaderFormat, const RenderMultisampling &multisampling, const ShaderLibrary *shaderLibrary, uint32_t threadCount) {
+         assert(device != nullptr);
++        this->device = device;
+ 
+         // Create the shaders.
+         const void *VSBlob = nullptr;
+@@ -487,8 +501,33 @@
          pipelineThreads.clear();
          pipelineThreads.resize(pipelineThreadCreations.size());
          for (uint32_t i = 0; i < uint32_t(pipelineThreads.size()); i++) {
@@ -2179,13 +3151,14 @@ index 721a01e..97838f2 100644
 +            }
 +#else
              pipelineThreads[i] = std::make_unique<std::thread>(&RasterShaderUber::threadCreatePipelines, this, i);
+-        }
 +#endif
-         }
++        }
 +        RT64_RASTER_SWITCH_CHECKPOINT("rt64 raster: large-stack ubershader worker spawned");
  
          // Create the pipelines for post blend operations.
          std::unique_ptr<RenderShader> postBlendAddPixelShader;
-@@ -558,7 +596,16 @@ namespace RT64 {
+@@ -558,7 +597,16 @@
          waitForPipelineCreation();
      }
  
@@ -2202,7 +3175,7 @@ index 721a01e..97838f2 100644
          // Delay the creation of all other pipelines until the first pipeline is created. This can help the
          // driver reuse its shader cache between pipelines and achieve a much lower creation time than if
          // all threads started at the same time.
-@@ -572,29 +619,49 @@ namespace RT64 {
+@@ -572,29 +620,53 @@
          for (const PipelineCreation &creation : pipelineThreadCreations[threadIndex]) {
              uint32_t pipelineIndex = pipelineStateIndex(creation.zCmp, creation.zUpd, creation.cvgAdd);
  
@@ -2219,10 +3192,12 @@ index 721a01e..97838f2 100644
              }
              else {
                  pipelines[pipelineIndex] = RasterShader::createPipeline(creation);
+-            }
+-        }
 +                std::snprintf(checkpoint, sizeof(checkpoint), "rt64 raster: pipeline %u creation returned", pipelineIndex);
 +                RT64_RASTER_SWITCH_CHECKPOINT(checkpoint);
-             }
-         }
++            }
++        }
 +        RT64_RASTER_SWITCH_CHECKPOINT("rt64 raster: ubershader worker complete");
      }
  
@@ -2239,9 +3214,14 @@ index 721a01e..97838f2 100644
              for (std::unique_ptr<std::thread> &thread : pipelineThreads) {
 +                RT64_RASTER_SWITCH_CHECKPOINT("rt64 raster: pipeline worker join entered");
                  thread->join();
+-            }
 +                RT64_RASTER_SWITCH_CHECKPOINT("rt64 raster: pipeline worker join returned");
-             }
++            }
 +#endif
++
++            RT64_RASTER_SWITCH_CHECKPOINT("rt64 raster: pipeline cache save entered");
++            device->savePipelineCache();
++            RT64_RASTER_SWITCH_CHECKPOINT("rt64 raster: pipeline cache save returned");
  
              pipelineThreads.clear();
              pipelineThreadCreations.clear();
@@ -2253,7 +3233,6 @@ index 721a01e..97838f2 100644
      }
  
 diff --git a/src/render/rt64_raster_shader.h b/src/render/rt64_raster_shader.h
-index 3b991ff..bd81288 100644
 --- a/src/render/rt64_raster_shader.h
 +++ b/src/render/rt64_raster_shader.h
 @@ -9,6 +9,9 @@
@@ -2266,7 +3245,15 @@ index 3b991ff..bd81288 100644
  
  #include "re-spirv/re-spirv.h"
  
-@@ -87,7 +90,17 @@ namespace RT64 {
+@@ -78,6 +81,7 @@
+         static const uint64_t RasterVSLibraryHash;
+         static const uint64_t RasterPSLibraryHash;
+ 
++        RenderDevice *device = nullptr;
+         std::unique_ptr<RenderPipeline> pipelines[8];
+         std::unique_ptr<RenderPipeline> postBlendDitherNoiseAddPipeline;
+         std::unique_ptr<RenderPipeline> postBlendDitherNoiseSubPipeline;
+@@ -87,7 +91,17 @@
          bool pipelinesCreated = false;
          std::unique_ptr<RenderPipelineLayout> pipelineLayout;
          std::vector<std::vector<PipelineCreation>> pipelineThreadCreations;
@@ -2285,19 +3272,26 @@ index 3b991ff..bd81288 100644
          std::unique_ptr<RenderShader> pixelShader;
  
 diff --git a/src/render/rt64_raster_shader_cache.cpp b/src/render/rt64_raster_shader_cache.cpp
-index bf7b669..cfd8217 100644
 --- a/src/render/rt64_raster_shader_cache.cpp
 +++ b/src/render/rt64_raster_shader_cache.cpp
-@@ -4,6 +4,8 @@
+@@ -4,36 +4,78 @@
  
  #include "rt64_raster_shader_cache.h"
  
++#include <cstdio>
 +#include <cstdlib>
++#include <system_error>
++#include <type_traits>
++#include <vector>
 +
  #include "common/rt64_thread.h"
  
  #define ENABLE_OPTIMIZED_SHADER_GENERATION
-@@ -11,30 +13,62 @@
++
++#if defined(__SWITCH__)
++void switch_log_checkpoint(const char*, bool);
++#endif
+ 
  namespace RT64 {
      // RasterShaderCache::CompilationThread
      
@@ -2343,28 +3337,28 @@ index bf7b669..cfd8217 100644
 +#else
          thread->join();
          thread.reset(nullptr);
+-    }
 +#endif
-     }
- 
++    }
++
 +#if defined(__SWITCH__)
 +    void *RasterShaderCache::CompilationThread::switchThreadEntry(void *argument) {
 +        static_cast<CompilationThread *>(argument)->loop();
 +        return nullptr;
 +    }
 +#endif
-+
+ 
      void RasterShaderCache::CompilationThread::loop() {
          Thread::setCurrentThreadName("RT64 Shader");
  
          // The shader compilation thread should have idle priority by default as the application can use the ubershader in the meantime.
          Thread::setCurrentThreadPriority(Thread::Priority::Idle);
- 
--        threadRunning = true;
 -
+-        threadRunning = true;
+ 
          while (threadRunning) {
              ShaderDescription shaderDesc;
-             bool fromPriorityQueue = false;
-@@ -42,15 +76,14 @@ namespace RT64 {
+@@ -42,15 +84,14 @@
              // Check the top of the queue or wait if it's empty.
              {
                  std::unique_lock<std::mutex> queueLock(shaderCache->descQueueMutex);
@@ -2382,10 +3376,14 @@ index bf7b669..cfd8217 100644
                      fromPriorityQueue = true;
                  }
              }
-@@ -66,6 +99,15 @@ namespace RT64 {
+@@ -66,25 +107,43 @@
                      const std::unique_lock<std::mutex> lock(shaderCache->GPUShadersMutex);
                      shaderCache->GPUShaders[shaderDesc.hash()] = std::move(newShader);
                  }
++
++#if defined(__SWITCH__)
++                shaderCache->persistShaderDescription(shaderDesc);
++#endif
 +
 +                {
 +                    const std::unique_lock<std::mutex> queueLock(shaderCache->descQueueMutex);
@@ -2398,7 +3396,25 @@ index bf7b669..cfd8217 100644
              }
          }
      }
-@@ -83,8 +125,6 @@ namespace RT64 {
+ 
+     // RasterShaderCache
+ 
+-    RasterShaderCache::RasterShaderCache(uint32_t threadCount, uint32_t ubershaderThreadCount) {
++    RasterShaderCache::RasterShaderCache(uint32_t threadCount, uint32_t ubershaderThreadCount
++#if defined(__SWITCH__)
++        , const std::filesystem::path &descriptionCachePath
++#endif
++    ) {
+         assert(threadCount > 0);
+ 
+         this->threadCount = threadCount;
+         this->ubershaderThreadCount = ubershaderThreadCount;
++#if defined(__SWITCH__)
++        this->descriptionCachePath = descriptionCachePath;
++#endif
+ 
+ #ifdef ENABLE_OPTIMIZED_SHADER_GENERATION
+ #   ifdef _WIN32
          shaderCompiler = std::make_unique<ShaderCompiler>();
  #   endif
  
@@ -2407,7 +3423,14 @@ index bf7b669..cfd8217 100644
          for (uint32_t t = 0; t < threadCount; t++) {
              compilationThreads.push_back(std::make_unique<CompilationThread>(this));
          }
-@@ -112,6 +152,7 @@ namespace RT64 {
+@@ -109,9 +168,14 @@
+         if (shaderFormat == RenderShaderFormat::SPIRV) {
+             optimizerCacheSPIRV.initialize();
+         }
++
++#if defined(__SWITCH__)
++        loadPersistentShaderDescriptions();
++#endif
      }
  
      void RasterShaderCache::submit(const ShaderDescription &desc) {
@@ -2415,7 +3438,7 @@ index bf7b669..cfd8217 100644
          {
              std::unique_lock<std::mutex> queueLock(submissionMutex);
  
-@@ -132,19 +173,17 @@ namespace RT64 {
+@@ -132,19 +196,17 @@
          }
  
          descQueueChanged.notify_all();
@@ -2443,15 +3466,119 @@ index bf7b669..cfd8217 100644
      }
  
      void RasterShaderCache::destroyAll() {
-@@ -179,4 +218,4 @@ namespace RT64 {
+@@ -179,4 +241,109 @@
          std::unique_lock<std::mutex> lock(GPUShadersMutex);
          return GPUShaders.size();
      }
 -};
 \ No newline at end of file
++
++#if defined(__SWITCH__)
++    namespace {
++        constexpr uint64_t SwitchShaderDescriptionCacheMagic = 0x3153485344343652ULL;
++        constexpr uint32_t SwitchShaderDescriptionCacheVersion = 1;
++        constexpr uint32_t SwitchShaderDescriptionCacheLimit = 4096;
++
++#pragma pack(push, 1)
++        struct SwitchShaderDescriptionCacheHeader {
++            uint64_t magic;
++            uint32_t version;
++            uint32_t recordSize;
++        };
++
++        struct SwitchShaderDescriptionCacheRecord {
++            uint64_t hash;
++            ShaderDescription description;
++        };
++#pragma pack(pop)
++
++        static_assert(std::is_trivially_copyable_v<ShaderDescription>);
++    }
++
++    void RasterShaderCache::loadPersistentShaderDescriptions() {
++        if (descriptionCachePath.empty()) {
++            return;
++        }
++
++        std::vector<ShaderDescription> cachedDescriptions;
++        {
++            const std::unique_lock<std::mutex> cacheLock(descriptionCacheMutex);
++            persistedShaderHashes.clear();
++            std::ifstream cacheFile(descriptionCachePath, std::ios::binary);
++            SwitchShaderDescriptionCacheHeader header{};
++            const bool validHeader = cacheFile.read(reinterpret_cast<char *>(&header), sizeof(header)) &&
++                (header.magic == SwitchShaderDescriptionCacheMagic) &&
++                (header.version == SwitchShaderDescriptionCacheVersion) &&
++                (header.recordSize == sizeof(SwitchShaderDescriptionCacheRecord));
++
++            if (validHeader) {
++                SwitchShaderDescriptionCacheRecord record{};
++                while ((cachedDescriptions.size() < SwitchShaderDescriptionCacheLimit) &&
++                    cacheFile.read(reinterpret_cast<char *>(&record), sizeof(record)))
++                {
++                    record.description.maskUnusedParameters();
++                    if (record.hash == record.description.hash()) {
++                        cachedDescriptions.emplace_back(record.description);
++                        persistedShaderHashes[record.hash] = true;
++                    }
++                }
++            }
++
++            // Canonicalize the file on every load so an interrupted final
++            // record can never misalign descriptions appended by this run.
++            cacheFile.close();
++            std::error_code pathError;
++            std::filesystem::create_directories(descriptionCachePath.parent_path(), pathError);
++            std::ofstream normalizedCacheFile(descriptionCachePath, std::ios::binary | std::ios::trunc);
++            const SwitchShaderDescriptionCacheHeader newHeader = {
++                SwitchShaderDescriptionCacheMagic,
++                SwitchShaderDescriptionCacheVersion,
++                uint32_t(sizeof(SwitchShaderDescriptionCacheRecord))
++            };
++            descriptionCacheReady = bool(normalizedCacheFile.write(
++                reinterpret_cast<const char *>(&newHeader), sizeof(newHeader)));
++            for (const ShaderDescription &description : cachedDescriptions) {
++                const SwitchShaderDescriptionCacheRecord record = {
++                    description.hash(), description
++                };
++                descriptionCacheReady = descriptionCacheReady && bool(normalizedCacheFile.write(
++                    reinterpret_cast<const char *>(&record), sizeof(record)));
++            }
++            normalizedCacheFile.flush();
++        }
++
++        for (const ShaderDescription &description : cachedDescriptions) {
++            submit(description);
++        }
++
++        char cacheMessage[160]{};
++        std::snprintf(cacheMessage, sizeof(cacheMessage),
++            "rt64 shader warm cache: loaded %zu descriptions", cachedDescriptions.size());
++        switch_log_checkpoint(cacheMessage, false);
++    }
++
++    void RasterShaderCache::persistShaderDescription(const ShaderDescription &desc) {
++        if (descriptionCachePath.empty()) {
++            return;
++        }
++
++        const uint64_t shaderHash = desc.hash();
++        const std::unique_lock<std::mutex> cacheLock(descriptionCacheMutex);
++        bool &alreadyPersisted = persistedShaderHashes[shaderHash];
++        if (alreadyPersisted || !descriptionCacheReady) {
++            return;
++        }
++
++        const SwitchShaderDescriptionCacheRecord record = { shaderHash, desc };
++        std::ofstream cacheFile(descriptionCachePath, std::ios::binary | std::ios::app);
++        if (cacheFile.write(reinterpret_cast<const char *>(&record), sizeof(record))) {
++            cacheFile.flush();
++            alreadyPersisted = true;
++        }
++    }
++#endif
 +};
 diff --git a/src/render/rt64_raster_shader_cache.h b/src/render/rt64_raster_shader_cache.h
-index 5c40c18..bb8e6fc 100644
 --- a/src/render/rt64_raster_shader_cache.h
 +++ b/src/render/rt64_raster_shader_cache.h
 @@ -12,6 +12,9 @@
@@ -2464,7 +3591,7 @@ index 5c40c18..bb8e6fc 100644
  
  #include "rt64_raster_shader.h"
  
-@@ -19,7 +22,13 @@ namespace RT64 {
+@@ -19,7 +22,13 @@
      struct RasterShaderCache {
          struct CompilationThread {
              RasterShaderCache *shaderCache;
@@ -2478,7 +3605,7 @@ index 5c40c18..bb8e6fc 100644
              std::atomic<bool> threadRunning;
  
              CompilationThread(RasterShaderCache *shaderCache);
-@@ -33,8 +42,9 @@ namespace RT64 {
+@@ -33,8 +42,9 @@
          std::mutex submissionMutex;
          std::queue<ShaderDescription> descQueue;
          std::mutex descQueueMutex;
@@ -2489,29 +3616,146 @@ index 5c40c18..bb8e6fc 100644
          std::unordered_map<uint64_t, bool> shaderHashes;
          std::unordered_map<uint64_t, std::unique_ptr<RasterShader>> GPUShaders;
          std::mutex GPUShadersMutex;
-@@ -56,4 +66,4 @@ namespace RT64 {
+@@ -45,8 +55,18 @@
+         std::unique_ptr<ShaderCompiler> shaderCompiler;
+         RenderMultisampling multisampling;
+         bool usesHDR = false;
++#if defined(__SWITCH__)
++        std::filesystem::path descriptionCachePath;
++        std::mutex descriptionCacheMutex;
++        std::unordered_map<uint64_t, bool> persistedShaderHashes;
++        bool descriptionCacheReady = false;
++#endif
+         
+-        RasterShaderCache(uint32_t threadCount, uint32_t ubershaderThreadCount);
++        RasterShaderCache(uint32_t threadCount, uint32_t ubershaderThreadCount
++#if defined(__SWITCH__)
++            , const std::filesystem::path &descriptionCachePath = {}
++#endif
++        );
+         ~RasterShaderCache();
+         void setup(RenderDevice *device, RenderShaderFormat shaderFormat, const ShaderLibrary *shaderLibrary, const RenderMultisampling &multisampling);
+         void submit(const ShaderDescription &desc);
+@@ -55,5 +75,9 @@
+         RasterShader *getGPUShader(const ShaderDescription &desc);
          RasterShaderUber *getGPUShaderUber() const;
          uint32_t shaderCount();
++#if defined(__SWITCH__)
++        void loadPersistentShaderDescriptions();
++        void persistShaderDescription(const ShaderDescription &desc);
++#endif
+     };
+-};
+\ No newline at end of file
++};
+diff --git a/src/render/rt64_render_target.cpp b/src/render/rt64_render_target.cpp
+--- a/src/render/rt64_render_target.cpp
++++ b/src/render/rt64_render_target.cpp
+@@ -9,6 +9,7 @@
+ #include "gbi/rt64_f3d.h"
+ #include "shared/rt64_fb_common.h"
+ #include "shared/rt64_render_target_copy.h"
++#include "shared/rt64_switch_framebuffer_copy.h"
+ #include "shared/rt64_texture_copy.h"
+ 
+ #include "rt64_raster_shader.h"
+@@ -213,6 +214,53 @@
+ 
+         markForResolve();
+     }
++
++#if defined(__SWITCH__)
++    bool RenderTarget::encodeColorToNativeBytes(RenderWorker *worker, RenderTarget *src, uint32_t rowWidth, uint32_t rowStart, uint32_t rowEnd,
++        uint32_t ditherPattern, uint32_t ditherRandomSeed, const ShaderLibrary *shaderLibrary)
++    {
++        assert(worker != nullptr);
++        assert(src != nullptr);
++        assert(shaderLibrary != nullptr);
++        if ((format != RenderFormat::R8G8B8A8_UNORM) || (src->multisampling.sampleCount != 1) ||
++            (rowWidth == 0) || (rowWidth > src->width) || (rowStart >= rowEnd) || (rowEnd > src->height))
++        {
++            return false;
++        }
++
++        setupColorFramebuffer(worker);
++        if (src->targetCopyDescSet == nullptr) {
++            src->targetCopyDescSet = std::make_unique<RenderTargetCopyDescriptorSet>(worker->device);
++            src->targetCopyDescSet->setTexture(src->targetCopyDescSet->gInput, src->texture.get(),
++                RenderTextureLayout::SHADER_READ, src->textureView.get());
++        }
++
++        const RenderTextureBarrier barriers[] = {
++            RenderTextureBarrier(texture.get(), RenderTextureLayout::COLOR_WRITE),
++            RenderTextureBarrier(src->texture.get(), RenderTextureLayout::SHADER_READ)
++        };
++        worker->commandList->barriers(RenderBarrierStage::GRAPHICS, barriers, uint32_t(std::size(barriers)));
++        worker->commandList->setFramebuffer(textureFramebuffer.get());
++
++        interop::SwitchFramebufferColorCopyCB copyCB;
++        copyCB.rowWidth = rowWidth;
++        copyCB.ditherPattern = ditherPattern;
++        copyCB.ditherRandomSeed = ditherRandomSeed;
++        copyCB.usesHDR = src->usesHDR ? 1U : 0U;
++
++        const uint32_t rowCount = rowEnd - rowStart;
++        worker->commandList->setViewports(RenderViewport(0.0f, float(rowStart), float(rowWidth), float(rowCount)));
++        worker->commandList->setScissors(RenderRect(0, rowStart, rowWidth, rowEnd));
++        worker->commandList->setPipeline(shaderLibrary->switchFramebufferColorCopy.pipeline.get());
++        worker->commandList->setGraphicsPipelineLayout(shaderLibrary->switchFramebufferColorCopy.pipelineLayout.get());
++        worker->commandList->setGraphicsDescriptorSet(src->targetCopyDescSet->get(), 0);
++        worker->commandList->setGraphicsPushConstants(0, &copyCB);
++        worker->commandList->setVertexBuffers(0, nullptr, 0, nullptr);
++        worker->commandList->drawInstanced(3, 1, 0, 0);
++        markForResolve();
++        return true;
++    }
++#endif
+ 
+     void RenderTarget::resolveFromTarget(RenderWorker *worker, RenderTarget *src, const ShaderLibrary *shaderLibrary) {
+         assert(!usesResolve() && "The target must not be an MSAA target to allow resolving from other targets.");
+@@ -512,4 +560,4 @@
+     RenderFormat RenderTarget::depthBufferFormat() {
+         return RenderFormat::D32_FLOAT;
+     }
+-};
+\ No newline at end of file
++};
+diff --git a/src/render/rt64_render_target.h b/src/render/rt64_render_target.h
+--- a/src/render/rt64_render_target.h
++++ b/src/render/rt64_render_target.h
+@@ -58,6 +58,10 @@
+         void setupResolveFramebuffer(RenderWorker *worker);
+         void setupDepthFramebuffer(RenderWorker *worker);
+         void copyFromTarget(RenderWorker *worker, RenderTarget *src, uint32_t x, uint32_t y, uint32_t width, uint32_t height, const ShaderLibrary *shaderLibrary);
++#if defined(__SWITCH__)
++        bool encodeColorToNativeBytes(RenderWorker *worker, RenderTarget *src, uint32_t rowWidth, uint32_t rowStart, uint32_t rowEnd,
++            uint32_t ditherPattern, uint32_t ditherRandomSeed, const ShaderLibrary *shaderLibrary);
++#endif
+         void resolveFromTarget(RenderWorker *worker, RenderTarget *src, const ShaderLibrary *shaderLibrary);
+         void copyFromChanges(RenderWorker *worker, const FramebufferChange &fbChange, uint32_t fbWidth, uint32_t fbHeight, uint32_t rowStart, const ShaderLibrary *shaderLibrary);
+         void clearColorTarget(RenderWorker *worker);
+@@ -75,4 +79,4 @@
+         static RenderFormat colorBufferFormat(bool usesHDR);
+         static RenderFormat depthBufferFormat();
      };
 -};
 \ No newline at end of file
 +};
 diff --git a/src/render/rt64_render_worker.cpp b/src/render/rt64_render_worker.cpp
-index 0250645..c870eff 100644
 --- a/src/render/rt64_render_worker.cpp
 +++ b/src/render/rt64_render_worker.cpp
-@@ -4,6 +4,10 @@
+@@ -3,6 +3,10 @@
+ //
  
  #include "rt64_render_worker.h"
- 
++
 +#if defined(__SWITCH__)
 +extern "C" void plume_switch_set_submit_context(const char *context);
 +#endif
-+
+ 
  namespace RT64 {
      // RenderWorker
- 
-@@ -20,7 +24,12 @@ namespace RT64 {
+@@ -20,7 +24,12 @@
  
      RenderWorker::~RenderWorker() { }
  
@@ -2525,7 +3769,7 @@ index 0250645..c870eff 100644
          commandQueue->executeCommandLists(commandList.get(), commandFence.get());
      }
  
-@@ -30,16 +39,17 @@ namespace RT64 {
+@@ -30,16 +39,17 @@
  
      // RenderWorkerExecution
  
@@ -2548,10 +3792,9 @@ index 0250645..c870eff 100644
 \ No newline at end of file
 +};
 diff --git a/src/render/rt64_render_worker.h b/src/render/rt64_render_worker.h
-index 85d12ee..eb70d43 100644
 --- a/src/render/rt64_render_worker.h
 +++ b/src/render/rt64_render_worker.h
-@@ -16,7 +16,7 @@ namespace RT64 {
+@@ -16,7 +16,7 @@
  
          RenderWorker(RenderDevice *device, const std::string &name, RenderCommandListType commandListType);
          ~RenderWorker();
@@ -2560,7 +3803,7 @@ index 85d12ee..eb70d43 100644
          void wait();
      };
  
-@@ -24,8 +24,9 @@ namespace RT64 {
+@@ -24,8 +24,9 @@
  
      struct RenderWorkerExecution {
          RenderWorker *worker;
@@ -2571,38 +3814,664 @@ index 85d12ee..eb70d43 100644
          ~RenderWorkerExecution();
      };
  };
+diff --git a/src/render/rt64_shader_library.cpp b/src/render/rt64_shader_library.cpp
+--- a/src/render/rt64_shader_library.cpp
++++ b/src/render/rt64_shader_library.cpp
+@@ -7,6 +7,7 @@
+ #include "common/rt64_common.h"
+ #include "shared/rt64_render_target_copy.h"
+ #include "shared/rt64_rsp_vertex_test_z.h"
++#include "shared/rt64_switch_framebuffer_copy.h"
+ 
+ #include "shaders/FbChangesClearCS.hlsl.spirv.h"
+ #include "shaders/FbChangesDrawColorPS.hlsl.spirv.h"
+@@ -39,6 +40,7 @@
+ #include "shaders/RtCopyDepthToColor2XPS.hlsl.spirv.h"
+ #include "shaders/RtCopyDepthToColor4XPS.hlsl.spirv.h"
+ #include "shaders/RtCopyDepthToColor8XPS.hlsl.spirv.h"
++#include "shaders/SwitchFramebufferColorCopyPS.hlsl.spirv.h"
+ #include "shaders/TextureCopyPS.hlsl.spirv.h"
+ #include "shaders/TextureDecodeCS.hlsl.spirv.h"
+ #include "shaders/TextureResolveSamples2XPS.hlsl.spirv.h"
+@@ -85,6 +87,7 @@
+ #   include "shaders/RtCopyDepthToColor2XPS.hlsl.dxil.h"
+ #   include "shaders/RtCopyDepthToColor4XPS.hlsl.dxil.h"
+ #   include "shaders/RtCopyDepthToColor8XPS.hlsl.dxil.h"
++#   include "shaders/SwitchFramebufferColorCopyPS.hlsl.dxil.h"
+ #   include "shaders/TextureCopyPS.hlsl.dxil.h"
+ #   include "shaders/TextureDecodeCS.hlsl.dxil.h"
+ #   include "shaders/TextureResolveSamples2XPS.hlsl.dxil.h"
+@@ -130,6 +133,7 @@
+ #   include "shaders/RtCopyDepthToColor2XPS.hlsl.metal.h"
+ #   include "shaders/RtCopyDepthToColor4XPS.hlsl.metal.h"
+ #   include "shaders/RtCopyDepthToColor8XPS.hlsl.metal.h"
++#   include "shaders/SwitchFramebufferColorCopyPS.hlsl.metal.h"
+ #   include "shaders/TextureCopyPS.hlsl.metal.h"
+ #   include "shaders/TextureDecodeCS.hlsl.metal.h"
+ #   include "shaders/TextureResolveSamples2XPS.hlsl.metal.h"
+@@ -790,6 +794,25 @@
+             RenderTargetCopyDescriptorSet descriptorSet;
+             layoutBuilder.begin();
+             layoutBuilder.addDescriptorSet(descriptorSet);
++            layoutBuilder.addPushConstant(0, 0, sizeof(interop::SwitchFramebufferColorCopyCB), RenderShaderStageFlag::PIXEL);
++            layoutBuilder.end();
++            switchFramebufferColorCopy.pipelineLayout = layoutBuilder.create(device);
++
++            std::unique_ptr<RenderShader> switchColorCopyShader = device->createShader(
++                CREATE_SHADER_INPUTS(SwitchFramebufferColorCopyPSBlobDXIL,
++                    SwitchFramebufferColorCopyPSBlobSPIRV,
++                    SwitchFramebufferColorCopyPSBlobMSL, "PSMain", shaderFormat));
++            RenderGraphicsPipelineDesc switchColorPipelineDesc;
++            switchColorPipelineDesc.renderTargetBlend[0] = RenderBlendDesc::Copy();
++            switchColorPipelineDesc.renderTargetFormat[0] = RenderFormat::R8G8B8A8_UNORM;
++            switchColorPipelineDesc.renderTargetCount = 1;
++            switchColorPipelineDesc.vertexShader = fullScreenVertexShader.get();
++            switchColorPipelineDesc.pipelineLayout = switchFramebufferColorCopy.pipelineLayout.get();
++            switchColorPipelineDesc.pixelShader = switchColorCopyShader.get();
++            switchFramebufferColorCopy.pipeline = device->createGraphicsPipeline(switchColorPipelineDesc);
++
++            layoutBuilder.begin();
++            layoutBuilder.addDescriptorSet(descriptorSet);
+             layoutBuilder.addPushConstant(0, 0, sizeof(interop::RenderTargetCopyCB), RenderShaderStageFlag::PIXEL);
+             layoutBuilder.end();
+             rtCopyDepthToColor.pipelineLayout = layoutBuilder.create(device);
+diff --git a/src/render/rt64_shader_library.h b/src/render/rt64_shader_library.h
+--- a/src/render/rt64_shader_library.h
++++ b/src/render/rt64_shader_library.h
+@@ -51,6 +51,7 @@
+         ShaderRecord rtCopyDepthToColor;
+         ShaderRecord rtCopyColorToDepthMS;
+         ShaderRecord rtCopyDepthToColorMS;
++        ShaderRecord switchFramebufferColorCopy;
+         ShaderRecord textureDecode;
+         ShaderRecord textureCopy;
+         ShaderRecord textureResolve;
 diff --git a/src/render/rt64_texture_cache.cpp b/src/render/rt64_texture_cache.cpp
-index 0848f3e..cb50796 100644
 --- a/src/render/rt64_texture_cache.cpp
 +++ b/src/render/rt64_texture_cache.cpp
-@@ -22,6 +22,10 @@
+@@ -22,12 +22,174 @@
  
  #define ONLY_USE_LOW_MIP_CACHE 0
  
 +#if defined(__SWITCH__)
 +extern "C" void plume_switch_set_submit_context(const char *context);
++void switch_log_checkpoint(const char *message, bool flush);
 +#endif
 +
  namespace RT64 {
      // ReplacementMap
      
-@@ -1180,6 +1184,9 @@ namespace RT64 {
+     static const interop::float2 IdentityScale = { 1.0f, 1.0f };
+     static const uint32_t TextureDataPitchAlignment = 256;
+     static const uint32_t TextureDataPlacementAlignment = 512;
++
++#if defined(__SWITCH__)
++    static uint8_t switchLoadTMEM(const TextureUpload &upload, uint32_t relativeAddress, uint32_t addressMask, uint32_t orAddress, bool oddRow, uint32_t textureStart, uint32_t rowSize) {
++        uint32_t finalAddress = textureStart + relativeAddress;
++        if (oddRow && (rowSize > 0)) {
++            const uint32_t rowStart = (relativeAddress / rowSize) * rowSize;
++            const uint32_t wordIndex = (relativeAddress - rowStart) / 4;
++            finalAddress = textureStart + rowStart + ((wordIndex ^ 1U) * 4) + (relativeAddress & 3U);
++        }
++
++        const uint32_t byteAddress = ((finalAddress & addressMask) | orAddress) & 0xFFFU;
++        return (byteAddress < upload.bytesTMEM.size()) ? upload.bytesTMEM[byteAddress] : 0;
++    }
++
++    static void switchStoreRGBA16(uint16_t value, uint8_t *destination) {
++        const uint8_t red = uint8_t((value >> 11) & 0x1F);
++        const uint8_t green = uint8_t((value >> 6) & 0x1F);
++        const uint8_t blue = uint8_t((value >> 1) & 0x1F);
++        destination[0] = uint8_t((red << 3) | (red >> 2));
++        destination[1] = uint8_t((green << 3) | (green >> 2));
++        destination[2] = uint8_t((blue << 3) | (blue >> 2));
++        destination[3] = (value & 1U) ? 0xFF : 0;
++    }
++
++    static void switchStoreIA16(uint16_t value, uint8_t *destination) {
++        const uint8_t intensity = uint8_t(value >> 8);
++        destination[0] = intensity;
++        destination[1] = intensity;
++        destination[2] = intensity;
++        destination[3] = uint8_t(value);
++    }
++
++    static std::vector<uint8_t> switchDecodeTMEM(const TextureUpload &upload) {
++        std::vector<uint8_t> decoded(size_t(upload.width) * upload.height * 4);
++        const uint32_t format = upload.loadTile.fmt;
++        const uint32_t size = upload.loadTile.siz;
++        const uint32_t textureStart = uint32_t(upload.loadTile.tmem) << 3;
++        const uint32_t rowSize = uint32_t(upload.loadTile.line) << 3;
++        const bool isRGBA32 = (format == G_IM_FMT_RGBA) && (size == G_IM_SIZ_32b);
++        const bool usesTLUT = upload.tlut > 0;
++        const uint32_t tmemShift = isRGBA32 ? 2U : size;
++        const uint32_t addressMask = (isRGBA32 || usesTLUT) ? 0x7FFU : 0xFFFU;
++
++        for (uint32_t y = 0; y < upload.height; y++) {
++            const bool oddRow = (y & 1U) != 0;
++            for (uint32_t x = 0; x < upload.width; x++) {
++                const bool oddColumn = (x & 1U) != 0;
++                const uint32_t pixelAddress = (y * rowSize) + ((x << tmemShift) >> 1);
++                const uint8_t value0 = switchLoadTMEM(upload, pixelAddress, addressMask, 0, oddRow, textureStart, rowSize);
++                const uint8_t value1 = switchLoadTMEM(upload, pixelAddress + 1, addressMask, 0, oddRow, textureStart, rowSize);
++                const uint8_t value4 = uint8_t((value0 >> (oddColumn ? 0 : 4)) & 0xF);
++                uint8_t *destination = &decoded[(size_t(y) * upload.width + x) * 4];
++
++                if (usesTLUT) {
++                    const uint32_t paletteAddress = (size == G_IM_SIZ_4b)
++                        ? 0x800U + (uint32_t(upload.loadTile.palette) << 7) + (uint32_t(value4) << 3)
++                        : 0x800U + (uint32_t(value0) << 3);
++                    const uint16_t paletteValue = uint16_t(switchLoadTMEM(upload, paletteAddress, 0xFFFU, 0, false, 0, rowSize) << 8)
++                        | switchLoadTMEM(upload, paletteAddress + 1, 0xFFFU, 0, false, 0, rowSize);
++                    if (upload.tlut == G_TT_RGBA16) {
++                        switchStoreRGBA16(paletteValue, destination);
++                    }
++                    else if (upload.tlut == G_TT_IA16) {
++                        switchStoreIA16(paletteValue, destination);
++                    }
++                    else {
++                        destination[0] = destination[1] = destination[2] = 0;
++                        destination[3] = 0xFF;
++                    }
++                    continue;
++                }
++
++                const uint32_t pixelAddress2 = isRGBA32 ? pixelAddress : pixelAddress + 2;
++                const uint32_t orAddress = isRGBA32 ? 0x800U : 0;
++                const uint8_t value2 = switchLoadTMEM(upload, pixelAddress2, addressMask, orAddress, oddRow, textureStart, rowSize);
++                const uint8_t value3 = switchLoadTMEM(upload, pixelAddress2 + 1, addressMask, orAddress, oddRow, textureStart, rowSize);
++
++                switch (size) {
++                case G_IM_SIZ_4b:
++                    if (format == G_IM_FMT_IA) {
++                        uint8_t intensity = value4 & 0xE;
++                        intensity = uint8_t((intensity << 4) | (intensity << 1) | (intensity >> 2));
++                        destination[0] = destination[1] = destination[2] = intensity;
++                        destination[3] = (value4 & 1U) ? 0xFF : 0;
++                    }
++                    else if ((format == G_IM_FMT_I) || (format == G_IM_FMT_RGBA)) {
++                        destination[0] = destination[1] = destination[2] = destination[3] = uint8_t(value4 * 0x11U);
++                    }
++                    else if (format == G_IM_FMT_CI) {
++                        destination[0] = destination[1] = destination[2] = destination[3] = uint8_t((uint32_t(upload.loadTile.palette) << 4) | value4);
++                    }
++                    else {
++                        destination[0] = destination[1] = destination[2] = 0;
++                        destination[3] = 0xFF;
++                    }
++                    break;
++                case G_IM_SIZ_8b:
++                    if (format == G_IM_FMT_IA) {
++                        const uint8_t intensity = uint8_t((value0 & 0xF0U) | (value0 >> 4));
++                        destination[0] = destination[1] = destination[2] = intensity;
++                        destination[3] = uint8_t((value0 << 4) | (value0 & 0xFU));
++                    }
++                    else if ((format == G_IM_FMT_I) || (format == G_IM_FMT_RGBA) || (format == G_IM_FMT_CI)) {
++                        destination[0] = destination[1] = destination[2] = destination[3] = value0;
++                    }
++                    else {
++                        destination[0] = destination[1] = destination[2] = 0;
++                        destination[3] = 0xFF;
++                    }
++                    break;
++                case G_IM_SIZ_16b:
++                    if (format == G_IM_FMT_RGBA) {
++                        switchStoreRGBA16(uint16_t(value0 << 8) | value1, destination);
++                    }
++                    else if (format == G_IM_FMT_IA) {
++                        switchStoreIA16(uint16_t(value0 << 8) | value1, destination);
++                    }
++                    else if ((format == G_IM_FMT_CI) || (format == G_IM_FMT_I)) {
++                        destination[0] = value0;
++                        destination[1] = value1;
++                        destination[2] = value0;
++                        destination[3] = value1;
++                    }
++                    else {
++                        destination[0] = destination[1] = destination[2] = 0;
++                        destination[3] = 0xFF;
++                    }
++                    break;
++                case G_IM_SIZ_32b:
++                    if (format == G_IM_FMT_RGBA) {
++                        destination[0] = value0;
++                        destination[1] = value1;
++                        destination[2] = value2;
++                        destination[3] = value3;
++                    }
++                    else if ((format == G_IM_FMT_CI) || (format == G_IM_FMT_IA) || (format == G_IM_FMT_I)) {
++                        destination[0] = oddColumn ? value0 : value2;
++                        destination[1] = oddColumn ? value1 : value3;
++                        destination[2] = oddColumn ? value0 : value2;
++                        destination[3] = oddColumn ? value1 : value3;
++                    }
++                    else {
++                        destination[0] = destination[1] = destination[2] = 0;
++                        destination[3] = 0xFF;
++                    }
++                    break;
++                default:
++                    destination[0] = destination[1] = destination[2] = 0;
++                    destination[3] = 0xFF;
++                    break;
++                }
++            }
++        }
++
++        return decoded;
++    }
++#endif
+ 
+     ReplacementMap::ReplacementMap() {
+         // Empty constructor.
+@@ -969,6 +1131,9 @@
+         Thread::setCurrentThreadName("RT64 Texture");
+ 
+         uploadThreadRunning = true;
++#if defined(__SWITCH__)
++        switch_log_checkpoint("rt64 texture cache: Switch CPU TMEM decode enabled", false);
++#endif
+ 
+         std::vector<TextureUpload> queueCopy;
+         std::vector<TextureUpload> newQueue;
+@@ -980,6 +1145,14 @@
+         std::vector<RenderTextureBarrier> beforeDecodeBarriers;
+         std::vector<RenderTextureBarrier> afterDecodeBarriers;
+         std::vector<uint8_t> replacementBytes;
++#if defined(__SWITCH__)
++        std::vector<std::unique_ptr<RenderBuffer>> switchDecodedUploads;
++        std::vector<std::unique_ptr<RenderBuffer>> switchDecodedDeviceUploads;
++        std::vector<uint32_t> switchDecodedUploadSizes;
++        std::vector<std::unique_ptr<RenderCommandList>> switchDecodedStageCommandLists;
++        std::vector<std::unique_ptr<RenderCommandList>> switchDecodedCommandLists;
++        std::vector<size_t> switchDecodedCommandIndices;
++#endif
+ 
+         while (uploadThreadRunning) {
+             resolvedPathQueueCopy.clear();
+@@ -996,7 +1169,16 @@
+                 });
+ 
+                 if (!uploadQueue.empty()) {
++#if defined(__SWITCH__)
++                    // Large bursts of image copies can wedge NVK. Drain the
++                    // queue in small batches; CPU decoding and cache ordering
++                    // remain unchanged.
++                    constexpr size_t SwitchUploadBatchLimit = 16;
++                    const size_t switchBatchSize = std::min(uploadQueue.size(), SwitchUploadBatchLimit);
++                    queueCopy.assign(uploadQueue.begin(), uploadQueue.begin() + switchBatchSize);
++#else
+                     queueCopy = uploadQueue;
++#endif
+                 }
+ 
+                 if (!resolvedPathQueue.empty()) {
+@@ -1050,14 +1232,24 @@
+                     }
+                 }
+ 
++#if !defined(__SWITCH__)
+                 for (size_t i = descriptorSets.size(); i < queueSize; i++) {
+                     descriptorSets.emplace_back(std::make_unique<TextureDecodeDescriptorSet>(directWorker->device));
+                 }
++#endif
+ 
+                 // Upload all textures in the queue using the copy worker. It's worth noting the usage of a copy worker during copy texture operations is intentional
+                 // to avoid issues with drivers that are not very explicit about where they execute the copy texture operations and end up causing subtle synchronization
+                 // issues that can't be accounted for. Using dedicated copy queues for these operations has shown to eliminate these issues entirely.
+-                copyWorker->commandList->begin();
++#if defined(__SWITCH__)
++                // NVK exposes one reliable native queue. Record upload and
++                // decode into one command buffer instead of synchronizing two
++                // virtual workers with a binary semaphore.
++                RenderWorker *uploadWorker = directWorker;
++#else
++                RenderWorker *uploadWorker = copyWorker;
++#endif
++                uploadWorker->commandList->begin();
+                 textureMapAdditions.clear();
+ 
+                 for (size_t i = 0; i < queueSize; i++) {
+@@ -1070,38 +1262,84 @@
+                     newTexture->format = RenderFormat::R8_UINT;
+                     newTexture->width = upload.width;
+                     newTexture->height = upload.height;
+-                    newTexture->tmem = copyWorker->device->createTexture(RenderTextureDesc::Texture1D(std::max(uint32_t(upload.bytesTMEM.size()), 1U), 1, newTexture->format));
+-                    newTexture->tmem->setName("Texture Cache TMEM #" + std::to_string(TMEMGlobalCounter++));
+                     newTexture->bytesTMEM = upload.bytesTMEM;
+                     newTexture->loadTile = upload.loadTile;
+                     newTexture->tlut = upload.tlut;
+                     newTexture->decodeTMEM = upload.decodeTMEM;
+ 
+-                    if (!upload.bytesTMEM.empty()) {
+-                        void *dstData = tmemUploadResources[i]->map();
+-                        memcpy(dstData, upload.bytesTMEM.data(), upload.bytesTMEM.size());
+-                        tmemUploadResources[i]->unmap();
+-                    }
+-
+-                    beforeCopyBarriers.emplace_back(newTexture->tmem.get(), RenderTextureLayout::COPY_DEST);
+-                }
+-
+-                copyWorker->commandList->barriers(RenderBarrierStage::COPY, beforeCopyBarriers);
++                    if (!upload.decodeTMEM) {
++                        newTexture->tmem = uploadWorker->device->createTexture(RenderTextureDesc::Texture1D(std::max(uint32_t(upload.bytesTMEM.size()), 1U), 1, newTexture->format));
++                        newTexture->tmem->setName("Texture Cache TMEM #" + std::to_string(TMEMGlobalCounter++));
++                        if (!upload.bytesTMEM.empty()) {
++                            void *dstData = tmemUploadResources[i]->map();
++                            memcpy(dstData, upload.bytesTMEM.data(), upload.bytesTMEM.size());
++                            tmemUploadResources[i]->unmap();
++                        }
++                        beforeCopyBarriers.emplace_back(newTexture->tmem.get(), RenderTextureLayout::COPY_DEST);
++                    }
++                }
++
++#if defined(__SWITCH__)
++                if (switchDecodedUploads.size() < queueSize) {
++                    switchDecodedUploads.resize(queueSize);
++                    switchDecodedDeviceUploads.resize(queueSize);
++                    switchDecodedUploadSizes.resize(queueSize, 0);
++                }
++                static uint32_t SwitchTextureGlobalCounter = 0;
++                for (size_t i = 0; i < queueSize; i++) {
++                    const TextureUpload &upload = queueCopy[i];
++                    if (!upload.decodeTMEM) {
++                        continue;
++                    }
++
++                    Texture *dstTexture = textureMapAdditions[i].texture;
++                    dstTexture->format = RenderFormat::R8G8B8A8_UNORM;
++                    dstTexture->width = upload.width;
++                    dstTexture->height = upload.height;
++                    dstTexture->mipmaps = 1;
++                    dstTexture->texture = uploadWorker->device->createTexture(
++                        RenderTextureDesc::Texture2D(upload.width, upload.height, 1, dstTexture->format));
++                    dstTexture->texture->setName("Texture Cache RGBA32 CPU #" + std::to_string(SwitchTextureGlobalCounter++));
++
++                    const std::vector<uint8_t> decodedBytes = switchDecodeTMEM(upload);
++                    const uint32_t sourceRowPitch = upload.width * RenderFormatSize(dstTexture->format);
++                    const uint32_t uploadSize = sourceRowPitch * upload.height;
++                    if (switchDecodedUploadSizes[i] < uploadSize) {
++                        std::unique_lock queueLock(uploadResourcePoolMutex);
++                        switchDecodedUploads[i] = uploadResourcePool->createBuffer(
++                            RenderBufferDesc::UploadBuffer(uploadSize));
++                        switchDecodedDeviceUploads[i] = uploadWorker->device->createBuffer(
++                            RenderBufferDesc::DefaultBuffer(uploadSize));
++                        switchDecodedUploadSizes[i] = uploadSize;
++                    }
++                    uint8_t *uploadData = reinterpret_cast<uint8_t *>(switchDecodedUploads[i]->map());
++                    assert(decodedBytes.size() >= uploadSize);
++                    std::memcpy(uploadData, decodedBytes.data(), uploadSize);
++                    switchDecodedUploads[i]->unmap();
++                    dstTexture->memorySize = uploadSize;
++                }
++#endif
++
++                uploadWorker->commandList->barriers(RenderBarrierStage::COPY, beforeCopyBarriers);
+ 
+                 for (size_t i = 0; i < queueSize; i++) {
+                     const TextureUpload &upload = queueCopy[i];
+                     const uint32_t byteCount = uint32_t(upload.bytesTMEM.size());
+                     Texture *dstTexture = textureMapAdditions[i].texture;
+-                    if (byteCount > 0) {
+-                        copyWorker->commandList->copyTextureRegion(
++                    if (!upload.decodeTMEM && (byteCount > 0)) {
++                        uploadWorker->commandList->copyTextureRegion(
+                             RenderTextureCopyLocation::Subresource(dstTexture->tmem.get()),
+                             RenderTextureCopyLocation::PlacedFootprint(tmemUploadResources[i].get(), RenderFormat::R8_UINT, byteCount, 1, 1, byteCount)
+                         );
+                     }
+ 
+-                    beforeDecodeBarriers.emplace_back(dstTexture->tmem.get(), RenderTextureLayout::SHADER_READ);
++                    if (!upload.decodeTMEM) {
++                        beforeDecodeBarriers.emplace_back(dstTexture->tmem.get(), RenderTextureLayout::SHADER_READ);
++                    }
+ 
+                     if (upload.decodeTMEM) {
++#if defined(__SWITCH__)
++#else
+                         static uint32_t TextureGlobalCounter = 0;
+                         TextureDecodeDescriptorSet *descSet = descriptorSets[i].get();
+                         dstTexture->format = RenderFormat::R8G8B8A8_UNORM;
+@@ -1110,6 +1348,7 @@
+                         descSet->setTexture(descSet->TMEM, dstTexture->tmem.get(), RenderTextureLayout::SHADER_READ);
+                         descSet->setTexture(descSet->RGBA32, dstTexture->texture.get(), RenderTextureLayout::GENERAL);
+                         beforeDecodeBarriers.emplace_back(dstTexture->texture.get(), RenderTextureLayout::GENERAL);
++#endif
+                     }
+ 
+                     addResolvedPaths(upload.hash, upload.width, upload.height, upload.tlut, upload.loadTile, upload.bytesTMEM, upload.decodeTMEM, resolvedPathQueueCopy);
+@@ -1161,7 +1400,7 @@
+                         // Load the texture directly on this thread (operation was defined as Stall).
+                         else if (textureMap.replacementMap.fileSystems[resolvedPath.fileSystemIndex]->load(resolvedPath.relativePath, replacementBytes)) {
+                             replacementUploadResources.emplace_back();
+-                            replacementTexture = TextureCache::loadTextureFromBytes(copyWorker->device, copyWorker->commandList.get(), replacementBytes, replacementUploadResources.back());
++                            replacementTexture = TextureCache::loadTextureFromBytes(uploadWorker->device, uploadWorker->commandList.get(), replacementBytes, replacementUploadResources.back());
+                             textureMapMutex.lock();
+                             textureMap.replacementMap.addLoadedTexture(replacementTexture, resolvedPath.fileSystemIndex, resolvedPath.relativePath, true);
+                             textureMapMutex.unlock();
+@@ -1177,6 +1416,7 @@
+                 }
+                 
+                 // Execute the copy worker and signal a semaphore so it synchronizes with the direct worker afterwards.
++#if !defined(__SWITCH__)
                  const RenderCommandList *copyCommandList = copyWorker->commandList.get();
                  RenderCommandSemaphore *syncSemaphore = copyToDirectSemaphore.get();
                  copyWorker->commandList->end();
-+#if defined(__SWITCH__)
-+                plume_switch_set_submit_context("Texture Cache copy upload");
-+#endif
-                 copyWorker->commandQueue->executeCommandLists(&copyCommandList, 1, nullptr, 0, &syncSemaphore, 1);
+@@ -1184,8 +1424,10 @@
                  
                  // Decode all textures using the direct worker and transition all textures to their final layouts.
-@@ -1225,6 +1232,9 @@ namespace RT64 {
+                 directWorker->commandList->begin();
++#endif
+                 directWorker->commandList->barriers(RenderBarrierStage::GRAPHICS_AND_COMPUTE, beforeDecodeBarriers);
+ 
++#if !defined(__SWITCH__)
+                 const ShaderRecord &textureDecode = shaderLibrary->textureDecode;
+                 bool pipelineSet = false;
+                 for (size_t i = 0; i < queueSize; i++) {
+@@ -1217,20 +1459,112 @@
+                         afterDecodeBarriers.emplace_back(RenderTextureBarrier(textureMapAdditions[i].texture->texture.get(), RenderTextureLayout::SHADER_READ));
+                     }
+                 }
++#endif
+ 
+                 if (!afterDecodeBarriers.empty()) {
+                     directWorker->commandList->barriers(RenderBarrierStage::GRAPHICS_AND_COMPUTE, afterDecodeBarriers);
+                 }
++
++#if defined(__SWITCH__)
++                // Keep one image upload per command buffer. NVK can wedge when
++                // many image copies share one command buffer.
++                switchDecodedCommandIndices.clear();
++                for (size_t i = 0; i < queueSize; i++) {
++                    const TextureUpload &upload = queueCopy[i];
++                    if (!upload.decodeTMEM) {
++                        continue;
++                    }
++
++                    assert(switchDecodedUploads[i] != nullptr);
++                    Texture *dstTexture = textureMapAdditions[i].texture;
++                    const size_t commandListIndex = switchDecodedCommandIndices.size();
++                    while (switchDecodedStageCommandLists.size() <= commandListIndex) {
++                        switchDecodedStageCommandLists.emplace_back(directWorker->commandQueue->createCommandList());
++                    }
++                    while (switchDecodedCommandLists.size() <= commandListIndex) {
++                        switchDecodedCommandLists.emplace_back(directWorker->commandQueue->createCommandList());
++                    }
++                    RenderCommandList *stageCommandList = switchDecodedStageCommandLists[commandListIndex].get();
++                    stageCommandList->begin();
++                    stageCommandList->barriers(RenderBarrierStage::COPY,
++                        RenderBufferBarrier(switchDecodedDeviceUploads[i].get(), RenderBufferAccess::WRITE));
++                    stageCommandList->copyBufferRegion(switchDecodedDeviceUploads[i].get(),
++                        switchDecodedUploads[i].get(), switchDecodedUploadSizes[i]);
++                    stageCommandList->barriers(RenderBarrierStage::COPY,
++                        RenderBufferBarrier(switchDecodedDeviceUploads[i].get(), RenderBufferAccess::READ));
++                    stageCommandList->end();
++
++                    RenderCommandList *decodedCommandList = switchDecodedCommandLists[commandListIndex].get();
++                    decodedCommandList->begin();
++
++                    decodedCommandList->barriers(RenderBarrierStage::COPY,
++                        RenderTextureBarrier(dstTexture->texture.get(), RenderTextureLayout::COPY_DEST));
++                    decodedCommandList->copyTextureRegion(
++                        RenderTextureCopyLocation::Subresource(dstTexture->texture.get()),
++                        RenderTextureCopyLocation::PlacedFootprint(switchDecodedDeviceUploads[i].get(), dstTexture->format,
++                            upload.width, upload.height, 1, 0));
++                    decodedCommandList->barriers(RenderBarrierStage::GRAPHICS_AND_COMPUTE,
++                        RenderTextureBarrier(dstTexture->texture.get(), RenderTextureLayout::SHADER_READ));
++                    decodedCommandList->end();
++
++                    switchDecodedCommandIndices.emplace_back(i);
++                }
++#endif
+ 
                  // Execute the direct worker but make it wait for the copy worker to finish first.
                  const RenderCommandList *directCommandList = directWorker->commandList.get();
                  directWorker->commandList->end();
 +#if defined(__SWITCH__)
-+                plume_switch_set_submit_context("Texture Cache compute decode");
-+#endif
++                char switchUploadContext[256]{};
++                bool switchDirectWaitComplete = false;
++                if (switchDecodedCommandIndices.empty()) {
++                    std::snprintf(switchUploadContext, sizeof(switchUploadContext),
++                        "Texture Cache transition-only upload count=%zu", queueSize);
++                    plume_switch_set_submit_context(switchUploadContext);
++                    directWorker->commandQueue->executeCommandLists(directCommandList, directWorker->commandFence.get());
++                }
++                else {
++                    const size_t decodedCount = switchDecodedCommandIndices.size();
++                    plume_switch_set_submit_context("Texture Cache pre-copy transitions");
++                    directWorker->commandQueue->executeCommandLists(
++                        directCommandList, directWorker->commandFence.get());
++                    directWorker->wait();
++
++                    for (size_t decodedIndex = 0; decodedIndex < decodedCount; decodedIndex++) {
++                        const RenderCommandList *stageCommandList = switchDecodedStageCommandLists[decodedIndex].get();
++                        const RenderCommandList *commandList = switchDecodedCommandLists[decodedIndex].get();
++                        const TextureUpload &upload = queueCopy[switchDecodedCommandIndices[decodedIndex]];
++                        std::snprintf(switchUploadContext, sizeof(switchUploadContext),
++                            "Texture Cache CPU stage upload %zu/%zu %ux%u",
++                            decodedIndex + 1, decodedCount, upload.width, upload.height);
++                        plume_switch_set_submit_context(switchUploadContext);
++                        directWorker->commandQueue->executeCommandLists(stageCommandList, directWorker->commandFence.get());
++                        directWorker->wait();
++
++                        std::snprintf(switchUploadContext, sizeof(switchUploadContext),
++                            "Texture Cache CPU decode upload %zu/%zu %ux%u",
++                            decodedIndex + 1, decodedCount, upload.width, upload.height);
++                        plume_switch_set_submit_context(switchUploadContext);
++                        directWorker->commandQueue->executeCommandLists(commandList, directWorker->commandFence.get());
++                        directWorker->wait();
++                    }
++
++                    switchDirectWaitComplete = true;
++                }
++#else
                  directWorker->commandQueue->executeCommandLists(&directCommandList, 1, &syncSemaphore, 1, nullptr, 0, directWorker->commandFence.get());
++#endif
++#if defined(__SWITCH__)
++                if (!switchDirectWaitComplete) {
++                    directWorker->wait();
++                }
++#else
                  directWorker->wait();
++#endif
  
+                 // Delete all the resources used during the upload of replacements.
+                 replacementUploadResources.clear();
+-                
++
+                 // Add all the textures to the map once they're ready.
+                 {
+                     std::unique_lock lock(textureMapMutex);
+diff --git a/src/shaders/RSPVertexTestZCS.hlsl b/src/shaders/RSPVertexTestZCS.hlsl
+--- a/src/shaders/RSPVertexTestZCS.hlsl
++++ b/src/shaders/RSPVertexTestZCS.hlsl
+@@ -27,7 +27,25 @@
+ void CSMain() {
+     float4 pixelPos = screenPos[gConstants.vertexIndex];
+     int2 pixelPosInt = pixelPos.xy * gConstants.resolutionScale;
+-    float pixelDepth = sampleBackgroundDepth(pixelPosInt, 0);
++    uint depthWidth = 0;
++    uint depthHeight = 0;
++#if defined(MULTISAMPLING)
++    uint depthSamples = 0;
++    gBackgroundDepth.GetDimensions(depthWidth, depthHeight, depthSamples);
++#else
++    gBackgroundDepth.GetDimensions(depthWidth, depthHeight);
++#endif
++
++    // Off-screen test vertices are legal for N64 display lists. Do not issue
++    // an out-of-range image load: desktop drivers commonly make it benign,
++    // while GM20B/NVK can wedge the queue on the invalid access.
++    float pixelDepth = 0.0f;
++    if ((pixelPosInt.x >= 0) && (pixelPosInt.y >= 0) &&
++        (pixelPosInt.x < int(depthWidth)) && (pixelPosInt.y < int(depthHeight)))
++    {
++        pixelDepth = sampleBackgroundDepth(pixelPosInt, 0);
++    }
++
+     if (pixelDepth <= pixelPos.z) {
+         for (uint i = 0; i < gConstants.indexCount; i++) {
+             dstFaceIndices[gConstants.dstIndexStart + i] = gConstants.vertexIndex;
+@@ -38,4 +56,4 @@
+             dstFaceIndices[gConstants.dstIndexStart + i] = srcFaceIndices[gConstants.srcIndexStart + i];
+         }
+     }
+-}
+\ No newline at end of file
++}
+diff --git a/src/shaders/SwitchFramebufferColorCopyPS.hlsl b/src/shaders/SwitchFramebufferColorCopyPS.hlsl
+new file mode 100644
+--- /dev/null
++++ b/src/shaders/SwitchFramebufferColorCopyPS.hlsl
+@@ -0,0 +1,26 @@
++//
++// RT64
++//
++
++#include "Formats.hlsli"
++#include "Random.hlsli"
++#include "shared/rt64_switch_framebuffer_copy.h"
++
++[[vk::push_constant]] ConstantBuffer<SwitchFramebufferColorCopyCB> gConstants : register(b0);
++Texture2D<float4> gInput : register(t1);
++
++float4 PSMain(in float4 pos : SV_Position, in float2 uv : TEXCOORD0) : SV_TARGET {
++    const uint2 coord = uint2(pos.xy);
++    const uint dstIndex = coord.y * gConstants.rowWidth + coord.x;
++    // MAGICSQ, BAYER, and DISABLE never consume the random value. Avoid the
++    // expensive 16-round TEA sequence for those overwhelmingly common modes.
++    const uint randomSeed = (gConstants.ditherPattern == 2)
++        ? initRand(gConstants.ditherRandomSeed, dstIndex, 16)
++        : 0;
++    const uint dither = DitherPatternValue(gConstants.ditherPattern, coord, randomSeed);
++    const uint nativeValue = Float4ToRGBA16(gInput.Load(uint3(coord, 0)), dither, gConstants.usesHDR != 0);
++
++    // Preserve native bytes exactly through an RGBA8 render target.
++    return float4(((nativeValue >> 8) & 0xFF) / 255.0f,
++        (nativeValue & 0xFF) / 255.0f, 0.0f, 1.0f);
++}
+diff --git a/src/shared/rt64_switch_framebuffer_copy.h b/src/shared/rt64_switch_framebuffer_copy.h
+new file mode 100644
+--- /dev/null
++++ b/src/shared/rt64_switch_framebuffer_copy.h
+@@ -0,0 +1,20 @@
++//
++// RT64
++//
++
++#pragma once
++
++#include "shared/rt64_hlsl.h"
++
++#ifdef HLSL_CPU
++namespace interop {
++#endif
++    struct SwitchFramebufferColorCopyCB {
++        uint rowWidth;
++        uint ditherPattern;
++        uint ditherRandomSeed;
++        uint usesHDR;
++    };
++#ifdef HLSL_CPU
++};
++#endif

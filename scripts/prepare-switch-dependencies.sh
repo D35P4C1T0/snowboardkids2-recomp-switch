@@ -13,7 +13,7 @@ case "${DESTINATION_ROOT}" in
         ;;
 esac
 
-MANIFEST_VERSION=3
+MANIFEST_VERSION=4
 MANIFEST_PATH="${DESTINATION_ROOT}/.switch-dependencies-manifest"
 STAGING_ROOT="${DESTINATION_ROOT}.tmp.$$"
 STAGING_MANIFEST="${STAGING_ROOT}/.switch-dependencies-manifest"
@@ -23,6 +23,8 @@ write_manifest() {
 
     {
         echo "format=${MANIFEST_VERSION}"
+        cksum "${SCRIPT_DIR}/apply-switch-patches.sh" "${SCRIPT_DIR}/prepare-switch-dependencies.sh"
+        cksum "${REPO_ROOT}/switch/patches/series"
         for dependency in N64ModernRuntime RecompFrontend rt64; do
             git -C "${REPO_ROOT}/lib/${dependency}" rev-parse HEAD
             git -C "${REPO_ROOT}/lib/${dependency}" submodule status --recursive
@@ -103,6 +105,7 @@ write_manifest "${STAGING_MANIFEST}"
 if prepared_tree_is_complete &&
    [ -f "${MANIFEST_PATH}" ] &&
    cmp -s "${STAGING_MANIFEST}" "${MANIFEST_PATH}"; then
+    "${SCRIPT_DIR}/apply-switch-patches.sh" "${DESTINATION_ROOT}" --check
     echo "Disposable Switch dependencies are current: ${DESTINATION_ROOT}"
     exit 0
 fi

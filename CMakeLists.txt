@@ -304,11 +304,12 @@ if (CMAKE_SYSTEM_NAME STREQUAL "NintendoSwitch" AND SK2_SWITCH_CORE_PROBE_ONLY)
     set(RECOMP_FRONTEND_RT64_PATH ${SK2_RT64_SOURCE_DIR})
     add_subdirectory(${SK2_RECOMP_FRONTEND_SOURCE_DIR} ${SK2_RECOMP_FRONTEND_BINARY_DIR})
 
-    add_executable(SnowboardKids2SwitchCoreProbe switch/core_probe.cpp switch/full_main.cpp)
+    add_executable(SnowboardKids2SwitchCoreProbe switch/core_probe.cpp switch/texture_probe.cpp switch/full_main.cpp)
     target_include_directories(SnowboardKids2SwitchCoreProbe PRIVATE
         ${SK2_RECOMP_FRONTEND_SOURCE_DIR}/recompui/src
         ${SK2_RECOMP_FRONTEND_SOURCE_DIR}/recompui/include
         ${SK2_RT64_SOURCE_DIR}/src/contrib/plume
+        ${CMAKE_CURRENT_BINARY_DIR}/src
         ${SDL2_INCLUDE_DIRS}
     )
     target_link_options(SnowboardKids2SwitchCoreProbe PRIVATE

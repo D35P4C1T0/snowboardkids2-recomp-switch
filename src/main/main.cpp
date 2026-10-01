@@ -430,6 +430,10 @@ void dusk_switch_log(const char* message) {
 }
 
 void switch_driver_log_sink(const char* message) {
+    if (message != nullptr && std::strncmp(message, "NVK ", 4) == 0) {
+        switch_log_checkpoint(message);
+        return;
+    }
     // NVK emits many messages per GPU submission. Retain only Mesa WSI's
     // bounded first-present trace so network logging stays low-volume.
     static std::atomic<uint32_t> retained_messages{0};

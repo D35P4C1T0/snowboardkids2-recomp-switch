@@ -1,5 +1,4 @@
 diff --git a/volk.c b/volk.c
-index 90b08e9..9387183 100644
 --- a/volk.c
 +++ b/volk.c
 @@ -13,7 +13,7 @@
@@ -11,7 +10,7 @@ index 90b08e9..9387183 100644
  #	include <dlfcn.h>
  #endif
  
-@@ -72,15 +72,16 @@ static PFN_vkVoidFunction nullProcAddrStub(void* context, const char* name)
+@@ -72,15 +72,16 @@
  
  VkResult volkInitialize(void)
  {
@@ -30,7 +29,7 @@ index 90b08e9..9387183 100644
  	if (!module)
  		module = dlopen("libvulkan.1.dylib", RTLD_NOW | RTLD_LOCAL);
  	// modern versions of macOS don't search /usr/local/lib automatically contrary to what man dlopen says
-@@ -99,8 +100,12 @@ VkResult volkInitialize(void)
+@@ -99,8 +100,12 @@
  		return VK_ERROR_INITIALIZATION_FAILED;
  
  	vkGetInstanceProcAddr = (PFN_vkGetInstanceProcAddr)dlsym(module, "vkGetInstanceProcAddr");
@@ -44,7 +43,7 @@ index 90b08e9..9387183 100644
  	if (!module)
  		module = dlopen("libvulkan.so", RTLD_NOW | RTLD_LOCAL);
  	if (!module)
-@@ -130,7 +135,7 @@ void volkFinalize(void)
+@@ -130,7 +135,7 @@
  	{
  #if defined(_WIN32)
  		FreeLibrary((HMODULE)loadedModule);

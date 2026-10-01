@@ -16,8 +16,10 @@ RecompiledPatches/
 build*
 !scripts/build-host-tools.sh
 !scripts/build-switch-nvk.sh
+!scripts/build-switch-patches.sh
 *.o
 .cache
+__pycache__/
 
 # Windows build output
 *.exe

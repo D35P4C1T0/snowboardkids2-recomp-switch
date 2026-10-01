@@ -90,14 +90,18 @@ fi
 echo "Open hbmenu through Atmosphere title takeover (hold R while launching a game), then press Y for NetLoader."
 echo "Uploading ${NRO} to ${SWITCH_ADDRESS}"
 echo "Streaming log to ${LOG_PATH}"
+NXLINK_OPTIONS=(--server --retries 30 --address "${SWITCH_ADDRESS}")
+if [[ -n "${SWITCH_NRO_ARGS:-}" ]]; then
+    NXLINK_OPTIONS+=(--args "${SWITCH_NRO_ARGS}")
+fi
 if [[ -x /usr/bin/script ]]; then
     # Give nxlink a PTY so its libc stream is line-buffered. Without this, a
     # frozen target can leave the newest diagnostics hidden in a 16 KiB host
     # buffer until the TCP connection finally closes.
     /usr/bin/script -q /dev/null \
-        nxlink --server --retries 30 --address "${SWITCH_ADDRESS}" "${NRO}" 2>&1 \
+        nxlink "${NXLINK_OPTIONS[@]}" "${NRO}" 2>&1 \
         | tr -d '\r' | tee "${LOG_PATH}"
 else
-    nxlink --server --retries 30 --address "${SWITCH_ADDRESS}" "${NRO}" 2>&1 \
+    nxlink "${NXLINK_OPTIONS[@]}" "${NRO}" 2>&1 \
         | tee "${LOG_PATH}"
 fi

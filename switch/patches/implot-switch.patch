@@ -1,8 +1,7 @@
 diff --git a/implot.cpp b/implot.cpp
-index 597b043..417c2cf 100644
 --- a/implot.cpp
 +++ b/implot.cpp
-@@ -908,6 +908,9 @@ ImPlotTime MkGmtTime(struct tm *ptm) {
+@@ -908,6 +908,9 @@
      ImPlotTime t;
  #ifdef _WIN32
      t.S = _mkgmtime(ptm);

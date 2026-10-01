@@ -44,6 +44,17 @@ case "${MODE}" in
         ;;
 esac
 
+# An existing build directory keeps its generator even if Ninja was installed
+# after the first configuration. Switching generators requires a fresh tree.
+if [ -f "${BUILD_DIR}/CMakeCache.txt" ]; then
+    cached_generator=$(sed -n 's/^CMAKE_GENERATOR:INTERNAL=//p' "${BUILD_DIR}/CMakeCache.txt")
+    cached_build_program=$(sed -n 's/^CMAKE_MAKE_PROGRAM:[^=]*=//p' "${BUILD_DIR}/CMakeCache.txt")
+    if [ -n "${cached_generator}" ] && [ -n "${cached_build_program}" ]; then
+        CMAKE_GENERATOR=${cached_generator}
+        CMAKE_BUILD_PROGRAM=${cached_build_program}
+    fi
+fi
+
 if [ "${MODE}" != bootstrap ]; then
     if [ -z "${SK2_SWITCH_NVK_ROOT:-}" ]; then
         echo "SK2_SWITCH_NVK_ROOT must point to a packaged nvk-switch directory." >&2

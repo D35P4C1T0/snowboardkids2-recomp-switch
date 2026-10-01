@@ -1,0 +1,8 @@
+# Dependency path (relative to the disposable root), patch filename.
+N64ModernRuntime n64modernruntime-switch.patch
+RecompFrontend recompfrontend-switch.patch
+RecompFrontend/recompui/lib/lunasvg lunasvg-switch.patch
+rt64 rt64-switch.patch
+rt64/src/contrib/implot implot-switch.patch
+rt64/src/contrib/plume plume-switch.patch
+rt64/src/contrib/plume/contrib/volk volk-switch.patch

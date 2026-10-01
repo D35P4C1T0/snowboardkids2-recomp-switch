@@ -68,10 +68,18 @@ diff --git a/rustc-switch.sh b/rustc-switch.sh
 old mode 100644
 new mode 100755
 diff --git a/winsys/drm_shim.c b/winsys/drm_shim.c
-index 5f53f36..113c8fd 100644
+index 5f53f36..ce842fc 100644
 --- a/winsys/drm_shim.c
 +++ b/winsys/drm_shim.c
-@@ -101,6 +101,7 @@ struct shim_bo {
+@@ -32,6 +32,7 @@
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
++#include <time.h>
+ 
+ #include <switch.h>
+ #include <xf86drm.h>
+@@ -101,6 +102,7 @@ struct shim_bo {
     uint64_t gpu_va;       /* GPU VA: auto (internal) or VM_BIND addr (NVK BOs) */
     uint64_t gpu_bo_offset;/* VM_BIND bo_offset, for VA->CPU back-translation   */
     NvKind   kind;         /* the BO's PTE kind (from GEM_NEW tile_flags)       */
@@ -79,7 +87,7 @@ index 5f53f36..113c8fd 100644
  };
  
  struct shim_syncobj {
-@@ -539,17 +540,21 @@ static int nouveau_gem_info(struct drm_nouveau_gem_info *info)
+@@ -539,17 +541,21 @@ static int nouveau_gem_info(struct drm_nouveau_gem_info *info)
   * (kills the ~9.4ms memcpy the present profiling found). Returns false if no
   * bound BO covers the VA. Thread-safe (takes the device lock).               */
  bool drm_shim_bo_nvmap_by_va(uint64_t gpu_va, uint32_t *out_nvmap_id,
@@ -107,7 +115,17 @@ index 5f53f36..113c8fd 100644
           found = true;
           break;
        }
-@@ -816,6 +821,7 @@ static int vm_bind_op(const struct drm_nouveau_vm_bind_op *op)
+@@ -633,7 +639,8 @@ static uint32_t gen_flush_cmdlist(uint32_t *buf)
+    *cmd++ = 0x369 | (0 << 13) | (0x1011 << 16) | (4 << 29); /* unknown flush */
+    *cmd++ = 0x50A | (0 << 13) | (0 << 16) | (4 << 29);      /* flush TICs */
+    *cmd++ = 0x509 | (0 << 13) | (0 << 16) | (4 << 29);      /* flush TSCs */
+-   *cmd   = 0;                                              /* trailing NOP */
++   *cmd++ = 0x014 | (0 << 13) | (0 << 16) | (4 << 29);      /* GPFIFO SET_REFERENCE: full engine barrier */
++   *cmd++ = 0;                                              /* trailing NOP */
+    return cmd - buf;
+ }
+ 
+@@ -816,6 +823,7 @@ static int vm_bind_op(const struct drm_nouveau_vm_bind_op *op)
     if (R_SUCCEEDED(rc)) {
        bo->gpu_va = op->addr;
        bo->gpu_bo_offset = op->bo_offset;
@@ -115,8 +133,369 @@ index 5f53f36..113c8fd 100644
     } else {
        return -EINVAL;
     }
+@@ -843,6 +851,69 @@ static int nouveau_vm_bind(struct drm_nouveau_vm_bind *req)
+    return 0;
+ }
+ 
++/* A channel reset can advance its syncpoint despite failed GPU work. Never
++ * treat a completed fence as success until the native error notifier is clear.
++ * Keep detailed native faults available without enabling noisy NVK_TRACE.
++ */
++static int shim_channel_check_error(struct shim_channel *ch)
++{
++   NvNotification notification = {0};
++   Result rc = nvGpuChannelGetErrorNotification(&ch->chan, &notification);
++   if (R_FAILED(rc) || (!notification.info32 && !notification.info16))
++      return 0; /* No pending notification is reported as a libnx error. */
++
++   if (g_drm_shim_log_sink) {
++      char message[256];
++      snprintf(message, sizeof(message),
++         "NVK channel fault: notification=%u/%u status=0x%x timestamp=%llu",
++         notification.info32, notification.info16, notification.status,
++         (unsigned long long)notification.timestamp);
++      g_drm_shim_log_sink(message);
++      NvError error = {0};
++      rc = nvGpuChannelGetErrorInfo(&ch->chan, &error);
++      snprintf(message, sizeof(message), "NVK native fault: result=0x%x type=%u", rc, error.type);
++      g_drm_shim_log_sink(message);
++      if (R_SUCCEEDED(rc)) {
++         /* Native error types follow the libnx/deko3d channel ABI. The outer
++          * notification alone does not distinguish an MMU page fault from a
++          * graphics trap (both can arrive as notification 31). */
++         if (error.type == 1) {
++            snprintf(message, sizeof(message),
++               "NVK page fault: address=0x%02x%08x access=%s info=0x%08x",
++               error.info[1], error.info[2], error.info[3] == 2 ? "write" : "read", error.info[0]);
++            g_drm_shim_log_sink(message);
++         } else if (error.type == 2) {
++            snprintf(message, sizeof(message),
++               "NVK method fault: class=0x%04x method=0x%04x data=0x%08x irq=0x%08x detail=0x%08x",
++               error.info[4], error.info[1] & 0xffff, error.info[3], error.info[0], error.info[2]);
++            g_drm_shim_log_sink(message);
++         } else if (error.type == 3) {
++            g_drm_shim_log_sink("NVK command fault: GPU rejected command list");
++         }
++         for (unsigned i = 0; i < ARRAY_SIZE_LOCAL(error.info); i += 4) {
++            size_t used = snprintf(message, sizeof(message), "NVK fault words[%u]:", i);
++            for (unsigned j = i; j < i + 4 && j < ARRAY_SIZE_LOCAL(error.info); j++)
++               used += snprintf(message + used, sizeof(message) - used, " %08x", error.info[j]);
++            g_drm_shim_log_sink(message);
++         }
++      }
++   }
++   return -EIO;
++}
++
++static void report_submit_status(const char *phase,
++                                 const NvFence *fence, Result result)
++{
++   if (!g_drm_shim_log_sink) return;
++   u32 current = 0;
++   Result read_result = nvioctlNvhostCtrl_SyncptRead(nvFenceGetFd(), fence->id, &current);
++   char message[256];
++   snprintf(message, sizeof(message),
++      "NVK %s: syncpt=%u target=%u current=%u result=0x%x read=0x%x",
++      phase, fence->id, fence->value, current, result, read_result);
++   g_drm_shim_log_sink(message);
++}
++
+ static int nouveau_exec(struct drm_nouveau_exec *req)
+ {
+    struct shim_channel *ch = channel_lookup((uint32_t)req->channel);
+@@ -863,8 +934,14 @@ static int nouveau_exec(struct drm_nouveau_exec *req)
+     * semaphore waits would be the optimization. */
+    for (uint32_t i = 0; i < req->wait_count; i++) {
+       struct shim_syncobj *s = syncobj_lookup(waits[i].handle);
+-      if (s && s->has_fence)
+-         nvFenceWait(&s->fence, 2000000LL); /* us! 2s cap (was -1=infinite) */
++      if (s && s->has_fence) {
++         Result wait_result = nvFenceWait(&s->fence, 2000000LL);
++         if (R_FAILED(wait_result)) {
++            report_submit_status("dependency FAILED", &s->fence, wait_result);
++            shim_channel_check_error(ch);
++            return -EIO;
++         }
++      }
+    }
+ 
+    /* Empty EXEC (no pushbuf to run): do NOT submit a spurious fence cmdlist +
+@@ -896,6 +973,14 @@ static int nouveau_exec(struct drm_nouveau_exec *req)
+                ch->setobj_num_cmds, (unsigned)req->channel);
+    }
+ 
++   /* CPU-visible BOs are uncached on the CPU but GPU mappings are cacheable.
++    * Invalidate data and descriptor caches after CPU updates, as deko3d does
++    * at queue flush boundaries. This command list used to be built but never
++    * submitted, leaving the first image operation vulnerable to stale data. */
++   uint64_t flush_va = ch->cmdbuf_va + 4 * ch->fence_num_cmds;
++   nvGpuChannelAppendEntry(&ch->chan, flush_va, ch->flush_num_cmds,
++                           GPFIFO_ENTRY_NOT_MAIN | GPFIFO_ENTRY_NO_PREFETCH, 0);
++
+    for (uint32_t i = 0; i < req->push_count; i++) {
+       /* Force NOT_MAIN | NO_PREFETCH on every push, matching deko3d's working 3D
+        * submissions. NVK passes flags=0 (MAIN + prefetch ENABLED); on Horizon a
+@@ -940,6 +1025,13 @@ static int nouveau_exec(struct drm_nouveau_exec *req)
+     * submit but failed the 2nd (fill) — deko's standard path doesn't. */
+    nvGpuChannelIncrFence(&ch->chan);
+ 
++   /* Complete all engines and make GPU writes visible before publishing the
++    * host completion fence. A 3D ROP syncpoint alone does not establish that
++    * copy-engine data has reached CPU-visible memory. Keep this in its own
++    * no-prefetch entry so subsequent command data cannot be fetched early. */
++   nvGpuChannelAppendEntry(&ch->chan, flush_va, ch->flush_num_cmds,
++                           GPFIFO_ENTRY_NOT_MAIN | GPFIFO_ENTRY_NO_PREFETCH, 0);
++
+    /* ⭐ v32: append the BUILTIN FENCE CMDLIST — the actual Maxwell command that
+     * INCREMENTS the syncpt on the GPU (gen_fence_cmdlist: method 0x0B2 with
+     * syncpt_id|incr-bit). IncrFence alone only bumps libnx's expected counter;
+@@ -956,6 +1048,10 @@ static int nouveau_exec(struct drm_nouveau_exec *req)
+    SHIM_LOG("EXEC kickoff returned rc=0x%x (chan=%u push_count=%u)\n",
+             rc, (unsigned)req->channel, req->push_count);
+    if (R_FAILED(rc)) {
++      NvFence failed_fence;
++      nvGpuChannelGetFence(&ch->chan, &failed_fence);
++      report_submit_status("kickoff FAILED", &failed_fence, rc);
++      shim_channel_check_error(ch);
+       return -EIO;
+    }
+ 
+@@ -963,15 +1059,6 @@ static int nouveau_exec(struct drm_nouveau_exec *req)
+    NvFence fence;
+    nvGpuChannelGetFence(&ch->chan, &fence);
+ 
+-   /* v32: the v31 -1 hack is REVERTED — with the fence cmdlist appended above,
+-    * the GPU actually reaches the full GetFence value (as in the reference), so
+-    * use it as-is. (v31 confirmed the init off-by-one was only the missing
+-    * trailing increment, now provided by the cmdlist.) */
+-   for (uint32_t i = 0; i < req->sig_count; i++) {
+-      struct shim_syncobj *s = syncobj_lookup(sigs[i].handle);
+-      if (s) { s->fence = fence; s->has_fence = true; s->signaled = true; }
+-   }
+-
+    /* Drain: wait for THIS submit's GPU work to finish before returning, so the
+     * NEXT submit starts on an idle channel (fixes the case where a prior big
+     * submit is still in-flight holding kernel resources -> next submit 0xd5c),
+@@ -983,40 +1070,26 @@ static int nouveau_exec(struct drm_nouveau_exec *req)
+    Result wr = nvFenceWait(&fence, 2000000LL);
+    SHIM_LOG("EXEC drain chan=%u fence=%u/%u rc=0x%x\n",
+             (unsigned)req->channel, fence.id, fence.value, wr);
++   if (R_FAILED(wr) || getenv("NVK_TRACE"))
++      report_submit_status("completion", &fence, wr);
++   if (R_FAILED(wr)) {
++      shim_channel_check_error(ch);
++      return -EIO;
++   }
+ 
+-   /* DIAG: read the CURRENT syncpt value vs the target. On a drain TIMEOUT this
+-    * pinpoints WHERE the GPU work stalled: current≈0 => the init never started /
+-    * stalls at the very front; current≈target => it stalls at a FINAL wait. (No
+-    * channel reset here means the syncpt is NOT force-advanced, so this is the
+-    * true progress.) */
+-   {
+-      u32 cur = 0;
+-      Result srr = nvioctlNvhostCtrl_SyncptRead(nvFenceGetFd(), fence.id, &cur);
+-      SHIM_LOG("EXEC drain syncpt[%u] current=%u target=%u reached=%d readrc=0x%x\n",
+-               fence.id, (unsigned)cur, fence.value,
+-               (int)(cur >= fence.value), srr);
++   int error = shim_channel_check_error(ch);
++   if (error) {
++      report_submit_status("execution FAILED", &fence, wr);
++      return error;
+    }
+ 
+-   /* Read the channel error notifier: the kickoff is accepted (rc=0) but the
+-    * GPU executes ASYNC and may FAULT (MMU fault / illegal method / PBDMA err),
+-    * which resets the channel and makes every later submit return Timeout
+-    * (0xd5c). info32 = NvNotificationType: 31=MMU fault, 25=GR illegal-method,
+-    * 32=PBDMA error, 8=idle timeout, 13=GR SW notify, 0=no fault. */
+-   NvNotification notif = {0};
+-   if (R_SUCCEEDED(nvGpuChannelGetErrorNotification(&ch->chan, &notif)) &&
+-       (notif.info32 || notif.info16)) {
+-      SHIM_LOG("EXEC ERRNOTIF chan=%u type=%u info16=%u (31=MMU 25=illegal 32=PBDMA 8=idle)\n",
+-               (unsigned)req->channel, notif.info32, notif.info16);
+-      /* Dump the detailed error info — for an MMU fault (type 31) this carries
+-       * the FAULTING GPU VA (+ engine/client/reason), which tells us EXACTLY
+-       * which buffer the 3D init dereferenced that we didn't map. */
+-      NvError err;
+-      memset(&err, 0, sizeof(err));
+-      if (R_SUCCEEDED(nvGpuChannelGetErrorInfo(&ch->chan, &err)))
+-         SHIM_LOG("EXEC ERRINFO type=%u info: %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x\n",
+-                  err.type, err.info[0], err.info[1], err.info[2], err.info[3],
+-                  err.info[4], err.info[5], err.info[6], err.info[7],
+-                  err.info[8], err.info[9], err.info[10], err.info[11]);
++   /* v32: the v31 -1 hack is REVERTED — with the fence cmdlist appended above,
++    * the GPU actually reaches the full GetFence value (as in the reference), so
++    * use it as-is. (v31 confirmed the init off-by-one was only the missing
++    * trailing increment, now provided by the cmdlist.) */
++   for (uint32_t i = 0; i < req->sig_count; i++) {
++      struct shim_syncobj *s = syncobj_lookup(sigs[i].handle);
++      if (s) { s->fence = fence; s->has_fence = true; s->signaled = true; s->value = sigs[i].timeline_value; }
+    }
+ 
+    return 0;
+@@ -1261,17 +1334,12 @@ int drmPrimeFDToHandle(int fd, int prime_fd, uint32_t *handle)
+ /* drmSyncobjWait blocks on actual GPU completion via nvFenceWait.              */
+ /* ------------------------------------------------------------------------- */
+ 
+-/* DRM syncobj waits take an ABSOLUTE CLOCK_MONOTONIC ns deadline; nvFenceWait
+- * takes a RELATIVE microsecond timeout (-1 = infinite). Convert. */
+-static int32_t shim_abs_ns_to_rel_us(int64_t abs_ns)
++/* DRM uses an absolute CLOCK_MONOTONIC deadline, not a per-handle timeout. */
++static int64_t shim_monotonic_ns(void)
+ {
+-   if (abs_ns < 0)
+-      return -1;
+-   uint64_t now = armTicksToNs(armGetSystemTick());
+-   if ((uint64_t)abs_ns <= now)
+-      return 0;
+-   uint64_t rel_us = ((uint64_t)abs_ns - now) / 1000;
+-   return (rel_us > (uint64_t)INT32_MAX) ? -1 : (int32_t)rel_us;
++   struct timespec now;
++   clock_gettime(CLOCK_MONOTONIC, &now);
++   return (int64_t)now.tv_sec * 1000000000LL + now.tv_nsec;
+ }
+ 
+ static struct shim_syncobj *syncobj_lookup(uint32_t handle)
+@@ -1333,7 +1401,7 @@ int drmSyncobjSignal(int fd, const uint32_t *handles, uint32_t handle_count)
+    mutexLock(&g_dev.lock);
+    for (uint32_t i = 0; i < handle_count; i++) {
+       struct shim_syncobj *s = syncobj_lookup(handles[i]);
+-      if (s) s->signaled = true;
++      if (s) { s->signaled = true; s->has_fence = false; }
+    }
+    mutexUnlock(&g_dev.lock);
+    return 0;
+@@ -1346,7 +1414,7 @@ int drmSyncobjTimelineSignal(int fd, const uint32_t *handles,
+    mutexLock(&g_dev.lock);
+    for (uint32_t i = 0; i < handle_count; i++) {
+       struct shim_syncobj *s = syncobj_lookup(handles[i]);
+-      if (s) { s->signaled = true; if (points) s->value = points[i]; }
++      if (s) { s->signaled = true; s->has_fence = false; if (points && points[i] > s->value) s->value = points[i]; }
+    }
+    mutexUnlock(&g_dev.lock);
+    return 0;
+@@ -1377,61 +1445,75 @@ int drmSyncobjQuery(int fd, uint32_t *handles,
+    return 0;
+ }
+ 
+-/* Wait on the GPU fences attached by EXEC. WAIT_ALL (default for NVK's binary
+- * waits) blocks on every handle; otherwise return when the first is ready. A
+- * handle with no attached fence is already-signalled (CPU-signalled or never
+- * submitted). */
+-int drmSyncobjWait(int fd, uint32_t *handles, unsigned num_handles,
+-                   int64_t timeout_nsec, unsigned flags,
+-                   uint32_t *first_signaled)
++/* NVK waits for submission from another thread as well as GPU completion.
++ * An empty, unsignaled syncobj is pending, never complete. Timeline waits
++ * must also observe the requested point before considering its fence.
++ * Poll outside the device lock so the submitter can attach that fence.
++ */
++static int shim_syncobj_wait(int fd, uint32_t *handles, const uint64_t *points,
++                             unsigned count, int64_t deadline, unsigned flags,
++                             uint32_t *first_signaled)
+ {
+    if (!drm_shim_owns_fd(fd)) { errno = EBADF; return -EBADF; }
+-   int32_t timeout_us = shim_abs_ns_to_rel_us(timeout_nsec);
+-   /* DEBUG cap: never wait forever, so a non-signalling fence yields a logged
+-    * timeout instead of a frozen app. The fill should complete in << 3s. */
+-   if (timeout_us < 0 || timeout_us > 3000000)
+-      timeout_us = 3000000;
++   if (count == 0) return 0;
+    const bool wait_all = (flags & DRM_SYNCOBJ_WAIT_FLAGS_WAIT_ALL) != 0;
+-   int ret = 0;
+-
+-   for (unsigned i = 0; i < num_handles; i++) {
+-      /* Snapshot the fence under the lock, then block on the GPU WITHOUT the
+-       * lock held — otherwise a long wait would stall other threads' submits. */
+-      mutexLock(&g_dev.lock);
+-      struct shim_syncobj *s = syncobj_lookup(handles[i]);
+-      bool    has_fence = s && s->has_fence;
+-      NvFence fence     = has_fence ? s->fence : (NvFence){0};
+-      mutexUnlock(&g_dev.lock);
++   const bool available = (flags & DRM_SYNCOBJ_WAIT_FLAGS_WAIT_AVAILABLE) != 0;
++
++   for (;;) {
++      unsigned ready_count = 0;
++      for (unsigned i = 0; i < count; i++) {
++         mutexLock(&g_dev.lock);
++         struct shim_syncobj *s = syncobj_lookup(handles[i]);
++         if (!s) {
++            mutexUnlock(&g_dev.lock);
++            errno = ENOENT;
++            return -ENOENT;
++         }
++         const bool has_fence = s->has_fence;
++         const bool submitted = (has_fence || s->signaled) &&
++            (!points || points[i] == 0 || s->value >= points[i]);
++         const NvFence fence = s->fence;
++         mutexUnlock(&g_dev.lock);
+ 
+-      bool ready = !has_fence;   /* no fence => already done */
+-      if (!ready)
+-         ready = R_SUCCEEDED(nvFenceWait(&fence, timeout_us));
+-
+-      if (ready) {
+-         if (first_signaled) *first_signaled = i;
+-         if (!wait_all)                  /* WAIT_ANY: first ready is enough */
+-            return 0;
+-      } else if (wait_all) {
+-         errno = ETIME;                  /* this one timed out; WAIT_ALL fails */
+-         return -ETIME;
++         if (!submitted && !(flags & DRM_SYNCOBJ_WAIT_FLAGS_WAIT_FOR_SUBMIT)) {
++            errno = EINVAL;
++            return -EINVAL;
++         }
++         const bool ready = submitted &&
++            (available || !has_fence || R_SUCCEEDED(nvFenceWait(&fence, 0)));
++         if (ready) {
++            ready_count++;
++            if (!wait_all) {
++               if (first_signaled) *first_signaled = i;
++               return 0;
++            }
++         }
+       }
++      if (wait_all && ready_count == count) {
++         if (first_signaled) *first_signaled = 0;
++         return 0;
++      }
++      const int64_t remaining = deadline < 0 ? INT64_MAX : deadline - shim_monotonic_ns();
++      if (remaining <= 0) { errno = ETIME; return -ETIME; }
++      // A short sleep bounds CPU use and preserves WAIT_ANY responsiveness.
++      svcSleepThread(remaining < 50000 ? remaining : 50000);
+    }
+-   if (!wait_all && num_handles > 0) {
+-      errno = ETIME;                     /* WAIT_ANY: none became ready */
+-      ret = -ETIME;
+-   }
+-   return ret;
+ }
+ 
+-/* Timeline syncobjs aren't advertised (drmGetCap reports no timeline), but keep
+- * a correct binary-style wait in case a caller reaches here. */
++int drmSyncobjWait(int fd, uint32_t *handles, unsigned num_handles,
++                   int64_t timeout_nsec, unsigned flags,
++                   uint32_t *first_signaled)
++{
++   return shim_syncobj_wait(fd, handles, NULL, num_handles, timeout_nsec,
++                            flags, first_signaled);
++}
++
+ int drmSyncobjTimelineWait(int fd, uint32_t *handles, uint64_t *points,
+                            unsigned num_handles, int64_t timeout_nsec,
+                            unsigned flags, uint32_t *first_signaled)
+ {
+-   (void)points;
+-   return drmSyncobjWait(fd, handles, num_handles, timeout_nsec,
+-                         flags, first_signaled);
++   return shim_syncobj_wait(fd, handles, points, num_handles, timeout_nsec,
++                            flags, first_signaled);
+ }
+ 
+ /* Cross-process / sync_file sharing is not supported on the Switch. */
 diff --git a/winsys/wsi/wsi_common_switch.c b/winsys/wsi/wsi_common_switch.c
-index 5136fe3..597350c 100644
+index 5136fe3..41b2c21 100644
 --- a/winsys/wsi/wsi_common_switch.c
 +++ b/winsys/wsi/wsi_common_switch.c
 @@ -46,7 +46,8 @@ __attribute__((weak)) void dusk_switch_log(const char *msg) { (void)msg; }

@@ -3,10 +3,15 @@
 #include <cstring>
 #include <memory>
 #include <vector>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <unistd.h>
 
 #include <switch.h>
 
 #include "plume_render_interface.h"
+
+bool switch_run_texture_probe(plume::RenderDevice* device, bool include_inline);
 
 namespace plume {
 std::unique_ptr<RenderInterface> CreateVulkanInterface(RenderWindow window);
@@ -21,12 +26,22 @@ extern void (*g_drm_shim_log_sink)(const char* message);
 namespace {
 std::FILE* probe_log = nullptr;
 bool console_active = false;
+int log_socket = -1;
+
+void network_log(const char* message) {
+    if (log_socket >= 0) {
+        // Diagnostics must never block the probe if the receiver disappears.
+        send(log_socket, message, std::strlen(message), MSG_DONTWAIT | MSG_NOSIGNAL);
+        send(log_socket, "\n", 1, MSG_DONTWAIT | MSG_NOSIGNAL);
+    }
+}
 
 void write_debug_string(const char* message) {
     svcOutputDebugString(message, std::strlen(message));
 }
 
 void checkpoint(const char* message) {
+    network_log(message);
     // Persist the checkpoint before touching the display so a console-side
     // fault cannot hide the actual last boundary reached.
     if (probe_log != nullptr) {
@@ -47,6 +62,7 @@ void driver_log_sink(const char* message) {
     if (message == nullptr) {
         return;
     }
+    network_log(message);
 
     if (probe_log != nullptr) {
         std::fprintf(probe_log, "[nvk] %s", message);
@@ -85,7 +101,15 @@ extern "C" void dusk_switch_log(const char* message) {
     write_debug_string(message);
 }
 
-int main() {
+int main(int argc, char** argv) {
+    bool include_inline = false;
+    for (int i = 1; i < argc; i++) {
+        include_inline |= std::strcmp(argv[i], "--inline-transfers") == 0;
+    }
+    const bool sockets_ready = R_SUCCEEDED(socketInitializeDefault());
+    if (sockets_ready && __nxlink_host.s_addr != 0) {
+        log_socket = nxlinkConnectToHost(false, false);
+    }
     consoleInit(nullptr);
     console_active = true;
     std::setvbuf(stdout, nullptr, _IONBF, 0);
@@ -121,6 +145,7 @@ int main() {
     std::unique_ptr<plume::RenderSwapChain> swap_chain;
     bool surface_ready = false;
     bool presentation_ready = false;
+    bool transfers_ready = false;
 
     checkpoint("[07] creating Vulkan interface");
     render_interface = plume::CreateVulkanInterface(nullptr);
@@ -137,6 +162,8 @@ int main() {
     }
 
     if (render_device != nullptr) {
+        checkpoint("[10a] verifying buffer and image transfers");
+        transfers_ready = switch_run_texture_probe(render_device.get(), include_inline);
         checkpoint("[11] creating graphics queue");
         command_queue = render_device->createCommandQueue(plume::RenderCommandListType::DIRECT);
         checkpoint(command_queue != nullptr
@@ -279,6 +306,11 @@ int main() {
     checkpoint("[37] Vulkan interface destroyed");
 
     g_drm_shim_log_sink = nullptr;
+    if (log_socket >= 0) {
+        close(log_socket);
+        log_socket = -1;
+    }
+    if (sockets_ready) socketExit();
     if (probe_log != nullptr) {
         std::fclose(probe_log);
         probe_log = nullptr;
@@ -295,6 +327,7 @@ int main() {
         ? "[38] NVK PRESENTATION + CLEAN SHUTDOWN PASS"
         : "[38] NVK PRESENTATION FAILED (see core-probe.log)");
     std::printf("\nPress + to exit.\n");
+    std::printf("Texture transfers: %s\n", transfers_ready ? "PASS" : "FAIL (see core-probe.log)");
     consoleUpdate(nullptr);
 
     while (appletMainLoop()) {
@@ -307,5 +340,5 @@ int main() {
 
     consoleExit(nullptr);
     console_active = false;
-    return presentation_ready ? 0 : 2;
+    return presentation_ready && transfers_ready ? 0 : 2;
 }

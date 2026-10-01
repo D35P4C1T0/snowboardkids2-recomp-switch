@@ -6,7 +6,91 @@ Produce a native Horizon OS homebrew build of Snowboard Kids 2: Recompiled with 
 
 The port must not contain or download copyrighted game data. Users will copy their own supported Snowboard Kids 2 ROM to the application directory.
 
-## Current port status — 2026-08-23
+## GPU coherency investigation — 2026-10-01
+
+The NVK shim constructed a cache-flush command list but did not submit it.
+GPU mappings are cacheable even though the CPU mappings are uncached. The
+shim now submits cache maintenance before GPU work and before its completion
+fence, with a full-engine `SET_REFERENCE` barrier and a separate no-prefetch
+command-list boundary. Native channel faults also reject failed work before
+its sync objects are published; a reset can advance a syncpoint without
+successfully executing the work.
+
+The cache and command-processing boundaries follow the
+[deko3d queue/barrier implementation](https://github.com/devkitPro/deko3d/blob/master/source/maxwell/gpu_base.cpp).
+
+Hardware comparison at `10.0.0.107`:
+
+| Check | Before cache fix | After cache fix |
+| --- | --- | --- |
+| Fenced buffer/image matrix | 63 passed, first 1x1 image readback unchanged | 64 passed |
+| RT64 texture-copy draw/readback | First 4x2 readback unchanged; two larger cases passed | All three passed |
+| Native surface presentation and cleanup | Passed | Passed |
+
+The matrix covers dedicated and pooled allocations, direct and staged upload,
+RGBA8 images from 1x1 through 128x256 including a 285x52 launcher-sized image,
+and 4096x1 R8 raw-TMEM storage. The rendering probe uses the existing RT64
+fullscreen vertex and texture-copy pixel shaders and compares every output
+texel. It does not yet validate RmlUi filtering, N64 decoding, or all game
+shader variants.
+
+Evidence is in `build-switch-logs/core-20261001-105947.log` (before) and
+`build-switch-logs/core-20261001-110516.log` (after). The earlier inline
+upload/readback probe triggered notification 32, a rejected GPU command list.
+Full-game diagnostic runs before the cache fix trapped at `NVB197_END`
+(`class=0xb197`, `method=0x1614`, `irq=0x00200000`); native error type 2
+distinguishes this graphics trap from a page-fault address, despite the outer
+notification being 31. These failures were hidden by the old full-game log
+filter and completion handling.
+
+The normal core probe tests fenced transfers and texture rendering, then
+presentation. Reproduce the fault-prone inline matrix explicitly with:
+
+```sh
+./scripts/switch-build.sh core
+./scripts/switch-run.sh 10.0.0.107 core
+SWITCH_NRO_ARGS='--inline-transfers' ./scripts/switch-run.sh 10.0.0.107 core
+python3 scripts/analyze-switch-log.py build-switch-logs/core-YYYYMMDD-HHMMSS.log
+python3 scripts/test-switch-submit.py
+python3 scripts/test-switch-sync.py
+python3 scripts/test-switch-log.py
+python3 scripts/test-switch-patches.py
+```
+
+The analyzer reports transfers and rendering separately and marks interrupted
+suites as incomplete. Host submit tests exercise the actual patched driver
+functions, including cache-command ordering and failure publication. Build
+scripts preserve the generator of existing CMake trees. The screenshot watcher
+now exits on termination, so a closed nxlink connection cannot leave the run
+script waiting on an orphaned capture loop.
+
+The rebuilt full game also launched and reached a race in
+`build-switch-logs/full-20261001-112145.log`. Over 103.7 seconds, the analyzer
+reported a gameplay median of 34.83 FPS, a 27.95 FPS tenth percentile, and a
+26.70 FPS minimum window. GPU-wait p95 was 1.28 ms, Vulkan memory peaked at
+136 MiB, and audio reported no empty queues or failed submissions. No native
+GPU fault or Vulkan fatal was logged before the nxlink connection reset.
+The reset alone does not establish whether the game exited normally.
+
+The race-start capture `build-switch-logs/manual-20261001-112314.jpg` shows
+legible lap, rank, and coin indicators and coherent character/world textures.
+The item slots are empty, so this capture does not validate item icons; it
+also does not validate the launcher or other menus. This run used a different
+capture scenario from the historical baseline and is not a controlled
+performance comparison.
+
+The hardware tester subsequently confirmed that this build fixed the visible
+texture corruption and that the game ran smoothly on the Switch. This is a
+user-confirmed result for the tested play session; the broader course/menu
+matrix and long-duration stress test remain outstanding.
+
+The cache fix has passed the focused hardware probes and this short full-game
+run. Longer visual and performance validation is still required before claiming
+smooth, glitch-free gameplay or a release-ready build. A thread-priority
+experiment was removed after Horizon rejected the requested background
+priority (`0xe001`).
+
+## Earlier port status — 2026-08-23
 
 ### Working and hardware-tested
 
@@ -250,8 +334,10 @@ Exit gate: the base game is completable with saves, menus, audio, rumble, and su
 - Persistent NVK pipeline data is loaded from SD at startup. A cold cache is
   saved atomically only after all eight precompiled ubershader pipelines finish,
   avoiding per-pipeline SD writes while compilation is active.
-  Runtime-specialized raster shaders compile serially on one low-priority,
-  large-stack worker while rendering falls back to the precompiled ubershader.
+  Runtime-specialized raster shaders compile serially on one large-stack
+  worker while rendering falls back to the precompiled ubershader. The Switch
+  worker currently uses the ordinary pthread priority; the background-priority
+  request was rejected on hardware.
   Hardware runs reached roughly 37--40 FPS after specialization. NVK currently
   serializes a fixed 4,896-byte cache for this workload, so first-use specialized
   pipeline compilation can still cause visible hitches after every launch.

@@ -68,6 +68,13 @@ def parse_log(path: Path) -> dict[str, object]:
     memory: list[dict[str, int]] = []
     fatals: list[str] = []
     warnings: list[str] = []
+    driver_faults: list[str] = []
+    transfer_results: list[str] = []
+    transfer_started = False
+    transfer_status: str | None = None
+    sampling_started = False
+    sampling_status: str | None = None
+    sampling_results: list[str] = []
     modes: list[str] = []
     pipeline_cache_state: str | None = None
     pipeline_cache_saved: str | None = None
@@ -80,12 +87,31 @@ def parse_log(path: Path) -> dict[str, object]:
 
     for raw_line in path.read_text(errors="replace").splitlines():
         timestamp_match = TIMESTAMP_RE.search(raw_line)
-        if timestamp_match is None:
-            continue
-
-        timestamp_ms = int(timestamp_match.group("ms"))
+        # Core-probe logs have no timestamps; retain their transfer failures,
+        # native faults and fatal context just like full-game logs.
+        timestamp_ms = int(timestamp_match.group("ms")) if timestamp_match else 0
         duration_ms = max(duration_ms, timestamp_ms)
-        message = timestamp_match.group("message")
+        message = timestamp_match.group("message") if timestamp_match else raw_line.strip()
+        message = message.removeprefix("[nvk] ")
+        if message.startswith("NVK ") and (
+            "FAILED" in message or message.startswith((
+                "NVK channel fault:", "NVK native fault:", "NVK fault words[",
+                "NVK page fault:", "NVK method fault:", "NVK command fault:"))
+            or re.search(r"notification=[1-9]", message)
+        ):
+            driver_faults.append(message)
+        if message.startswith("transfer probe:"):
+            transfer_started = True
+        if message in ("transfer probe: ALL PASS", "transfer probe: FAILED"):
+            transfer_status = "passed" if message.endswith("ALL PASS") else "failed"
+        elif message.startswith("transfer probe:") and re.search(r"\b(?:PASS|FAIL|FAILED)\b", message):
+            transfer_results.append(message)
+        if message.startswith("sampling probe:"):
+            sampling_started = True
+        if message in ("sampling probe: ALL PASS", "sampling probe: FAILED"):
+            sampling_status = "passed" if message.endswith("ALL PASS") else "failed"
+        elif message.startswith("sampling probe:") and re.search(r"\b(?:PASS|FAIL|FAILED)\b", message):
+            sampling_results.append(message)
 
         if message == "launcher: Start Game selected":
             game_start_ms = timestamp_ms
@@ -160,6 +186,11 @@ def parse_log(path: Path) -> dict[str, object]:
         "memory": memory,
         "fatals": fatals,
         "warnings": warnings,
+        "driver_faults": driver_faults,
+        "transfer_results": transfer_results,
+        "transfer_status": transfer_status if transfer_status else ("incomplete" if transfer_started else None),
+        "sampling_status": sampling_status if sampling_status else ("incomplete" if sampling_started else None),
+        "sampling_results": sampling_results,
         "modes": list(dict.fromkeys(modes)),
         "pipeline_cache_state": pipeline_cache_state,
         "pipeline_cache_saved": pipeline_cache_saved,
@@ -320,6 +351,21 @@ def print_summary(path: Path, data: dict[str, object]) -> None:
         )
     for warning in other_warnings:
         print(f"Warning: {warning}")
+    transfer_results = data["transfer_results"]
+    if data["transfer_status"] is not None:
+        failures = [result for result in transfer_results if re.search(r"\b(?:FAIL|FAILED)\b", result)]
+        passes = [result for result in transfer_results if re.search(r"\bPASS\b", result)]
+        print(f"Texture transfers: {len(passes)} passed, {len(failures)} failed; suite {data['transfer_status']}")
+        for failure in failures:
+            print(f"Transfer failure: {failure}")
+    for fault in data["driver_faults"]:
+        print(f"Driver: {fault}")
+    if data["sampling_status"] is not None:
+        failures = [result for result in data["sampling_results"] if re.search(r"\b(?:FAIL|FAILED)\b", result)]
+        passes = [result for result in data["sampling_results"] if re.search(r"\bPASS\b", result)]
+        print(f"Texture sampling: {len(passes)} passed, {len(failures)} failed; suite {data['sampling_status']}")
+        for failure in failures:
+            print(f"Sampling failure: {failure}")
     for fatal in data["fatals"]:  # type: ignore[union-attr]
         print(f"Fatal: {fatal}")
 
