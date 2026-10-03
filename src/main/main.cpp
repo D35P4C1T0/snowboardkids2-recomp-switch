@@ -15,6 +15,7 @@
 #include <condition_variable>
 #include <chrono>
 #include "audio_queue.h"
+#include "../../switch/perf_stats.h"
 
 #if !defined(__SWITCH__)
 #include "nfd.h"
@@ -85,6 +86,38 @@ constexpr int sk2_max_players = 4;
 
 #if defined(__SWITCH__)
 void switch_log_checkpoint(const char* message, bool reset);
+static bool switch_profile_enabled = true;
+
+extern "C" void switch_perf_record(const char* stage, uint64_t elapsed_ns, uint64_t id) {
+    if (!switch_profile_enabled) return;
+    struct Entry { const char* name = nullptr; sk2::perf::Histogram stats; uint64_t id = 0; };
+    static std::array<Entry, 24> entries;
+    static std::mutex mutex;
+    static auto last_report = std::chrono::steady_clock::now();
+    std::lock_guard lock(mutex);
+    for (auto& entry : entries) {
+        if (!entry.name) entry.name = stage;
+        if (std::strcmp(entry.name, stage) == 0) {
+            entry.stats.add(elapsed_ns); entry.id = id; break;
+        }
+    }
+    const auto now = std::chrono::steady_clock::now();
+    if (now - last_report < std::chrono::seconds(2)) return;
+    for (auto& entry : entries) {
+        const auto& h = entry.stats;
+        if (!h.count) continue;
+        char message[320];
+        std::snprintf(message, sizeof(message),
+            "profile: stage=%s count=%llu mean_us=%llu p50_us=%llu p95_us=%llu p99_us=%llu max_us=%llu late=%llu id=%llu",
+            entry.name, (unsigned long long)h.count, (unsigned long long)(h.total_ns / h.count / 1000),
+            (unsigned long long)(h.percentile_ns(50) / 1000), (unsigned long long)(h.percentile_ns(95) / 1000),
+            (unsigned long long)(h.percentile_ns(99) / 1000), (unsigned long long)(h.max_ns / 1000),
+            (unsigned long long)h.late, (unsigned long long)entry.id);
+        switch_log_checkpoint(message, false);
+        entry.stats = {};
+    }
+    last_report = now;
+}
 
 namespace {
 std::mutex switch_log_mutex;
@@ -693,8 +726,8 @@ void queue_samples(int16_t* audio_data, size_t sample_count) {
         audio_convert.len_cvt - output_channels * discarded_output_frames * sizeof(swap_buffer[0]);
     float* samples_to_queue = swap_buffer.data() + output_channels * discarded_output_frames / 2;
 
-    // Prevent audio latency from building up by skipping samples in incoming audio when too many samples are already
-    // queued. Skip samples based on how many microseconds of samples are queued already.
+    // Bound queue latency. Switch uses gradual, continuous rate correction;
+    // the other platforms retain their existing sample-skipping policy.
     uint32_t skip_factor = 0;
 #if defined(__SWITCH__)
     audio_corrector.process(samples_to_queue, num_bytes_to_queue / (output_channels * sizeof(float)),
@@ -1141,6 +1174,12 @@ int main(int argc, char** argv) {
     (void) argv;
 #if defined(__SWITCH__)
     for (int i = 1; i < argc; i++) {
+        if (std::strcmp(argv[i], "--no-profile") == 0) {
+            switch_profile_enabled = false;
+            SDL_setenv("SK2_SWITCH_PROFILE", "0", 1);
+        }
+        if (std::strcmp(argv[i], "--legacy-texture-uploads") == 0)
+            SDL_setenv("SK2_SWITCH_BATCH_UPLOADS", "0", 1);
         if (std::strcmp(argv[i], "--legacy-audio-backend") == 0)
             SDL_setenv("SK2_SWITCH_LEGACY_AUDIO", "1", 1);
     }

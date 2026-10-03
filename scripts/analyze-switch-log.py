@@ -82,6 +82,11 @@ def parse_log(path: Path) -> dict[str, object]:
     ucodes: list[str] = []
     audio_first: dict[str, int] | None = None
     audio_health: list[dict[str, int]] = []
+    profiles: list[dict[str, object]] = []
+    audio_timing: list[dict[str, int]] = []
+    batch_results: list[str] = []
+    batch_status: str | None = None
+    batch_started = False
     game_start_ms: int | None = None
     duration_ms = 0
 
@@ -93,6 +98,21 @@ def parse_log(path: Path) -> dict[str, object]:
         duration_ms = max(duration_ms, timestamp_ms)
         message = timestamp_match.group("message") if timestamp_match else raw_line.strip()
         message = message.removeprefix("[nvk] ")
+        if message.startswith("profile: stage="):
+            values = dict(re.findall(r"(\w+)=([\w.-]+)", message))
+            required = {'stage', 'count', 'mean_us', 'p50_us', 'p95_us', 'p99_us', 'max_us', 'late', 'id'}
+            if required <= values.keys() and all(values[key].isdigit() for key in required - {'stage'}):
+                profiles.append({key: values[key] if key == 'stage' else int(values[key]) for key in required})
+        if message.startswith("audio: timing "):
+            values = {key: int(value) for key, value in re.findall(r"(\w+)=(\d+)", message)}
+            if {"min_us", "max_us", "gap_us", "input_frames", "output_frames", "corrections"} <= values.keys():
+                audio_timing.append(values)
+        if message.startswith("batch probe:"):
+            batch_started = True
+            if message.endswith(("ALL PASS", "FAILED")):
+                batch_status = "passed" if message.endswith("ALL PASS") else "failed"
+            elif re.search(r"\b(?:PASS|FAIL)\b", message):
+                batch_results.append(message)
         if message.startswith("NVK ") and (
             "FAILED" in message or message.startswith((
                 "NVK channel fault:", "NVK native fault:", "NVK fault words[",
@@ -181,6 +201,10 @@ def parse_log(path: Path) -> dict[str, object]:
     return {
         "duration_ms": duration_ms,
         "perf": perf,
+        "profiles": profiles,
+        "audio_timing": audio_timing,
+        "batch_results": batch_results,
+        "batch_status": batch_status or ("incomplete" if batch_started else None),
         "slow_framebuffers": slow_framebuffers,
         "pipeline_times": pipeline_times,
         "memory": memory,
@@ -240,6 +264,25 @@ def print_summary(path: Path, data: dict[str, object]) -> None:
             f"failures={latest_audio['failures']} queued={latest_audio['queued']} bytes "
             f"status={latest_audio['status']} peak={latest_audio['peak']}"
         )
+
+    if data["audio_timing"]:
+        timing = data["audio_timing"]
+        print(f"Audio timing: queue min={min(s['min_us'] for s in timing)/1000:.2f} ms "
+              f"max={max(s['max_us'] for s in timing)/1000:.2f} ms; "
+              f"production gap max={max(s['gap_us'] for s in timing)/1000:.2f} ms; "
+              f"corrected chunks={sum(s['corrections'] for s in timing)}")
+    for stage in sorted({sample['stage'] for sample in data['profiles']}):
+        windows = [sample for sample in data['profiles'] if sample['stage'] == stage]
+        count = sum(s['count'] for s in windows)
+        mean = sum(s['mean_us'] * s['count'] for s in windows) / count
+        print(f"Profile {stage}: samples={count} mean={mean/1000:.2f} ms "
+              f"worst-window p95={max(s['p95_us'] for s in windows)/1000:.2f} ms "
+              f"p99={max(s['p99_us'] for s in windows)/1000:.2f} ms "
+              f"max={max(s['max_us'] for s in windows)/1000:.2f} ms "
+              f"late={sum(s['late'] for s in windows)}")
+    if data['batch_status'] is not None:
+        passes = sum(bool(re.search(r'\bPASS\b', s)) for s in data['batch_results'])
+        print(f"Batched transfers: {passes} passed, {len(data['batch_results'])-passes} failed; suite {data['batch_status']}")
 
     if perf:
         fps_values = [sample.fps for sample in perf]

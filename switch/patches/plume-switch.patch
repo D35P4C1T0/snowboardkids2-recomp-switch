@@ -43,7 +43,14 @@ diff --git a/plume_render_interface.h b/plume_render_interface.h
 diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
 --- a/plume_vulkan.cpp
 +++ b/plume_vulkan.cpp
-@@ -11,9 +11,20 @@
+@@ -1,3 +1,6 @@
++#if defined(__SWITCH__)
++#include "../../common/rt64_switch_perf.h"
++#endif
+ //
+ // plume
+ //
+@@ -11,9 +14,20 @@
  #include "plume_vulkan.h"
  
  #include <algorithm>
@@ -64,7 +71,7 @@ diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
  
  #if DLSS_ENABLED
  #   include "render/plume_dlss.h"
-@@ -28,6 +39,118 @@
+@@ -28,6 +42,118 @@
  // - Fix resource pools.
  
  namespace plume {
@@ -183,7 +190,7 @@ diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
      // Backend constants.
  
      // Required buffer alignment for acceleration structures.
-@@ -39,7 +162,15 @@
+@@ -39,7 +165,15 @@
      // Controls the maximum amount of native queues the backend will create per queue family.
      // Command queues are created as virtual queues on top of the native queues provided by Vulkan,
      // so they're not under the limit set by the the device or the backend.
@@ -199,7 +206,7 @@ diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
  
      // Required extensions.
  
-@@ -58,6 +189,8 @@
+@@ -58,6 +192,8 @@
  #   endif
  #   elif defined(__APPLE__)
          VK_EXT_METAL_SURFACE_EXTENSION_NAME,
@@ -208,7 +215,7 @@ diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
  #   endif
      };
  
-@@ -909,11 +1042,41 @@
+@@ -909,11 +1045,41 @@
              return nullptr;
          }
  
@@ -250,7 +257,7 @@ diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
      }
  
      std::unique_ptr<RenderBufferFormattedView> VulkanBuffer::createBufferFormattedView(RenderFormat format) {
-@@ -1390,7 +1553,13 @@
+@@ -1390,7 +1556,13 @@
          pipelineInfo.layout = pipelineLayout->vk;
          pipelineInfo.stage = stageInfo;
  
@@ -265,7 +272,7 @@ diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
          if (res != VK_SUCCESS) {
              fprintf(stderr, "vkCreateComputePipelines failed with error code 0x%X.\n", res);
              return;
-@@ -1649,7 +1818,13 @@
+@@ -1649,7 +1821,13 @@
          pipelineInfo.layout = pipelineLayout->vk;
          pipelineInfo.renderPass = renderPass;
  
@@ -280,7 +287,7 @@ diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
          if (res != VK_SUCCESS) {
              fprintf(stderr, "vkCreateGraphicsPipelines failed with error code 0x%X.\n", res);
              return;
-@@ -2095,6 +2270,17 @@
+@@ -2095,6 +2273,17 @@
              fprintf(stderr, "vkCreateWin32SurfaceKHR failed with error code 0x%X.\n", res);
              return;
          }
@@ -298,7 +305,7 @@ diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
  #   elif defined(PLUME_SDL_VULKAN_ENABLED)
          VulkanInterface *renderInterface = commandQueue->device->renderInterface;
          SDL_bool sdlRes = SDL_Vulkan_CreateSurface(desc.renderWindow, renderInterface->instance, &surface);
-@@ -2285,6 +2471,19 @@
+@@ -2285,6 +2474,19 @@
              const std::scoped_lock queueLock(*commandQueue->queue->mutex);
              res = vkQueuePresentKHR(commandQueue->queue->vk, &presentInfo);
          }
@@ -318,7 +325,7 @@ diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
  
  #if defined(__APPLE__)
          // Under MoltenVK, VK_SUBOPTIMAL_KHR does not result in a valid state for rendering. We intentionally
-@@ -2324,6 +2523,20 @@
+@@ -2324,6 +2526,20 @@
          VkSurfaceCapabilitiesKHR surfaceCapabilities = {};
          vkGetPhysicalDeviceSurfaceCapabilitiesKHR(commandQueue->device->physicalDevice, surface, &surfaceCapabilities);
  
@@ -339,7 +346,7 @@ diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
          // Clamp the extent to the surface capabilities' min/max bounds.
          // This is required because the window size may differ from the valid surface extent
          // (e.g., due to window decorations, compositor behavior, or timing issues).
-@@ -2338,7 +2551,8 @@
+@@ -2338,7 +2554,8 @@
          createInfo.imageExtent.width = width;
          createInfo.imageExtent.height = height;
          createInfo.imageArrayLayers = 1;
@@ -349,7 +356,7 @@ diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
          createInfo.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
          createInfo.preTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
          createInfo.compositeAlpha = pickedAlphaFlag;
-@@ -2397,13 +2611,32 @@
+@@ -2397,13 +2614,32 @@
              textures[i].createImageView(pickedSurfaceFormat.format);
          }
  
@@ -382,7 +389,7 @@ diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
      }
  
      void VulkanSwapChain::setVsyncEnabled(bool vsyncEnabled) {
-@@ -2463,6 +2696,13 @@
+@@ -2463,6 +2699,13 @@
          GetClientRect(desc.renderWindow, &rect);
          dstWidth = rect.right - rect.left;
          dstHeight = rect.bottom - rect.top;
@@ -396,7 +403,7 @@ diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
  #   elif defined(PLUME_SDL_VULKAN_ENABLED)
          SDL_GetWindowSizeInPixels(desc.renderWindow, (int *)(&dstWidth), (int *)(&dstHeight));
  #   elif defined(__ANDROID__)
-@@ -2630,7 +2870,7 @@
+@@ -2630,7 +2873,7 @@
              fprintf(stderr, "vkCreateRenderPass failed with error code 0x%X.\n", res);
              return;
          }
@@ -405,7 +412,7 @@ diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
          VkFramebufferCreateInfo fbInfo = {};
          fbInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
          fbInfo.renderPass = renderPass;
-@@ -3117,11 +3357,34 @@
+@@ -3117,11 +3360,34 @@
  
          if (clearRectsCount > 0) {
              for (uint32_t i = 0; i < clearRectsCount; i++) {
@@ -444,7 +451,7 @@ diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
                  clearRect.baseArrayLayer = 0;
                  clearRect.layerCount = 1;
                  rectVector.emplace_back(clearRect);
-@@ -3144,10 +3407,13 @@
+@@ -3144,10 +3410,13 @@
          assert(attachmentIndex < targetFramebuffer->colorAttachments.size());
          assert((clearRectsCount == 0) || (clearRects != nullptr));
  
@@ -460,7 +467,7 @@ diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
  
          VkClearAttachment attachment = {};
          auto &rgba = attachment.clearValue.color.float32;
-@@ -3168,6 +3434,9 @@
+@@ -3168,6 +3437,9 @@
  
          thread_local std::vector<VkClearRect> rectVector;
          clearCommonRectVector(targetFramebuffer->getWidth(), targetFramebuffer->getHeight(), clearRects, clearRectsCount, rectVector);
@@ -470,7 +477,7 @@ diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
  
          VkClearAttachment attachment = {};
          attachment.clearValue.depthStencil.depth = depthValue;
-@@ -3229,6 +3498,51 @@
+@@ -3229,6 +3501,51 @@
              imageCopy.imageExtent.depth = srcLocation.placedFootprint.depth;
              vkCmdCopyBufferToImage(vk, srcBuffer->vk, dstTexture->vk, toImageLayout(dstTexture->textureLayout), 1, &imageCopy);
          }
@@ -522,7 +529,14 @@ diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
          else {
              VkImageCopy imageCopy = {};
              imageCopy.srcSubresource.aspectMask = toAspectFlags(srcTexture->desc.format, srcTexture->desc.flags);
-@@ -3575,9 +3889,11 @@
+@@ -3571,13 +3888,18 @@
+     void VulkanCommandQueue::executeCommandLists(const RenderCommandList **commandLists, uint32_t commandListCount, RenderCommandSemaphore **waitSemaphores, uint32_t waitSemaphoreCount, RenderCommandSemaphore **signalSemaphores, uint32_t signalSemaphoreCount, RenderCommandFence *signalFence) {
+         assert(commandLists != nullptr);
+         assert(commandListCount > 0);
++#if defined(__SWITCH__)
++        RT64SwitchPerfScope submitProfile("queue_submit");
++#endif
+ 
          thread_local std::vector<VkSemaphore> waitSemaphoreVector;
          thread_local std::vector<VkSemaphore> signalSemaphoreVector;
          thread_local std::vector<VkCommandBuffer> commandBuffers;
@@ -534,7 +548,7 @@ diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
  
          for (uint32_t i = 0; i < waitSemaphoreCount; i++) {
              VulkanCommandSemaphore *interfaceSemaphore = static_cast<VulkanCommandSemaphore *>(waitSemaphores[i]);
-@@ -3601,11 +3917,22 @@
+@@ -3601,11 +3923,22 @@
          submitInfo.pCommandBuffers = commandBuffers.data();
          submitInfo.commandBufferCount = uint32_t(commandBuffers.size());
  
@@ -559,7 +573,7 @@ diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
          }
  
          if (!signalSemaphoreVector.empty()) {
-@@ -3620,12 +3947,76 @@
+@@ -3620,12 +3953,76 @@
          }
  
          VkResult res;
@@ -637,7 +651,7 @@ diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
              fprintf(stderr, "vkQueueSubmit failed with error code 0x%X.\n", res);
              return;
          }
-@@ -3635,12 +4026,40 @@
+@@ -3635,12 +4032,40 @@
          assert(fence != nullptr);
  
          VulkanCommandFence *interfaceFence = static_cast<VulkanCommandFence *>(fence);
@@ -678,7 +692,7 @@ diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
          vkResetFences(device->vk, 1, &interfaceFence->vk);
      }
  
-@@ -3944,7 +4363,14 @@
+@@ -3944,7 +4369,14 @@
              createDeviceChain = &layoutFeatures;
          }
  
@@ -693,7 +707,7 @@ diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
          if (presentWaitSupported) {
              presentIdFeatures.pNext = createDeviceChain;
              createDeviceChain = &presentIdFeatures;
-@@ -4054,6 +4480,37 @@
+@@ -4054,6 +4486,37 @@
              fprintf(stderr, "vkCreateDevice failed with error code 0x%X.\n", res);
              return;
          }
@@ -731,7 +745,7 @@ diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
  
          for (uint32_t i = 0; i < queueFamilyCount; i++) {
              for (uint32_t j = 0; j < queueFamilies[i].queues.size(); j++) {
-@@ -4173,14 +4630,53 @@
+@@ -4173,14 +4636,53 @@
      }
  
      std::unique_ptr<RenderPipeline> VulkanDevice::createComputePipeline(const RenderComputePipelineDesc &desc) {
@@ -785,7 +799,7 @@ diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
          return std::make_unique<VulkanRaytracingPipeline>(this, desc, previousPipeline);
      }
  
-@@ -4438,6 +4934,12 @@
+@@ -4438,6 +4940,12 @@
          }
  
          if (vk != VK_NULL_HANDLE) {
@@ -798,7 +812,7 @@ diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
              vkDestroyDevice(vk, nullptr);
              vk = VK_NULL_HANDLE;
          }
-@@ -4464,7 +4966,12 @@
+@@ -4464,7 +4972,12 @@
  #else
      VulkanInterface::VulkanInterface() {
  #endif
@@ -811,7 +825,7 @@ diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
          if (res != VK_SUCCESS) {
              fprintf(stderr, "volkInitialize failed with error code 0x%X.\n", res);
              return;
-@@ -4500,7 +5007,7 @@
+@@ -4500,7 +5013,7 @@
          const std::unordered_set<std::string> dlssExtensions = DLSS::getRequiredInstanceExtensionsVulkan();
  #   endif
  

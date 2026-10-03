@@ -62,6 +62,25 @@ transfer probe: FAILED
         self.assertIn('Gameplay: 1 windows, FPS median=30.00', output)
         self.assertIn('Driver: NVK native fault:', output)
 
+    def test_performance_profile_and_batch(self):
+        data, output = self.parse('''[ 2000 ms] profile: stage=nvk_submit count=10 mean_us=200 p50_us=250 p95_us=500 p99_us=750 max_us=700 late=0 id=12
+[ 2100 ms] audio: timing min_us=20000 max_us=60000 gap_us=28000 input_frames=100 output_frames=200 corrections=0
+batch probe: count=2 image=0 PASS
+batch probe: count=2 image=1 PASS
+batch probe: ALL PASS
+''')
+        self.assertEqual(data['profiles'][0]['count'], 10)
+        self.assertIn('mean=0.20 ms', output)
+        self.assertIn('production gap max=28.00 ms', output)
+        self.assertIn('Batched transfers: 2 passed, 0 failed; suite passed', output)
+        data, output = self.parse('batch probe: submitting phase=0 count=8\n')
+        self.assertEqual(data['batch_status'], 'incomplete')
+
+    def test_truncated_profiles_are_ignored(self):
+        data, output = self.parse("profile: stage=nvk_submit count=10 mean_us=200\naudio: timing min_us=1 max_us=2\n")
+        self.assertEqual(data['profiles'], [])
+        self.assertEqual(data['audio_timing'], [])
+
     def test_sampling_is_separate_from_transfers(self):
         data, output = self.parse('''transfer probe: image 1x1 FAIL mismatches=4
 transfer probe: FAILED

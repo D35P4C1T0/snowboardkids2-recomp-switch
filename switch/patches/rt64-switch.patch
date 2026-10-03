@@ -170,6 +170,41 @@ diff --git a/src/common/rt64_mapped_file.h b/src/common/rt64_mapped_file.h
 -};
 \ No newline at end of file
 +};
+diff --git a/src/common/rt64_switch_perf.h b/src/common/rt64_switch_perf.h
+new file mode 100644
+--- /dev/null
++++ b/src/common/rt64_switch_perf.h
+@@ -0,0 +1,30 @@
++#pragma once
++#include <chrono>
++#include <cstdint>
++#include <cstdlib>
++#if defined(__SWITCH__)
++extern "C" void switch_perf_record(const char*, uint64_t, uint64_t) __attribute__((weak));
++#endif
++class RT64SwitchPerfScope {
++    using Clock = std::chrono::steady_clock;
++    const char* stage; uint64_t id; Clock::time_point start{};
++public:
++    static bool enabled() {
++#if defined(__SWITCH__)
++        static const bool active = [] { const char* value = std::getenv("SK2_SWITCH_PROFILE");
++            return !value || *value != '0'; }();
++        return active && switch_perf_record;
++#else
++        return false;
++#endif
++    }
++    RT64SwitchPerfScope(const char* name, uint64_t value=0) : stage(name), id(value) {
++        if (enabled()) start=Clock::now();
++    }
++    ~RT64SwitchPerfScope() {
++#if defined(__SWITCH__)
++        if (enabled()) switch_perf_record(stage,
++            std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now()-start).count(), id);
++#endif
++    }
++};
 diff --git a/src/common/rt64_thread.cpp b/src/common/rt64_thread.cpp
 --- a/src/common/rt64_thread.cpp
 +++ b/src/common/rt64_thread.cpp
@@ -755,7 +790,11 @@ diff --git a/src/hle/rt64_interpreter.cpp b/src/hle/rt64_interpreter.cpp
 diff --git a/src/hle/rt64_present_queue.cpp b/src/hle/rt64_present_queue.cpp
 --- a/src/hle/rt64_present_queue.cpp
 +++ b/src/hle/rt64_present_queue.cpp
-@@ -4,10 +4,28 @@
+@@ -1,13 +1,32 @@
++#include "common/rt64_switch_perf.h"
+ //
+ // RT64
+ //
  
  #include "rt64_present_queue.h"
  
@@ -784,7 +823,7 @@ diff --git a/src/hle/rt64_present_queue.cpp b/src/hle/rt64_present_queue.cpp
  
  namespace RT64 {
      // PresentQueue
-@@ -20,10 +38,16 @@
+@@ -20,10 +39,16 @@
          presentThreadRunning = false;
          cursorCondition.notify_all();
  
@@ -801,7 +840,7 @@ diff --git a/src/hle/rt64_present_queue.cpp b/src/hle/rt64_present_queue.cpp
  
          presentIdCondition.notify_all();
      }
-@@ -39,15 +63,17 @@
+@@ -39,15 +64,17 @@
          int nextWriteCursor = (writeCursor + 1) % presents.size();
  
          // Stall the thread until the barrier is lifted if we're trying to write on a present being used by the GPU.
@@ -827,7 +866,7 @@ diff --git a/src/hle/rt64_present_queue.cpp b/src/hle/rt64_present_queue.cpp
              writeCursor = nextWriteCursor;
          }
  
-@@ -89,10 +115,48 @@
+@@ -89,10 +116,48 @@
          viRenderer = std::make_unique<VIRenderer>();
  
          presentThreadRunning = true;
@@ -877,7 +916,7 @@ diff --git a/src/hle/rt64_present_queue.cpp b/src/hle/rt64_present_queue.cpp
          FramebufferManager &fbManager = ext.sharedResources->framebufferManager;
          RenderTargetManager &targetManager = ext.sharedResources->renderTargetManager;
          const bool usingMSAA = (targetManager.multisampling.sampleCount > 1);
-@@ -113,6 +177,7 @@
+@@ -113,6 +178,7 @@
              viOriginalRate = ext.sharedResources->viOriginalRate;
              targetRate = ext.sharedResources->targetRate;
          }
@@ -885,7 +924,7 @@ diff --git a/src/hle/rt64_present_queue.cpp b/src/hle/rt64_present_queue.cpp
  
          RenderTarget *colorTarget = nullptr;
          int32_t framesToPresent = 1;
-@@ -127,18 +192,21 @@
+@@ -127,18 +193,21 @@
          
          // Perform any external write operations indicated by the event.
          if (!present.fbOperations.empty()) {
@@ -907,7 +946,7 @@ diff --git a/src/hle/rt64_present_queue.cpp b/src/hle/rt64_present_queue.cpp
              Framebuffer *viFb = nullptr;
              if (!viewRDRAM) {
                  viFb = fbManager.find(present.screenVI.fbAddress());
-@@ -254,19 +322,35 @@
+@@ -254,19 +323,36 @@
                      viHistory.pushVI(present.screenVI, fbSize.x);
                  }
              }
@@ -932,6 +971,7 @@ diff --git a/src/hle/rt64_present_queue.cpp b/src/hle/rt64_present_queue.cpp
          for (int32_t i = 0; i < framesToPresent; i++) {
 +#if defined(__SWITCH__)
 +            const Timestamp perfFrameStart = Timer::current();
++            RT64SwitchPerfScope composeProfile("present_compose", present.workloadId);
 +            Timestamp perfStageStart = perfFrameStart;
 +            int64_t perfAcquireUs = 0;
 +            int64_t perfPresentUs = 0;
@@ -943,7 +983,7 @@ diff --git a/src/hle/rt64_present_queue.cpp b/src/hle/rt64_present_queue.cpp
              uint32_t frameCountersNextPresented = 0;
              if ((framesToPresent > 1) && (usingMSAA || (i > 0))) {
                  // Stall until the interpolated color target is available.
-@@ -300,10 +384,17 @@
+@@ -300,10 +386,17 @@
              uint32_t swapChainIndex = 0;
              const bool presentFrame = (i < framesToPresent) && swapChainValid;
              if (presentFrame) {
@@ -961,7 +1001,7 @@ diff --git a/src/hle/rt64_present_queue.cpp b/src/hle/rt64_present_queue.cpp
                  // Draw the framebuffer with the VI renderer.
                  RenderTexture *swapChainTexture = ext.swapChain->getTexture(swapChainIndex);
                  RenderFramebuffer *swapChainFramebuffer = swapChainFramebuffers[swapChainIndex].get();
-@@ -339,18 +430,36 @@
+@@ -339,18 +432,36 @@
                          renderParams.textureHeight = colorTarget->height;
                      }
                  }
@@ -1001,7 +1041,7 @@ diff --git a/src/hle/rt64_present_queue.cpp b/src/hle/rt64_present_queue.cpp
                  }
  
                  {
-@@ -358,14 +467,48 @@
+@@ -358,14 +469,48 @@
                      if (inspector != nullptr) {
                          inspector->draw(commandList);
                      }
@@ -1052,7 +1092,7 @@ diff --git a/src/hle/rt64_present_queue.cpp b/src/hle/rt64_present_queue.cpp
                  }
              }
  
-@@ -386,13 +529,32 @@
+@@ -386,13 +531,32 @@
              // As soon as we're done with the first render target, we notify the workload queue it can proceed.
              if (i == 0) {
                  notifyPresentId(present);
@@ -1085,7 +1125,7 @@ diff --git a/src/hle/rt64_present_queue.cpp b/src/hle/rt64_present_queue.cpp
  
                  if (presentWaitEnabled) {
                      ext.swapChain->wait();
-@@ -400,10 +562,84 @@
+@@ -400,10 +564,96 @@
  
                  RenderCommandSemaphore *waitSemaphore = drawSemaphores[swapChainIndex].get();
                  presentTimestamp = Timer::current();
@@ -1094,6 +1134,18 @@ diff --git a/src/hle/rt64_present_queue.cpp b/src/hle/rt64_present_queue.cpp
 +                perfStageStart = Timer::current();
 +#endif
                  swapChainValid = ext.swapChain->present(swapChainIndex, &waitSemaphore, 1);
++#if defined(__SWITCH__)
++                if (RT64SwitchPerfScope::enabled()) {
++                    static auto previousPresent = Timer::current();
++                    static uint64_t previousWorkload = UINT64_MAX;
++                    const auto completed = Timer::current();
++                    switch_perf_record("present_interval", std::chrono::duration_cast<std::chrono::nanoseconds>(
++                        completed - previousPresent).count(), present.workloadId);
++                    switch_perf_record(i > 0 ? "interpolated_present" : previousWorkload == present.workloadId
++                        ? "repeated_workload_present" : "new_workload_present", 0, present.workloadId);
++                    previousPresent = completed; previousWorkload = present.workloadId;
++                }
++#endif
 +#if defined(__SWITCH__)
 +                perfPresentUs = std::chrono::duration_cast<std::chrono::microseconds>(
 +                    Timer::current() - perfStageStart).count();
@@ -1170,7 +1222,7 @@ diff --git a/src/hle/rt64_present_queue.cpp b/src/hle/rt64_present_queue.cpp
      }
  
      void PresentQueue::skipInterpolation() {
-@@ -426,11 +662,16 @@
+@@ -426,11 +676,16 @@
      }
      
      void PresentQueue::threadAdvanceBarrier() {
@@ -1189,7 +1241,7 @@ diff --git a/src/hle/rt64_present_queue.cpp b/src/hle/rt64_present_queue.cpp
          Thread::setCurrentThreadName("RT64 Present");
  
          // Create the semaphore the acquire method will use.
-@@ -449,6 +690,10 @@
+@@ -449,6 +704,10 @@
          uint32_t displayTimingRate = UINT32_MAX;
          const bool displayTiming = ext.device->getCapabilities().displayTiming;
          bool swapChainValid = !ext.swapChain->needsResize();
@@ -1200,7 +1252,7 @@ diff --git a/src/hle/rt64_present_queue.cpp b/src/hle/rt64_present_queue.cpp
          while (presentThreadRunning) {
              {
                  std::unique_lock<std::mutex> cursorLock(cursorMutex);
-@@ -464,6 +709,7 @@
+@@ -464,6 +723,7 @@
              }
  
              if (processCursor >= 0) {
@@ -1208,15 +1260,17 @@ diff --git a/src/hle/rt64_present_queue.cpp b/src/hle/rt64_present_queue.cpp
                  std::unique_lock<std::mutex> threadLock(threadMutex);
                  const bool needsResize = ext.swapChain->needsResize() || !swapChainValid;
                  if (needsResize) {
-@@ -505,6 +751,7 @@
+@@ -504,7 +764,8 @@
+                 skipPresent = skipPresent || ext.swapChain->isEmpty();
  
                  Present &present = presents[processCursor];
-                 ext.workloadQueue->waitForWorkloadId(present.workloadId);
+-                ext.workloadQueue->waitForWorkloadId(present.workloadId);
++                { RT64SwitchPerfScope profile("present_dependency", present.workloadId); ext.workloadQueue->waitForWorkloadId(present.workloadId); }
 +                if (firstPresent) RT64_PRESENT_SWITCH_CHECKPOINT("rt64 queue: first present workload ready");
  
                  if (!presentThreadRunning) {
                      continue;
-@@ -515,20 +762,43 @@
+@@ -515,20 +776,43 @@
                      notifyPresentId(present);
                  }
                  else {
@@ -1264,7 +1318,7 @@ diff --git a/src/hle/rt64_present_queue.cpp b/src/hle/rt64_present_queue.cpp
              }
          }
  
-@@ -542,6 +812,9 @@
+@@ -542,6 +826,9 @@
  
              const RenderCommandList *commandList = ext.presentGraphicsWorker->commandList.get();
              RenderCommandSemaphore *waitSemaphore = acquiredSemaphore.get();
@@ -2255,7 +2309,11 @@ diff --git a/src/hle/rt64_state.h b/src/hle/rt64_state.h
 diff --git a/src/hle/rt64_workload_queue.cpp b/src/hle/rt64_workload_queue.cpp
 --- a/src/hle/rt64_workload_queue.cpp
 +++ b/src/hle/rt64_workload_queue.cpp
-@@ -4,11 +4,23 @@
+@@ -1,14 +1,27 @@
++#include "common/rt64_switch_perf.h"
+ //
+ // RT64
+ //
  
  #include "rt64_workload_queue.h"
  
@@ -2279,7 +2337,7 @@ diff --git a/src/hle/rt64_workload_queue.cpp b/src/hle/rt64_workload_queue.cpp
  
  namespace RT64 {
      // WorkloadQueue
-@@ -22,6 +34,15 @@
+@@ -22,6 +35,15 @@
          cursorCondition.notify_all();
          idleCondition.notify_all();
  
@@ -2295,7 +2353,7 @@ diff --git a/src/hle/rt64_workload_queue.cpp b/src/hle/rt64_workload_queue.cpp
          if (renderThread != nullptr) {
              renderThread->join();
              delete renderThread;
-@@ -31,6 +52,7 @@
+@@ -31,6 +53,7 @@
              idleThread->join();
              delete idleThread;
          }
@@ -2303,7 +2361,7 @@ diff --git a/src/hle/rt64_workload_queue.cpp b/src/hle/rt64_workload_queue.cpp
  
          workloadIdCondition.notify_all();
      }
-@@ -51,15 +73,17 @@
+@@ -51,15 +74,17 @@
          int nextWriteCursor = (writeCursor + 1) % workloads.size();
  
          // Stall the thread until the barrier is lifted if we're trying to write on a workload being used by the GPU.
@@ -2329,7 +2387,7 @@ diff --git a/src/hle/rt64_workload_queue.cpp b/src/hle/rt64_workload_queue.cpp
              writeCursor = nextWriteCursor;
          }
  
-@@ -110,9 +134,42 @@
+@@ -110,9 +135,42 @@
          lookAtProcessor.setup(ext.workloadGraphicsWorker);
  
          threadsRunning = true;
@@ -2373,7 +2431,7 @@ diff --git a/src/hle/rt64_workload_queue.cpp b/src/hle/rt64_workload_queue.cpp
  
      void WorkloadQueue::updateMultisampling() {
          renderFramebufferManager->destroyAll();
-@@ -275,7 +332,16 @@
+@@ -275,7 +333,16 @@
  
          if (ext.sharedResources->userConfigChanged) {
              idleMutex.lock();
@@ -2390,7 +2448,7 @@ diff --git a/src/hle/rt64_workload_queue.cpp b/src/hle/rt64_workload_queue.cpp
              idleMutex.unlock();
              idleCondition.notify_all();
          }
-@@ -299,6 +365,19 @@
+@@ -299,6 +366,19 @@
          FramebufferManager &fbManager = ext.sharedResources->framebufferManager;
          RenderTargetManager &targetManager = ext.sharedResources->renderTargetManager;
          const bool usingMSAA = (targetManager.multisampling.sampleCount > 1);
@@ -2410,7 +2468,7 @@ diff --git a/src/hle/rt64_workload_queue.cpp b/src/hle/rt64_workload_queue.cpp
  
          rendererCPUProfiler.start();
  
-@@ -464,6 +543,25 @@
+@@ -464,6 +544,25 @@
  
                      fixedResScale = RenderTarget::computeFixedResolutionScale(colorImg.width, fixedResScale);
                      RenderTarget::computeScaledSize(nativeColorWidth, nativeColorHeight, fixedResScale, targetWidth, targetHeight, targetMisalignX);
@@ -2436,7 +2494,7 @@ diff --git a/src/hle/rt64_workload_queue.cpp b/src/hle/rt64_workload_queue.cpp
  
                      rtWidth = targetWidth;
                      rtHeight = targetHeight;
-@@ -703,6 +801,20 @@
+@@ -703,6 +802,20 @@
              ext.workloadGraphicsWorker->commandList->writeTimestamp(queryPool.get(), 0);
              framebufferRenderer->endFramebuffers(ext.workloadGraphicsWorker, &workload.drawBuffers, &workload.outputBuffers, workloadConfig.raytracingEnabled);
              framebufferRenderer->recordSetup(ext.workloadGraphicsWorker, bufferUploaders, processRSP ? rspProcessor.get() : nullptr, processWorldVertices ? vertexProcessor.get() : nullptr, &workload.outputBuffers, workloadConfig.raytracingEnabled);
@@ -2449,7 +2507,7 @@ diff --git a/src/hle/rt64_workload_queue.cpp b/src/hle/rt64_workload_queue.cpp
 +                framebufferRenderer->waitForUploaders();
 +                RT64_WORKLOAD_SWITCH_CHECKPOINT("rt64 1x diagnostic: setup submit entered");
 +                ext.workloadGraphicsWorker->execute("Workload Graphics native setup");
-+                ext.workloadGraphicsWorker->wait();
++                { RT64SwitchPerfScope profile("workload_gpu_wait"); ext.workloadGraphicsWorker->wait(); }
 +                RT64_WORKLOAD_SWITCH_CHECKPOINT("rt64 1x diagnostic: setup submit returned");
 +                ext.workloadGraphicsWorker->commandList->begin();
 +            }
@@ -2457,7 +2515,7 @@ diff --git a/src/hle/rt64_workload_queue.cpp b/src/hle/rt64_workload_queue.cpp
              
              // Record all framebuffer pairs.
              uint32_t framebufferIndex = 0;
-@@ -840,8 +952,36 @@
+@@ -840,8 +953,36 @@
              ext.workloadGraphicsWorker->commandList->writeTimestamp(queryPool.get(), 1);
              ext.workloadGraphicsWorker->commandList->end();
              framebufferRenderer->waitForUploaders();
@@ -2484,8 +2542,9 @@ diff --git a/src/hle/rt64_workload_queue.cpp b/src/hle/rt64_workload_queue.cpp
 +            ext.workloadGraphicsWorker->execute(switchSubmitContext);
 +#else
              ext.workloadGraphicsWorker->execute();
+-            ext.workloadGraphicsWorker->wait();
 +#endif
-             ext.workloadGraphicsWorker->wait();
++            { RT64SwitchPerfScope profile("workload_gpu_wait"); ext.workloadGraphicsWorker->wait(); }
 +#if defined(__SWITCH__)
 +            if (splitNativeDiagnostic) {
 +                RT64_WORKLOAD_SWITCH_CHECKPOINT("rt64 1x diagnostic: framebuffer submit returned");
@@ -2494,7 +2553,7 @@ diff --git a/src/hle/rt64_workload_queue.cpp b/src/hle/rt64_workload_queue.cpp
              workerMutex.unlock();
  
              // Update the GPU profiler with the results from the timestamps of the frame.
-@@ -861,12 +1001,22 @@
+@@ -861,12 +1002,22 @@
          rendererCPUProfiler.end();
          rendererCPUProfiler.log();
          rendererCPUProfiler.reset();
@@ -2519,7 +2578,7 @@ diff --git a/src/hle/rt64_workload_queue.cpp b/src/hle/rt64_workload_queue.cpp
      }
  
      void WorkloadQueue::threadAdvanceWorkloadId(uint64_t newWorkloadId) {
-@@ -879,6 +1029,7 @@
+@@ -879,6 +1030,7 @@
      }
  
      void WorkloadQueue::renderThreadLoop() {
@@ -2527,7 +2586,7 @@ diff --git a/src/hle/rt64_workload_queue.cpp b/src/hle/rt64_workload_queue.cpp
          Thread::setCurrentThreadName("RT64 Workload");
  
          WorkloadConfiguration workloadConfig;
-@@ -888,6 +1039,7 @@
+@@ -888,6 +1040,7 @@
          uint32_t displayRateForTicks = 0;
          int processCursor = -1;
          bool frameReduction = false;
@@ -2535,19 +2594,22 @@ diff --git a/src/hle/rt64_workload_queue.cpp b/src/hle/rt64_workload_queue.cpp
          while (threadsRunning) {
              {
                  std::unique_lock<std::mutex> cursorLock(cursorMutex);
-@@ -902,9 +1054,11 @@
+@@ -902,17 +1055,21 @@
              }
  
              if (processCursor >= 0) {
 +                if (firstWorkload) RT64_WORKLOAD_SWITCH_CHECKPOINT("rt64 queue: first workload dequeued");
                  std::unique_lock<std::mutex> threadLock(threadMutex);
                  Workload &workload = workloads[processCursor];
-                 ext.presentQueue->waitForPresentId(workload.presentId);
+-                ext.presentQueue->waitForPresentId(workload.presentId);
++                { RT64SwitchPerfScope profile("workload_dependency", workload.workloadId); ext.presentQueue->waitForPresentId(workload.presentId); }
 +                if (firstWorkload) RT64_WORKLOAD_SWITCH_CHECKPOINT("rt64 queue: first workload present dependency ready");
  
                  if (!threadsRunning) {
                      continue;
-@@ -913,6 +1067,7 @@
+                 }
+ 
++                RT64SwitchPerfScope workloadProfile("workload_total", workload.workloadId);
                  ElapsedTimer workloadTimer;
                  workloadProfiler.start();
                  threadConfigurationUpdate(workload.viFbSize, workloadConfig);
@@ -2555,7 +2617,7 @@ diff --git a/src/hle/rt64_workload_queue.cpp b/src/hle/rt64_workload_queue.cpp
  
                  // FIXME: This is a very hacky way to find out if we need to advance the frame if the workload was paused for the first time.
                  if (!workload.paused || (!gameFrames[curFrameIndex].workloads.empty() && (gameFrames[curFrameIndex].workloads[0] != (uint32_t)processCursor))) {
-@@ -925,6 +1080,7 @@
+@@ -925,6 +1082,7 @@
                  const GameFrame &prevFrame = gameFrames[prevFrameIndex];
                  uint32_t workloadIndex = processCursor;
                  curFrame.set(*this, &workloadIndex, 1);
@@ -2563,7 +2625,7 @@ diff --git a/src/hle/rt64_workload_queue.cpp b/src/hle/rt64_workload_queue.cpp
  
                  // Detect the color image to interpolate for this workload.
                  RenderTargetKey interpolationTargetKey;
-@@ -1117,8 +1273,10 @@
+@@ -1117,8 +1275,10 @@
                      }
  
                      int64_t renderTimeMicro = workloadTimer.elapsedMicroseconds();
@@ -2574,7 +2636,7 @@ diff --git a/src/hle/rt64_workload_queue.cpp b/src/hle/rt64_workload_queue.cpp
  
                      // Add total time the frame took to render.
                      renderTimeTotalMicro += workloadTimer.elapsedMicroseconds() - renderTimeMicro;
-@@ -1126,6 +1284,7 @@
+@@ -1126,6 +1286,7 @@
                      // After one frame is rendered, we indicate the workload has been processed so the present thread can start presenting frames as soon as it can.
                      if (frame == 0) {
                          threadAdvanceWorkloadId(workload.workloadId);
@@ -2582,7 +2644,7 @@ diff --git a/src/hle/rt64_workload_queue.cpp b/src/hle/rt64_workload_queue.cpp
                      }
  
                      // For every additional frame, we increase the frames available and notify the present queue.
-@@ -1172,11 +1331,13 @@
+@@ -1172,11 +1333,13 @@
                  workloadProfiler.end();
                  workloadProfiler.log();
                  workloadProfiler.reset();
@@ -2596,7 +2658,16 @@ diff --git a/src/hle/rt64_workload_queue.cpp b/src/hle/rt64_workload_queue.cpp
          // Beware traveler as you enter the zone of dirty driver hacks. Given N64 games are not exactly a demanding thing to render
          // nowadays for modern GPUs and due to how the plugin's cooperative multiqueue system works, it's sometimes just not possible
          // to keep the GPU busy at all times. It is often the case that the GPU might've already rendered all the frames it needed to
-@@ -1221,4 +1382,4 @@
+@@ -1213,7 +1376,7 @@
+                     commandList->dispatch(1, 1, 1);
+                     commandList->end();
+                     ext.workloadGraphicsWorker->execute();
+-                    ext.workloadGraphicsWorker->wait();
++                    { RT64SwitchPerfScope profile("workload_gpu_wait"); ext.workloadGraphicsWorker->wait(); }
+                     workerMutex.unlock();
+                 }
+                 
+@@ -1221,4 +1384,4 @@
              }
          }
      }
@@ -3078,7 +3149,11 @@ diff --git a/src/render/rt64_native_target.h b/src/render/rt64_native_target.h
 diff --git a/src/render/rt64_raster_shader.cpp b/src/render/rt64_raster_shader.cpp
 --- a/src/render/rt64_raster_shader.cpp
 +++ b/src/render/rt64_raster_shader.cpp
-@@ -4,7 +4,16 @@
+@@ -1,10 +1,20 @@
++#include "common/rt64_switch_perf.h"
+ //
+ // RT64
+ //
  
  #include "rt64_raster_shader.h"
  
@@ -3095,7 +3170,7 @@ diff --git a/src/render/rt64_raster_shader.cpp b/src/render/rt64_raster_shader.c
  
  #include "shaders/RenderParams.hlsli.rw.h"
  #include "shaders/RasterPSDynamic.hlsl.spirv.h"
-@@ -307,6 +316,7 @@
+@@ -307,6 +317,7 @@
      }
      
      std::unique_ptr<RenderPipeline> RasterShader::createPipeline(const PipelineCreation &c) {
@@ -3103,19 +3178,20 @@ diff --git a/src/render/rt64_raster_shader.cpp b/src/render/rt64_raster_shader.c
          RenderGraphicsPipelineDesc pipelineDesc;
          pipelineDesc.renderTargetBlend[0] = RenderBlendDesc::Copy();
          pipelineDesc.renderTargetFormat[0] = RenderTarget::colorBufferFormat(c.usesHDR);
-@@ -344,7 +354,10 @@
+@@ -344,7 +355,11 @@
              targetBlend.dstBlendAlpha = RenderBlend::ONE;
          }
  
 -        return c.device->createGraphicsPipeline(pipelineDesc);
 +        RT64_RASTER_SWITCH_CHECKPOINT("rt64 raster: device pipeline creation entered");
++        RT64SwitchPerfScope pipelineProfile("pipeline_create");
 +        auto pipeline = c.device->createGraphicsPipeline(pipelineDesc);
 +        RT64_RASTER_SWITCH_CHECKPOINT("rt64 raster: device pipeline creation returned");
 +        return pipeline;
      }
      
      RenderMultisampling RasterShader::generateMultisamplingPattern(RenderSampleCounts sampleCount, bool sampleLocationsSupported) {
-@@ -406,6 +419,7 @@
+@@ -406,6 +421,7 @@
  
      RasterShaderUber::RasterShaderUber(RenderDevice *device, RenderShaderFormat shaderFormat, const RenderMultisampling &multisampling, const ShaderLibrary *shaderLibrary, uint32_t threadCount) {
          assert(device != nullptr);
@@ -3123,7 +3199,7 @@ diff --git a/src/render/rt64_raster_shader.cpp b/src/render/rt64_raster_shader.c
  
          // Create the shaders.
          const void *VSBlob = nullptr;
-@@ -487,8 +501,33 @@
+@@ -487,8 +503,33 @@
          pipelineThreads.clear();
          pipelineThreads.resize(pipelineThreadCreations.size());
          for (uint32_t i = 0; i < uint32_t(pipelineThreads.size()); i++) {
@@ -3158,7 +3234,7 @@ diff --git a/src/render/rt64_raster_shader.cpp b/src/render/rt64_raster_shader.c
  
          // Create the pipelines for post blend operations.
          std::unique_ptr<RenderShader> postBlendAddPixelShader;
-@@ -558,7 +597,16 @@
+@@ -558,7 +599,16 @@
          waitForPipelineCreation();
      }
  
@@ -3175,7 +3251,7 @@ diff --git a/src/render/rt64_raster_shader.cpp b/src/render/rt64_raster_shader.c
          // Delay the creation of all other pipelines until the first pipeline is created. This can help the
          // driver reuse its shader cache between pipelines and achieve a much lower creation time than if
          // all threads started at the same time.
-@@ -572,29 +620,53 @@
+@@ -572,29 +622,53 @@
          for (const PipelineCreation &creation : pipelineThreadCreations[threadIndex]) {
              uint32_t pipelineIndex = pipelineStateIndex(creation.zCmp, creation.zUpd, creation.cvgAdd);
  
@@ -3274,7 +3350,11 @@ diff --git a/src/render/rt64_raster_shader.h b/src/render/rt64_raster_shader.h
 diff --git a/src/render/rt64_raster_shader_cache.cpp b/src/render/rt64_raster_shader_cache.cpp
 --- a/src/render/rt64_raster_shader_cache.cpp
 +++ b/src/render/rt64_raster_shader_cache.cpp
-@@ -4,36 +4,78 @@
+@@ -1,39 +1,82 @@
++#include "common/rt64_switch_perf.h"
+ //
+ // RT64
+ //
  
  #include "rt64_raster_shader_cache.h"
  
@@ -3358,7 +3438,7 @@ diff --git a/src/render/rt64_raster_shader_cache.cpp b/src/render/rt64_raster_sh
  
          while (threadRunning) {
              ShaderDescription shaderDesc;
-@@ -42,15 +84,14 @@
+@@ -42,21 +85,21 @@
              // Check the top of the queue or wait if it's empty.
              {
                  std::unique_lock<std::mutex> queueLock(shaderCache->descQueueMutex);
@@ -3376,7 +3456,14 @@ diff --git a/src/render/rt64_raster_shader_cache.cpp b/src/render/rt64_raster_sh
                      fromPriorityQueue = true;
                  }
              }
-@@ -66,25 +107,43 @@
+             
+             // Compile the shader at the top of the queue.
+             if (fromPriorityQueue) {
++                RT64SwitchPerfScope compileProfile("shader_compile");
+                 assert((shaderCache->shaderUber != nullptr) && "Ubershader should've been created by the time a new shader is submitted to the cache.");
+                 const RenderPipelineLayout *uberPipelineLayout = shaderCache->shaderUber->pipelineLayout.get();
+                 const RenderMultisampling multisampling = shaderCache->multisampling;
+@@ -66,25 +109,43 @@
                      const std::unique_lock<std::mutex> lock(shaderCache->GPUShadersMutex);
                      shaderCache->GPUShaders[shaderDesc.hash()] = std::move(newShader);
                  }
@@ -3423,7 +3510,7 @@ diff --git a/src/render/rt64_raster_shader_cache.cpp b/src/render/rt64_raster_sh
          for (uint32_t t = 0; t < threadCount; t++) {
              compilationThreads.push_back(std::make_unique<CompilationThread>(this));
          }
-@@ -109,9 +168,14 @@
+@@ -109,9 +170,14 @@
          if (shaderFormat == RenderShaderFormat::SPIRV) {
              optimizerCacheSPIRV.initialize();
          }
@@ -3438,7 +3525,7 @@ diff --git a/src/render/rt64_raster_shader_cache.cpp b/src/render/rt64_raster_sh
          {
              std::unique_lock<std::mutex> queueLock(submissionMutex);
  
-@@ -132,19 +196,17 @@
+@@ -132,19 +198,17 @@
          }
  
          descQueueChanged.notify_all();
@@ -3466,7 +3553,7 @@ diff --git a/src/render/rt64_raster_shader_cache.cpp b/src/render/rt64_raster_sh
      }
  
      void RasterShaderCache::destroyAll() {
-@@ -179,4 +241,109 @@
+@@ -179,4 +243,109 @@
          std::unique_lock<std::mutex> lock(GPUShadersMutex);
          return GPUShaders.size();
      }
@@ -3889,7 +3976,12 @@ diff --git a/src/render/rt64_shader_library.h b/src/render/rt64_shader_library.h
 diff --git a/src/render/rt64_texture_cache.cpp b/src/render/rt64_texture_cache.cpp
 --- a/src/render/rt64_texture_cache.cpp
 +++ b/src/render/rt64_texture_cache.cpp
-@@ -22,12 +22,174 @@
+@@ -1,3 +1,4 @@
++#include "common/rt64_switch_perf.h"
+ //
+ // RT64
+ //
+@@ -22,12 +23,174 @@
  
  #define ONLY_USE_LOW_MIP_CACHE 0
  
@@ -4064,7 +4156,7 @@ diff --git a/src/render/rt64_texture_cache.cpp b/src/render/rt64_texture_cache.c
  
      ReplacementMap::ReplacementMap() {
          // Empty constructor.
-@@ -969,6 +1131,9 @@
+@@ -969,6 +1132,9 @@
          Thread::setCurrentThreadName("RT64 Texture");
  
          uploadThreadRunning = true;
@@ -4074,7 +4166,7 @@ diff --git a/src/render/rt64_texture_cache.cpp b/src/render/rt64_texture_cache.c
  
          std::vector<TextureUpload> queueCopy;
          std::vector<TextureUpload> newQueue;
-@@ -980,6 +1145,14 @@
+@@ -980,6 +1146,14 @@
          std::vector<RenderTextureBarrier> beforeDecodeBarriers;
          std::vector<RenderTextureBarrier> afterDecodeBarriers;
          std::vector<uint8_t> replacementBytes;
@@ -4089,7 +4181,7 @@ diff --git a/src/render/rt64_texture_cache.cpp b/src/render/rt64_texture_cache.c
  
          while (uploadThreadRunning) {
              resolvedPathQueueCopy.clear();
-@@ -996,7 +1169,16 @@
+@@ -996,7 +1170,16 @@
                  });
  
                  if (!uploadQueue.empty()) {
@@ -4106,7 +4198,7 @@ diff --git a/src/render/rt64_texture_cache.cpp b/src/render/rt64_texture_cache.c
                  }
  
                  if (!resolvedPathQueue.empty()) {
-@@ -1050,14 +1232,24 @@
+@@ -1050,14 +1233,24 @@
                      }
                  }
  
@@ -4132,7 +4224,7 @@ diff --git a/src/render/rt64_texture_cache.cpp b/src/render/rt64_texture_cache.c
                  textureMapAdditions.clear();
  
                  for (size_t i = 0; i < queueSize; i++) {
-@@ -1070,38 +1262,84 @@
+@@ -1070,38 +1263,87 @@
                      newTexture->format = RenderFormat::R8_UINT;
                      newTexture->width = upload.width;
                      newTexture->height = upload.height;
@@ -4187,7 +4279,10 @@ diff --git a/src/render/rt64_texture_cache.cpp b/src/render/rt64_texture_cache.c
 +                        RenderTextureDesc::Texture2D(upload.width, upload.height, 1, dstTexture->format));
 +                    dstTexture->texture->setName("Texture Cache RGBA32 CPU #" + std::to_string(SwitchTextureGlobalCounter++));
 +
-+                    const std::vector<uint8_t> decodedBytes = switchDecodeTMEM(upload);
++                    const std::vector<uint8_t> decodedBytes = [&] {
++                        RT64SwitchPerfScope profile("texture_decode");
++                        return switchDecodeTMEM(upload);
++                    }();
 +                    const uint32_t sourceRowPitch = upload.width * RenderFormatSize(dstTexture->format);
 +                    const uint32_t uploadSize = sourceRowPitch * upload.height;
 +                    if (switchDecodedUploadSizes[i] < uploadSize) {
@@ -4232,7 +4327,7 @@ diff --git a/src/render/rt64_texture_cache.cpp b/src/render/rt64_texture_cache.c
                          static uint32_t TextureGlobalCounter = 0;
                          TextureDecodeDescriptorSet *descSet = descriptorSets[i].get();
                          dstTexture->format = RenderFormat::R8G8B8A8_UNORM;
-@@ -1110,6 +1348,7 @@
+@@ -1110,6 +1352,7 @@
                          descSet->setTexture(descSet->TMEM, dstTexture->tmem.get(), RenderTextureLayout::SHADER_READ);
                          descSet->setTexture(descSet->RGBA32, dstTexture->texture.get(), RenderTextureLayout::GENERAL);
                          beforeDecodeBarriers.emplace_back(dstTexture->texture.get(), RenderTextureLayout::GENERAL);
@@ -4240,7 +4335,7 @@ diff --git a/src/render/rt64_texture_cache.cpp b/src/render/rt64_texture_cache.c
                      }
  
                      addResolvedPaths(upload.hash, upload.width, upload.height, upload.tlut, upload.loadTile, upload.bytesTMEM, upload.decodeTMEM, resolvedPathQueueCopy);
-@@ -1161,7 +1400,7 @@
+@@ -1161,7 +1404,7 @@
                          // Load the texture directly on this thread (operation was defined as Stall).
                          else if (textureMap.replacementMap.fileSystems[resolvedPath.fileSystemIndex]->load(resolvedPath.relativePath, replacementBytes)) {
                              replacementUploadResources.emplace_back();
@@ -4249,7 +4344,7 @@ diff --git a/src/render/rt64_texture_cache.cpp b/src/render/rt64_texture_cache.c
                              textureMapMutex.lock();
                              textureMap.replacementMap.addLoadedTexture(replacementTexture, resolvedPath.fileSystemIndex, resolvedPath.relativePath, true);
                              textureMapMutex.unlock();
-@@ -1177,6 +1416,7 @@
+@@ -1177,6 +1420,7 @@
                  }
                  
                  // Execute the copy worker and signal a semaphore so it synchronizes with the direct worker afterwards.
@@ -4257,7 +4352,7 @@ diff --git a/src/render/rt64_texture_cache.cpp b/src/render/rt64_texture_cache.c
                  const RenderCommandList *copyCommandList = copyWorker->commandList.get();
                  RenderCommandSemaphore *syncSemaphore = copyToDirectSemaphore.get();
                  copyWorker->commandList->end();
-@@ -1184,8 +1424,10 @@
+@@ -1184,8 +1428,10 @@
                  
                  // Decode all textures using the direct worker and transition all textures to their final layouts.
                  directWorker->commandList->begin();
@@ -4268,7 +4363,7 @@ diff --git a/src/render/rt64_texture_cache.cpp b/src/render/rt64_texture_cache.c
                  const ShaderRecord &textureDecode = shaderLibrary->textureDecode;
                  bool pipelineSet = false;
                  for (size_t i = 0; i < queueSize; i++) {
-@@ -1217,20 +1459,112 @@
+@@ -1217,20 +1463,134 @@
                          afterDecodeBarriers.emplace_back(RenderTextureBarrier(textureMapAdditions[i].texture->texture.get(), RenderTextureLayout::SHADER_READ));
                      }
                  }
@@ -4328,6 +4423,7 @@ diff --git a/src/render/rt64_texture_cache.cpp b/src/render/rt64_texture_cache.c
                  const RenderCommandList *directCommandList = directWorker->commandList.get();
                  directWorker->commandList->end();
 +#if defined(__SWITCH__)
++                RT64SwitchPerfScope uploadProfile("texture_upload");
 +                char switchUploadContext[256]{};
 +                bool switchDirectWaitComplete = false;
 +                if (switchDecodedCommandIndices.empty()) {
@@ -4338,12 +4434,33 @@ diff --git a/src/render/rt64_texture_cache.cpp b/src/render/rt64_texture_cache.c
 +                }
 +                else {
 +                    const size_t decodedCount = switchDecodedCommandIndices.size();
++                    const char* batching = std::getenv("SK2_SWITCH_BATCH_UPLOADS");
++                    const bool batchUploads = !batching || *batching != '0';
 +                    plume_switch_set_submit_context("Texture Cache pre-copy transitions");
 +                    directWorker->commandQueue->executeCommandLists(
 +                        directCommandList, directWorker->commandFence.get());
 +                    directWorker->wait();
 +
-+                    for (size_t decodedIndex = 0; decodedIndex < decodedCount; decodedIndex++) {
++                    if (batchUploads) {
++                        // Separate command buffers retain each image's state. Bound
++                        // each submit and fence staging before any image consumes it.
++                        constexpr size_t BatchSize = 8;
++                        const RenderCommandList* lists[BatchSize];
++                        for (size_t first = 0; first < decodedCount; first += BatchSize) {
++                            const uint32_t count = uint32_t(std::min(BatchSize, decodedCount - first));
++                            for (uint32_t j = 0; j < count; j++) lists[j] = switchDecodedStageCommandLists[first + j].get();
++                            plume_switch_set_submit_context("Texture Cache batched staging copies");
++                            directWorker->commandQueue->executeCommandLists(lists, count, nullptr, 0, nullptr, 0,
++                                directWorker->commandFence.get());
++                            directWorker->wait();
++                            for (uint32_t j = 0; j < count; j++) lists[j] = switchDecodedCommandLists[first + j].get();
++                            plume_switch_set_submit_context("Texture Cache batched image copies");
++                            directWorker->commandQueue->executeCommandLists(lists, count, nullptr, 0, nullptr, 0,
++                                directWorker->commandFence.get());
++                            directWorker->wait();
++                        }
++                    }
++                    else for (size_t decodedIndex = 0; decodedIndex < decodedCount; decodedIndex++) {
 +                        const RenderCommandList *stageCommandList = switchDecodedStageCommandLists[decodedIndex].get();
 +                        const RenderCommandList *commandList = switchDecodedCommandLists[decodedIndex].get();
 +                        const TextureUpload &upload = queueCopy[switchDecodedCommandIndices[decodedIndex]];

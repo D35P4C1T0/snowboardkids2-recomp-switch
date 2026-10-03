@@ -174,13 +174,27 @@ diff --git a/ultramodern/src/error_handling.cpp b/ultramodern/src/error_handling
 diff --git a/ultramodern/src/events.cpp b/ultramodern/src/events.cpp
 --- a/ultramodern/src/events.cpp
 +++ b/ultramodern/src/events.cpp
-@@ -17,6 +17,13 @@
+@@ -8,6 +8,7 @@
+ #include <mutex>
+ #include <queue>
+ #include <cstring>
++#include <cstdlib>
+ 
+ #include "blockingconcurrentqueue.h"
+ 
+@@ -17,6 +18,19 @@
  
  #include "ultramodern/rsp.hpp"
  #include "ultramodern/renderer_context.hpp"
 +
 +#if defined(__SWITCH__)
 +void switch_log_checkpoint(const char*, bool);
++extern "C" void switch_perf_record(const char*, uint64_t, uint64_t) __attribute__((weak));
++static bool switch_profile_active() {
++    static const bool active = [] { const char* value = std::getenv("SK2_SWITCH_PROFILE");
++        return !value || *value != '0'; }();
++    return active && switch_perf_record;
++}
 +#define ULTRAMODERN_SWITCH_CHECKPOINT(message) ::switch_log_checkpoint(message, false)
 +#else
 +#define ULTRAMODERN_SWITCH_CHECKPOINT(message) ((void)0)
@@ -188,7 +202,7 @@ diff --git a/ultramodern/src/events.cpp b/ultramodern/src/events.cpp
  
  static ultramodern::events::callbacks_t events_callbacks{};
  
-@@ -180,6 +187,7 @@
+@@ -180,6 +194,7 @@
  void set_dummy_vi(bool odd);
  
  void vi_thread_func() {
@@ -196,25 +210,36 @@ diff --git a/ultramodern/src/events.cpp b/ultramodern/src/events.cpp
      ultramodern::set_native_thread_name("VI Thread");
      // This thread should be prioritized over every other thread in the application, as it's what allows
      // the game to generate new audio and gfx lists.
-@@ -188,6 +196,7 @@
+@@ -188,6 +203,10 @@
  
      int remaining_retraces = 1;
  
++#if defined(__SWITCH__)
++    auto previous_vi = std::chrono::steady_clock::now();
++#endif
 +    bool first_vi = true;
      while (!exited) {
          // Determine the next VI time (more accurate than adding 16ms each VI interrupt)
          auto next = ultramodern::get_start() + (total_vis * 1000000us) / (60 * ultramodern::get_speed_multiplier());
-@@ -204,7 +213,9 @@
+@@ -204,7 +223,17 @@
              // printf("Skipping the next VI wait\n");
              next = std::chrono::high_resolution_clock::now();
          }
 +        if (first_vi) ULTRAMODERN_SWITCH_CHECKPOINT("runtime: first VI sleep entered");
          ultramodern::sleep_until(next);
 +        if (first_vi) ULTRAMODERN_SWITCH_CHECKPOINT("runtime: first VI sleep returned");
++#if defined(__SWITCH__)
++        if (switch_profile_active()) {
++            const auto completed = std::chrono::steady_clock::now();
++            if (!first_vi) switch_perf_record("vi_interval", std::chrono::duration_cast<std::chrono::nanoseconds>(
++                completed - previous_vi).count(), total_vis);
++            previous_vi = completed;
++        }
++#endif
          auto time_now = ultramodern::time_since_start();
          // Calculate how many VIs have passed
          uint64_t new_total_vis = (time_now * (60 * ultramodern::get_speed_multiplier()) / 1000ms) + 1;
-@@ -215,19 +226,24 @@
+@@ -215,19 +244,24 @@
  
          // If the game hasn't started yet, set a dummy VI mode and origin.
          if (!ultramodern::is_game_started()) {
@@ -239,7 +264,7 @@ diff --git a/ultramodern/src/events.cpp b/ultramodern/src/events.cpp
  
          // If the game has started, handle sending VI and AI events.
          if (ultramodern::is_game_started()) {
-@@ -250,8 +266,11 @@
+@@ -250,8 +284,11 @@
          }
  
          if (events_callbacks.vi_callback != nullptr) {
@@ -252,7 +277,7 @@ diff --git a/ultramodern/src/events.cpp b/ultramodern/src/events.cpp
      }
  }
  
-@@ -268,11 +287,13 @@
+@@ -268,11 +305,13 @@
  }
  
  void task_thread_func(uint8_t* rdram, moodycamel::LightweightSemaphore* thread_ready) {
@@ -266,7 +291,27 @@ diff --git a/ultramodern/src/events.cpp b/ultramodern/src/events.cpp
  
      while (true) {
          // Wait until an RSP task has been sent
-@@ -326,6 +347,7 @@
+@@ -283,11 +322,19 @@
+             return;
+         }
+ 
++#if defined(__SWITCH__)
++        const bool profile_task = switch_profile_active();
++        const auto task_start = profile_task ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
++#endif
+         if (!ultramodern::rsp::run_task(PASS_RDRAM task)) {
+             fprintf(stderr, "Failed to execute task type: %" PRIu32 "\n", task->t.type);
+             ULTRAMODERN_QUICK_EXIT();
+         }
+ 
++#if defined(__SWITCH__)
++        if (profile_task) switch_perf_record(task->t.type == M_AUDTASK ? "audio_rsp" : "other_rsp",
++            std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - task_start).count(), 0);
++#endif
+         // Tell the game that the RSP has completed
+         sp_complete();
+     }
+@@ -326,6 +373,7 @@
  std::atomic<ultramodern::renderer::GraphicsApi> renderer_chosen_api = ultramodern::renderer::GraphicsApi::Auto;
  
  void gfx_thread_func(uint8_t* rdram, moodycamel::LightweightSemaphore* thread_ready, ultramodern::renderer::WindowHandle window_handle) {
@@ -274,7 +319,7 @@ diff --git a/ultramodern/src/events.cpp b/ultramodern/src/events.cpp
      bool enabled_instant_present = false;
      using namespace std::chrono_literals;
  
-@@ -335,28 +357,36 @@
+@@ -335,28 +383,36 @@
      auto old_config = ultramodern::renderer::get_graphics_config();
  
      auto renderer_context = ultramodern::renderer::create_render_context(rdram, window_handle, ultramodern::renderer::get_graphics_config().developer_mode);
@@ -312,7 +357,18 @@ diff --git a/ultramodern/src/events.cpp b/ultramodern/src/events.cpp
              // Determine the action type and act on it
              if (const auto* task_action = std::get_if<SpTaskAction>(&action)) {
                  // Tell the game that the RSP completed instantly. This will allow it to queue other task types, but it won't
-@@ -380,10 +410,14 @@
+@@ -373,6 +429,10 @@
+                 renderer_context->send_dl(&task_action->task);
+                 [[maybe_unused]] auto renderer_end = std::chrono::high_resolution_clock::now();
+ 
++#if defined(__SWITCH__)
++                if (switch_profile_active()) switch_perf_record("display_list",
++                    std::chrono::duration_cast<std::chrono::nanoseconds>(renderer_end - renderer_start).count(), displaylist);
++#endif
+                 dp_complete();
+                 // TODO hook the parsed event up to the actual parsing point when a callback is added to RT64.
+                 ultramodern::extensions::on_displaylist_parsed(displaylist);
+@@ -380,10 +440,14 @@
                  // printf("Renderer ProcessDList time: %d us\n", static_cast<u32>(std::chrono::duration_cast<std::chrono::microseconds>(renderer_end - renderer_start).count()));
              }
              else if (const auto* screen_update_action = std::get_if<ScreenUpdateAction>(&action)) {
@@ -327,20 +383,19 @@ diff --git a/ultramodern/src/events.cpp b/ultramodern/src/events.cpp
              }
              else if (const auto* config_action = std::get_if<UpdateConfigAction>(&action)) {
                  (void)config_action;
-@@ -393,8 +427,11 @@
+@@ -393,8 +457,11 @@
                  }
              }
              else if (const auto* dummy_workload_action = std::get_if<DummyWorkloadAction>(&action)) {
 +                if (first_action) ULTRAMODERN_SWITCH_CHECKPOINT("runtime: first gfx action is dummy workload");
                  renderer_context->send_dummy_workload(dummy_workload_action->fb_address);
--            }
 +                if (first_action) ULTRAMODERN_SWITCH_CHECKPOINT("runtime: first dummy workload returned");
-+            }
+             }
 +            first_action = false;
          }
      }
  
-@@ -575,16 +612,21 @@
+@@ -575,16 +642,21 @@
  }
  
  void ultramodern::init_events(RDRAM_ARG ultramodern::renderer::WindowHandle window_handle) {
@@ -362,7 +417,7 @@ diff --git a/ultramodern/src/events.cpp b/ultramodern/src/events.cpp
  
      ultramodern::renderer::SetupResult setup_result = renderer_setup_result.load();
      if (setup_result != ultramodern::renderer::SetupResult::Success) {
-@@ -615,6 +657,7 @@
+@@ -615,6 +687,7 @@
      }
  
      events_context.vi.thread = std::thread{ vi_thread_func };

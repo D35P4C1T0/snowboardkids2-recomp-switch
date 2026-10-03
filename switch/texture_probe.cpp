@@ -14,6 +14,98 @@ void switch_log_checkpoint(const char*, bool);
 namespace {
 using namespace plume;
 
+bool test_batch(RenderDevice* device, uint32_t count) {
+    struct Item {
+        std::unique_ptr<RenderBuffer> upload, stage, readback;
+        std::unique_ptr<RenderTexture> texture;
+        std::unique_ptr<RenderCommandList> staging_list, image_list, readback_list;
+        std::vector<uint8_t> expected;
+        uint32_t width = 0, height = 0, pitch = 0;
+    };
+    auto queue = device->createCommandQueue(RenderCommandListType::DIRECT);
+    auto fence = device->createCommandFence();
+    if (!queue || !fence) return false;
+    std::vector<Item> items(count);
+    std::vector<const RenderCommandList*> lists(count);
+    for (uint32_t i = 0; i < count; i++) {
+        auto& item = items[i];
+        item.width = i % 2 ? 285 : 16;
+        item.height = i % 2 ? 52 : 8;
+        item.pitch = (item.width * 4 + 255) & ~255U;
+        const uint32_t bytes = item.pitch * item.height;
+        item.expected.resize(bytes);
+        for (uint32_t j = 0; j < bytes; j++) item.expected[j] = uint8_t(j * 17 + i * 73);
+        item.upload = device->createBuffer(RenderBufferDesc::UploadBuffer(bytes));
+        item.stage = device->createBuffer(RenderBufferDesc::DefaultBuffer(bytes));
+        item.readback = device->createBuffer(RenderBufferDesc::ReadbackBuffer(bytes));
+        item.texture = device->createTexture(RenderTextureDesc::Texture2D(item.width, item.height, 1,
+            RenderFormat::R8G8B8A8_UNORM));
+        item.staging_list = queue->createCommandList();
+        item.image_list = queue->createCommandList();
+        item.readback_list = queue->createCommandList();
+        if (!item.upload || !item.stage || !item.readback || !item.texture || !item.staging_list ||
+            !item.image_list || !item.readback_list) return false;
+        auto* data = item.upload->map();
+        if (!data) return false;
+        std::memcpy(data, item.expected.data(), bytes);
+        item.upload->unmap();
+        data = item.readback->map();
+        if (!data) return false;
+        std::memset(data, 0xA5, bytes);
+        armDCacheFlush(data, bytes);
+        item.readback->unmap();
+        auto* list = item.staging_list.get();
+        list->begin();
+        list->barriers(RenderBarrierStage::COPY, RenderBufferBarrier(item.stage.get(), RenderBufferAccess::WRITE));
+        list->copyBufferRegion(item.stage.get(), item.upload.get(), bytes);
+        list->barriers(RenderBarrierStage::COPY, RenderBufferBarrier(item.stage.get(), RenderBufferAccess::READ));
+        list->end();
+        list = item.image_list.get();
+        list->begin();
+        list->barriers(RenderBarrierStage::COPY, RenderTextureBarrier(item.texture.get(), RenderTextureLayout::COPY_DEST));
+        list->copyTextureRegion(RenderTextureCopyLocation::Subresource(item.texture.get()),
+            RenderTextureCopyLocation::PlacedFootprint(item.stage.get(), RenderFormat::R8G8B8A8_UNORM,
+                item.width, item.height, 1, item.pitch / 4));
+        list->barriers(RenderBarrierStage::GRAPHICS, RenderTextureBarrier(item.texture.get(), RenderTextureLayout::SHADER_READ));
+        list->end();
+        list = item.readback_list.get();
+        list->begin();
+        list->barriers(RenderBarrierStage::COPY, RenderBufferBarrier(item.readback.get(), RenderBufferAccess::WRITE),
+            RenderTextureBarrier(item.texture.get(), RenderTextureLayout::COPY_SOURCE));
+        list->copyTextureRegion(RenderTextureCopyLocation::PlacedFootprint(item.readback.get(), RenderFormat::R8G8B8A8_UNORM,
+                item.width, item.height, 1, item.pitch / 4), RenderTextureCopyLocation::Subresource(item.texture.get()));
+        list->barriers(RenderBarrierStage::COPY, RenderBufferBarrier(item.readback.get(), RenderBufferAccess::READ));
+        list->end();
+    }
+    for (int phase = 0; phase < 3; phase++) {
+        for (uint32_t i = 0; i < count; i++) lists[i] = phase == 0 ? items[i].staging_list.get()
+            : phase == 1 ? items[i].image_list.get() : items[i].readback_list.get();
+        char message[128];
+        std::snprintf(message, sizeof(message), "batch probe: submitting phase=%d count=%u", phase, count);
+        switch_log_checkpoint(message, false);
+        queue->executeCommandLists(lists.data(), count, nullptr, 0, nullptr, 0, fence.get());
+        queue->waitForCommandFence(fence.get());
+    }
+    bool passed = true;
+    for (uint32_t i = 0; i < count; i++) {
+        auto& item = items[i];
+        const RenderRange range(0, uint32_t(item.expected.size()));
+        const auto* data = static_cast<uint8_t*>(item.readback->map(0, &range));
+        if (!data) return false;
+        armDCacheFlush(const_cast<uint8_t*>(data), item.expected.size());
+        bool exact = true;
+        for (uint32_t y = 0; y < item.height; y++)
+            exact &= std::memcmp(data + y * item.pitch, item.expected.data() + y * item.pitch, item.width * 4) == 0;
+        char message[128];
+        std::snprintf(message, sizeof(message), "batch probe: count=%u image=%u %s", count, i, exact ? "PASS" : "FAIL");
+        switch_log_checkpoint(message, false);
+        const RenderRange no_writes(0, 0);
+        item.readback->unmap(0, &no_writes);
+        passed &= exact;
+    }
+    return passed;
+}
+
 bool test_sampling(RenderDevice* device, uint32_t width, uint32_t height) {
     const auto format = RenderFormat::R8G8B8A8_UNORM;
     const uint32_t row_pitch = (width * 4 + 255U) & ~255U;
@@ -277,5 +369,8 @@ bool switch_run_texture_probe(plume::RenderDevice* device, bool include_inline) 
         sampling_passed = test_sampling(device, dimensions.first, dimensions.second) && sampling_passed;
     }
     switch_log_checkpoint(sampling_passed ? "sampling probe: ALL PASS" : "sampling probe: FAILED", false);
-    return passed && sampling_passed;
+    bool batch_passed = true;
+    for (uint32_t count : {1U, 2U, 8U}) batch_passed = test_batch(device, count) && batch_passed;
+    switch_log_checkpoint(batch_passed ? "batch probe: ALL PASS" : "batch probe: FAILED", false);
+    return passed && sampling_passed && batch_passed;
 }
