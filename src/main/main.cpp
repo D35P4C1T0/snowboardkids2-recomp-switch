@@ -117,7 +117,7 @@ extern "C" void switch_fps_presented() {
 extern "C" void switch_perf_record(const char* stage, uint64_t elapsed_ns, uint64_t id) {
     if (!switch_profile_enabled) return;
     struct Entry { const char* name = nullptr; sk2::perf::Histogram stats; uint64_t id = 0; };
-    static std::array<Entry, 32> entries;
+    static std::array<Entry, 48> entries;
     static std::mutex mutex;
     static auto last_report = std::chrono::steady_clock::now();
     std::lock_guard lock(mutex);
@@ -1214,6 +1214,8 @@ int main(int argc, char** argv) {
             SDL_setenv("SK2_SWITCH_BATCH_UPLOADS", "0", 1);
         if (std::strcmp(argv[i], "--async-submissions") == 0)
             SDL_setenv("NVK_SWITCH_ASYNC", "1", 1);
+        if (std::strcmp(argv[i], "--batch-framebuffer-copyback") == 0)
+            SDL_setenv("SK2_SWITCH_BATCH_FRAMEBUFFER_COPYBACK", "1", 1);
         if (std::strcmp(argv[i], "--legacy-audio-backend") == 0)
             SDL_setenv("SK2_SWITCH_LEGACY_AUDIO", "1", 1);
     }
@@ -1257,6 +1259,10 @@ int main(int argc, char** argv) {
     switch_log_checkpoint(!cached_readbacks || *cached_readbacks != '0'
         ? "startup: cached CPU framebuffer readback selected"
         : "startup: direct CPU framebuffer readback selected");
+    const char* batched_copyback = SDL_getenv("SK2_SWITCH_BATCH_FRAMEBUFFER_COPYBACK");
+    switch_log_checkpoint(batched_copyback && *batched_copyback == '1'
+        ? "startup: combined depth-active draw/color copyback selected"
+        : "startup: isolated depth-active draw/color copyback selected");
     g_drm_shim_log_sink = switch_driver_log_sink;
 
     // NVK does not advertise the non-conformant GM20B device unless the

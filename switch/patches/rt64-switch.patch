@@ -606,7 +606,12 @@ diff --git a/src/hle/rt64_application_window.cpp b/src/hle/rt64_application_wind
 diff --git a/src/hle/rt64_framebuffer.cpp b/src/hle/rt64_framebuffer.cpp
 --- a/src/hle/rt64_framebuffer.cpp
 +++ b/src/hle/rt64_framebuffer.cpp
-@@ -174,6 +174,54 @@
+@@ -1,3 +1,4 @@
++#include "common/rt64_switch_perf.h"
+ //
+ // RT64
+ //
+@@ -174,6 +175,55 @@
  #   endif
      }
  
@@ -621,6 +626,7 @@ diff --git a/src/hle/rt64_framebuffer.cpp b/src/hle/rt64_framebuffer.cpp
 +    }
 +
 +    void Framebuffer::copyNativeToRAMCPU(uint8_t *dst, uint32_t dstRowWidth, uint32_t dstRowStart, uint32_t dstRowEnd) {
++        RT64SwitchPerfScope profile("framebuffer_ram_commit");
 +        assert(dst != nullptr);
 +        assert(dstRowStart < height);
 +        assert(dstRowEnd <= height);
@@ -661,7 +667,7 @@ diff --git a/src/hle/rt64_framebuffer.cpp b/src/hle/rt64_framebuffer.cpp
      void Framebuffer::clearChanged() {
          widthChanged = false;
          sizChanged = false;
-@@ -199,4 +247,4 @@
+@@ -199,4 +249,4 @@
      uint64_t FramebufferTile::hash() const {
          return XXH3_64bits(this, sizeof(FramebufferTile));
      }
@@ -1483,7 +1489,15 @@ diff --git a/src/hle/rt64_state.cpp b/src/hle/rt64_state.cpp
                  framebufferManager.uploadRAM(ext.framebufferGraphicsWorker, differentFbs.data(), differentFbs.size(), workload.fbChangePool, RDRAM, true, drawFbOperations, drawFbDiscards, ext.shaderLibrary);
              }
  
-@@ -763,12 +794,20 @@
+@@ -615,6 +646,7 @@
+     }
+ 
+     void State::fullSyncFramebufferPairTiles(Workload &workload, FramebufferPair &fbPair, uint32_t &loadOpCursor, uint32_t &rdpTileCursor) {
++        RT64SwitchPerfScope tileProfile("framebuffer_tiles", workload.submissionFrame);
+         auto loadOperation = [&](uint32_t loadOpIndex) {
+             const auto &loadOp = workload.drawData.loadOperations[loadOpIndex];
+ 
+@@ -763,12 +795,20 @@
      }
  
      void State::fullSync() {
@@ -1504,7 +1518,7 @@ diff --git a/src/hle/rt64_state.cpp b/src/hle/rt64_state.cpp
          if (hasFramebufferOperationsPending()) {
              // If no framebuffer pair is present to do this, we make a placeholder one with the current images.
              if (workload.fbPairCount == 0) {
-@@ -782,6 +821,7 @@
+@@ -782,6 +822,7 @@
          // Copy the current state's extended parameters into the workload.
          workload.extended.ditherNoiseStrength = extended.ditherNoiseStrength;
          workload.extended.texcoordWrapPoint = extended.texcoordWrapPoint;
@@ -1512,7 +1526,7 @@ diff --git a/src/hle/rt64_state.cpp b/src/hle/rt64_state.cpp
  
          auto emitTileWarning = [&](CommandWarning warning, size_t tileIndex) {
              warning.indexType = CommandWarning::IndexType::TileIndex;
-@@ -911,6 +951,7 @@
+@@ -911,6 +952,7 @@
                      "due to using a big mask or big clamp coordinates. Unable to provide a fast path for texture sampling.", t), t);
              }
          }
@@ -1520,7 +1534,7 @@ diff --git a/src/hle/rt64_state.cpp b/src/hle/rt64_state.cpp
  
          // Fill out all the rendering data for the framebuffer pairs that will be uploaded.
          const UserConfiguration::Upscale2D upscale2D = ext.userConfig->upscale2D;
-@@ -1092,20 +1133,25 @@
+@@ -1092,20 +1134,25 @@
                  }
              }
          }
@@ -1546,7 +1560,7 @@ diff --git a/src/hle/rt64_state.cpp b/src/hle/rt64_state.cpp
  
          if (renderToRDRAM) {
              // Run RSP processor.
-@@ -1124,10 +1170,12 @@
+@@ -1124,10 +1171,12 @@
          uint32_t rdpTileCursor = uint32_t(workload.drawRanges.rdpTiles.first);
          uint32_t gpuTileCursor = rdpTileCursor;
          workload.nextDrawDataRanges();
@@ -1559,7 +1573,7 @@ diff --git a/src/hle/rt64_state.cpp b/src/hle/rt64_state.cpp
  
          if (renderToRDRAM) {
              const hlslpp::float2 resolutionScale(1.0f, 1.0f);
-@@ -1172,7 +1220,6 @@
+@@ -1172,7 +1221,6 @@
                          depthRowStart = fbPair.drawDepthRect.top(false);
                          depthRowEnd = fbPair.drawDepthRect.bottom(true);
                      }
@@ -1567,7 +1581,15 @@ diff --git a/src/hle/rt64_state.cpp b/src/hle/rt64_state.cpp
                      return true;
                  }
                  else {
-@@ -1218,6 +1265,8 @@
+@@ -1209,6 +1257,7 @@
+ 
+             uint32_t framebufferIndex = 0;
+             auto renderSetup = [&]() {
++                RT64SwitchPerfScope setupProfile("framebuffer_setup", workload.submissionFrame);
+                 scratchFbChangePool.reset();
+                 ext.framebufferGraphicsWorker->commandList->begin();
+                 framebufferManager.resetOperations();
+@@ -1218,6 +1267,8 @@
  
              thread_local std::unordered_set<RenderTarget *> resizedTargets;
              thread_local std::vector<std::pair<RenderTarget *, RenderTarget *>> colorDepthPairs;
@@ -1576,7 +1598,7 @@ diff --git a/src/hle/rt64_state.cpp b/src/hle/rt64_state.cpp
              uint32_t framebufferPairCursor = 0;
              bool firstSynchronizationPerformed = false;
              auto checkRenderTargetSafety = [&](bool checkPairs) {
-@@ -1236,107 +1285,127 @@
+@@ -1236,107 +1287,128 @@
                  resizedTargets.clear();
              };
  
@@ -1686,6 +1708,7 @@ diff --git a/src/hle/rt64_state.cpp b/src/hle/rt64_state.cpp
 +                if (!switchCopybackOnly)
 +#endif
 +                {
++                    RT64SwitchPerfScope prepareProfile("framebuffer_prepare", workload.submissionFrame);
 +                    // Add all framebuffers for rendering.
 +                    pairCursor = framebufferPairCursor;
 +                    while (pairCursor < maxFramebufferPair) {
@@ -1785,7 +1808,7 @@ diff --git a/src/hle/rt64_state.cpp b/src/hle/rt64_state.cpp
                              RenderTargetKey otherColorTargetKey(colorFb->addressStart, colorFb->width, colorFb->siz, colorFb->lastWriteType);
                              RenderTarget &otherColorTarget = renderTargetManager.get(otherColorTargetKey);
                              if (!otherColorTarget.isEmpty()) {
-@@ -1348,12 +1417,12 @@
+@@ -1348,12 +1420,12 @@
                          }
  
                          // Determine if it needs to read the entire target from RAM or just a portion of it.
@@ -1800,7 +1823,7 @@ diff --git a/src/hle/rt64_state.cpp b/src/hle/rt64_state.cpp
                              uint32_t readRowBytes = colorFb->imageRowBytes(colorImg.width);
                              uint32_t readRowCount = colorFb->height - colorFb->readHeight;
                              uint32_t readFbBytes = readRowBytes * readRowCount;
-@@ -1376,11 +1445,11 @@
+@@ -1376,11 +1448,11 @@
                          if (depthFb != nullptr) {
                              depthFbTypeChanged = (depthFb->lastWriteType == Framebuffer::Type::Color);
  
@@ -1814,7 +1837,7 @@ diff --git a/src/hle/rt64_state.cpp b/src/hle/rt64_state.cpp
                                  RenderTargetKey otherDepthTargetKey(depthFb->addressStart, depthFb->width, depthFb->siz, depthFb->lastWriteType);
                                  RenderTarget &otherDepthTarget = renderTargetManager.get(otherDepthTargetKey);
                                  if (!otherDepthTarget.isEmpty()) {
-@@ -1392,12 +1461,12 @@
+@@ -1392,12 +1464,12 @@
                              }
  
                              // Determine if it needs to read the entire target from RAM or just a portion of it.
@@ -1829,7 +1852,7 @@ diff --git a/src/hle/rt64_state.cpp b/src/hle/rt64_state.cpp
                                  uint32_t readRowBytes = depthFb->imageRowBytes(colorImg.width);
                                  uint32_t readRowCount = depthFb->height - depthFb->readHeight;
                                  uint32_t readFbBytes = readRowBytes * readRowCount;
-@@ -1409,57 +1478,306 @@
+@@ -1409,57 +1481,311 @@
                                  if (depthFbChange != nullptr) {
                                      depthTarget->copyFromChanges(ext.framebufferGraphicsWorker, *depthFbChange, depthFb->width, readRowCount, depthFb->readHeight, ext.shaderLibrary);
                                      depthFbChanged = true;
@@ -2024,6 +2047,11 @@ diff --git a/src/hle/rt64_state.cpp b/src/hle/rt64_state.cpp
 +                auto submitSwitchFramebuffer = [&](const char *switchSubmitPhase, uint32_t startOperationCount, uint32_t endOperationCount) {
 +                    RT64SwitchPerfScope framebufferProfile(std::strstr(switchSubmitPhase, "copyback")
 +                        ? "framebuffer_copyback" : "framebuffer_draw", workload.submissionFrame);
++                    RT64SwitchPerfScope phaseProfile(
++                        std::strcmp(switchSubmitPhase, "depth copyback") == 0 ? "framebuffer_depth_copyback" :
++                        std::strcmp(switchSubmitPhase, "color copyback") == 0 ? "framebuffer_color_copyback" :
++                        std::strcmp(switchSubmitPhase, "draw+color copyback") == 0 ? "framebuffer_draw_color" :
++                        "framebuffer_draw_only", workload.submissionFrame);
 +                    const DrawCall *switchFirstDraw = (switchFirstSliceCall != nullptr)
 +                        ? &switchFirstSliceCall->callDesc
 +                        : nullptr;
@@ -2173,11 +2201,17 @@ diff --git a/src/hle/rt64_state.cpp b/src/hle/rt64_state.cpp
              };
  
              // Before performing any rendering, render targets must be resized to their maximum possible size during the workload.
-@@ -1515,6 +1833,53 @@
+@@ -1515,6 +1841,59 @@
              renderSetup();
  
              // Start loading tiles, sampling tiles and drawing the framebuffer pairs as required.
 +#if defined(__SWITCH__)
++            // Opt-in until the combined command list passes real-hardware checks.
++            // Completion still precedes CPU readback and command-list reuse.
++            static const bool switchBatchFramebufferCopyback = [] {
++                const char *setting = std::getenv("SK2_SWITCH_BATCH_FRAMEBUFFER_COPYBACK");
++                return setting && *setting == '1';
++            }();
 +            thread_local std::vector<const GameCall *> switchPairCalls;
 +            for (uint32_t f = 0; f < workload.fbPairCount; f++) {
 +                FramebufferPair &fbPair = workload.fbPairs[f];
@@ -2198,20 +2232,20 @@ diff --git a/src/hle/rt64_state.cpp b/src/hle/rt64_state.cpp
 +                // Keep the framebuffer draw intact. Slicing the draw list reset
 +                // RT64's per-framebuffer scene state, produced visible bands,
 +                // and repeatedly wedged the same continuation range. The
-+                // crash-sensitive depth path keeps draw, color, and depth
-+                // isolated so a fence failure identifies the failing phase.
++                // depth conversion remains isolated from color readback. The
++                // opt-in combined path appends color readback to the intact draw,
++                // without resetting scratch state or reusing in-flight resources.
 +                const uint32_t pairCallCount = uint32_t(switchPairCalls.size());
 +                const bool switchDepthActive = fbPair.depthRead || fbPair.depthWrite;
-+                if (switchDepthActive) {
++                if (switchDepthActive && !switchBatchFramebufferCopyback) {
 +                    renderAndSynchronize(f + 1, 0, pairCallCount, true, false);
 +                    renderSetup();
 +                    renderAndSynchronize(f + 1, pairCallCount, pairCallCount, false, true);
 +                }
 +                else {
-+                    // Cheap color-only pairs were flooding NVK with two tiny
-+                    // synchronous submissions. Keep their draw intact and
-+                    // append color copyback to that submission. Depth-active
-+                    // pairs retain fully isolated draw/color/depth work.
++                    // Append color copyback before the draw's completion fence.
++                    // Depth conversion/readback uses its separate command list
++                    // and completion fence inside renderAndSynchronize.
 +                    renderAndSynchronize(f + 1, 0, pairCallCount, true, true);
 +                }
 +
@@ -2227,7 +2261,7 @@ diff --git a/src/hle/rt64_state.cpp b/src/hle/rt64_state.cpp
              for (uint32_t f = 0; f < workload.fbPairCount; f++) {
                  FramebufferPair &fbPair = workload.fbPairs[f];
                  const bool gpuCopiesEnabled = ext.emulatorConfig->framebuffer.copyWithGPU;
-@@ -1535,6 +1900,7 @@
+@@ -1535,6 +1914,7 @@
  
              // Render any remaining batches of framebuffers.
              renderAndSynchronize(workload.fbPairCount);
@@ -2235,7 +2269,7 @@ diff --git a/src/hle/rt64_state.cpp b/src/hle/rt64_state.cpp
          }
          else {
              // Process all tiles.
-@@ -1553,7 +1919,16 @@
+@@ -1553,7 +1933,16 @@
              ext.framebufferGraphicsWorker->commandList->end();
              ext.drawDataUploader->wait();
              ext.transformsUploader->wait();
@@ -2252,7 +2286,7 @@ diff --git a/src/hle/rt64_state.cpp b/src/hle/rt64_state.cpp
              ext.framebufferGraphicsWorker->wait();
              ext.textureCache->waitForGPUUploads();
          }
-@@ -1748,8 +2123,11 @@
+@@ -1748,8 +2137,11 @@
          }
          
          // Advance the workload queue at the end of a full synchronization.
@@ -2264,7 +2298,7 @@ diff --git a/src/hle/rt64_state.cpp b/src/hle/rt64_state.cpp
  
          // Make sure the profiler starts after the workload is advanced to ignore any waiting time.
          dlCpuProfiler.reset();
-@@ -1806,6 +2184,11 @@
+@@ -1806,6 +2198,11 @@
          // Extended GBI must be enabled again when the display list starts.
          disableExtendedGBI();
          clearExtended();
@@ -2276,7 +2310,7 @@ diff --git a/src/hle/rt64_state.cpp b/src/hle/rt64_state.cpp
      }
      
      void State::updateScreen(const VI &newVI, bool fromEarlyPresent) {
-@@ -1944,6 +2327,10 @@
+@@ -1944,6 +2341,10 @@
          renderTargetManager.destroyAll();
          renderTargetManager.setMultisampling(multisampling);
          dummyDepthTarget.reset();
@@ -2287,7 +2321,7 @@ diff --git a/src/hle/rt64_state.cpp b/src/hle/rt64_state.cpp
          framebufferRenderer->updateMultisampling();
          updateRenderFlagSampleCount();
      }
-@@ -2774,4 +3161,4 @@
+@@ -2774,4 +3175,4 @@
              break;
          }
      }
@@ -2724,7 +2758,12 @@ diff --git a/src/hle/rt64_workload_queue.h b/src/hle/rt64_workload_queue.h
 diff --git a/src/render/rt64_framebuffer_renderer.cpp b/src/render/rt64_framebuffer_renderer.cpp
 --- a/src/render/rt64_framebuffer_renderer.cpp
 +++ b/src/render/rt64_framebuffer_renderer.cpp
-@@ -312,7 +312,14 @@
+@@ -1,3 +1,4 @@
++#include "common/rt64_switch_perf.h"
+ //
+ // RT64
+ //
+@@ -312,7 +313,14 @@
          
          const bool createSet = (descTextureSet == nullptr) || (descTextureSet->textureCacheSize < (textureCacheSize + 1));
          if (createSet) {
@@ -2740,7 +2779,7 @@ diff --git a/src/render/rt64_framebuffer_renderer.cpp b/src/render/rt64_framebuf
          }
  
          if (createSet || (descriptorTextureReplacementMapEnabled != textureCacheReplacementMapEnabled)) {
-@@ -401,7 +408,11 @@
+@@ -401,7 +409,11 @@
                      descTextureSet->setTexture(i, textureCacheTextures[i]->texture.get(), RenderTextureLayout::SHADER_READ);
                  }
                  else {
@@ -2752,7 +2791,7 @@ diff --git a/src/render/rt64_framebuffer_renderer.cpp b/src/render/rt64_framebuf
                  }
              }
  
-@@ -482,7 +493,11 @@
+@@ -482,7 +494,11 @@
              worker->commandList->setGraphicsPipelineLayout(rendererPipelineLayout);
              worker->commandList->setGraphicsDescriptorSet(descCommonSet->get(), 0);
              worker->commandList->setGraphicsDescriptorSet(descTextureSet->get(), 1);
@@ -2764,7 +2803,7 @@ diff --git a/src/render/rt64_framebuffer_renderer.cpp b/src/render/rt64_framebuf
              worker->commandList->setGraphicsDescriptorSet(depthState ? descRealFbSet : descDummyFbSet, 3);
              worker->commandList->setViewports(framebuffer.viewport);
          };
-@@ -749,7 +764,11 @@
+@@ -749,7 +765,11 @@
          
          Framebuffer &framebuffer = framebufferVector[framebufferCount - 1];
          RenderDescriptorSet *descRealDepthSet = framebuffer.descRealFbSet->get();
@@ -2776,7 +2815,7 @@ diff --git a/src/render/rt64_framebuffer_renderer.cpp b/src/render/rt64_framebuf
          rtResources->updateTopLevelASResources(worker, instanceDrawCallVector, rtScene.instanceIndices);
          rtResources->createShaderBindingTable(worker, rtState, descriptorSets, uint32_t(std::size(descriptorSets)), hitGroupVector);
          rtResources->updateLightsBuffer(worker, rtScene);
-@@ -810,7 +829,11 @@
+@@ -810,7 +830,11 @@
          worker->commandList->setRaytracingPipelineLayout(rtPipelineLayout);
          worker->commandList->setRaytracingDescriptorSet(descCommonSet->get(), 0);
          worker->commandList->setRaytracingDescriptorSet(descTextureSet->get(), 1);
@@ -2788,7 +2827,7 @@ diff --git a/src/render/rt64_framebuffer_renderer.cpp b/src/render/rt64_framebuf
          worker->commandList->setRaytracingDescriptorSet(descRealFbSet, 3);
          worker->commandList->traceRays(rtResources->textureWidth, rtResources->textureHeight, 1, rtResources->shaderBindingTableBuffer->at(0), rtResources->shaderBindingTableInfo.groups);
  
-@@ -1140,7 +1163,11 @@
+@@ -1140,7 +1164,11 @@
              worker->commandList->setGraphicsPipelineLayout(debugShader.pipelineLayout.get());
              worker->commandList->setGraphicsDescriptorSet(descCommonSet->get(), 0);
              worker->commandList->setGraphicsDescriptorSet(descTextureSet->get(), 1);
@@ -2800,7 +2839,15 @@ diff --git a/src/render/rt64_framebuffer_renderer.cpp b/src/render/rt64_framebuf
              worker->commandList->setGraphicsDescriptorSet(descRealFbSet, 3);
              worker->commandList->drawInstanced(3, 1, 0, 0);
          }
-@@ -1449,6 +1476,8 @@
+@@ -1229,6 +1257,7 @@
+     }
+ 
+     void FramebufferRenderer::recordFramebuffer(RenderWorker *worker, uint32_t framebufferIndex) {
++        RT64SwitchPerfScope profile("framebuffer_record");
+         // Submit all transition barriers first.
+         thread_local std::vector<RenderTextureBarrier> startBarriers;
+         startBarriers.clear();
+@@ -1449,6 +1478,8 @@
          const float extOriginPercentage = p.extAspectPercentage;
          uint32_t vertexTestZFaceIndicesStart = 0;
          int32_t vertexTestZCallIndex = -1;
@@ -2809,7 +2856,7 @@ diff --git a/src/render/rt64_framebuffer_renderer.cpp b/src/render/rt64_framebuf
          RenderViewport viewportClip;
          for (uint32_t pr = 0; (pr < fbPair.projectionCount) && (globalCallIndex < p.maxGameCall); pr++) {
              const Projection &proj = fbPair.projections[pr];
-@@ -1508,6 +1537,55 @@
+@@ -1508,6 +1539,55 @@
  
              for (uint32_t d = 0; (d < proj.gameCallCount) && (globalCallIndex < p.maxGameCall); d++) {
                  const GameCall &call = proj.gameCalls[d];
@@ -2865,7 +2912,7 @@ diff --git a/src/render/rt64_framebuffer_renderer.cpp b/src/render/rt64_framebuf
                  renderIndices.instanceIndex = call.callDesc.callIndex;
                  renderIndices.faceIndicesStart = call.meshDesc.faceIndicesStart;
                  renderIndices.rdpTileIndex = call.callDesc.tileIndex;
-@@ -1559,10 +1637,13 @@
+@@ -1559,10 +1639,13 @@
                          instanceDrawCall.vertexTestZ.dstIndexStart = vertexTestZFaceIndicesStart;
                          instanceDrawCall.vertexTestZ.indexCount = 0;
                          vertexTestZCallIndex = int32_t(instanceDrawCallVector.size());
@@ -2879,7 +2926,7 @@ diff --git a/src/render/rt64_framebuffer_renderer.cpp b/src/render/rt64_framebuf
                          break;
                      default:
                          assert(false && "Unknown extended type.");
-@@ -1917,4 +1998,4 @@
+@@ -1917,4 +2000,4 @@
          unsigned int im3dVertexCount;
      };
  };
@@ -2929,7 +2976,7 @@ diff --git a/src/render/rt64_native_target.cpp b/src/render/rt64_native_target.c
  
  #include "rt64_native_target.h"
  
-@@ -11,6 +15,80 @@
+@@ -11,6 +15,104 @@
  
  #include "rt64_render_target.h"
  #include "rt64_render_worker.h"
@@ -2949,6 +2996,30 @@ diff --git a/src/render/rt64_native_target.cpp b/src/render/rt64_native_target.c
 +        3, 5, 2, 4,
 +        7, 1, 6, 0
 +    };
++
++    // Separate the already-encoded path so the compiler can pack fixed-width
++    // RGBA8 groups without per-pixel format/dither branches. Sixteen-pixel
++    // blocks allow vector loads/stores; the scalar tail handles narrow rows.
++#if defined(__GNUC__) && !defined(__clang__)
++    // The Switch's default -O2 cost model leaves this packing loop scalar.
++    // Limit stronger vectorization to this byte-preserving helper.
++    __attribute__((optimize("O3")))
++#endif
++    void switchPackEncodedBytes(const uint8_t *__restrict source, uint8_t *__restrict destination, uint32_t pixelCount) {
++        while (pixelCount >= 16) {
++            for (uint32_t lane = 0; lane < 16; lane++) {
++                destination[lane * 2] = source[lane * 4];
++                destination[lane * 2 + 1] = source[lane * 4 + 1];
++            }
++            source += 64;
++            destination += 32;
++            pixelCount -= 16;
++        }
++        for (uint32_t pixel = 0; pixel < pixelCount; pixel++) {
++            destination[pixel * 2] = source[pixel * 4];
++            destination[pixel * 2 + 1] = source[pixel * 4 + 1];
++        }
++    }
 +
 +    uint32_t switchInitRand(uint32_t value0, uint32_t value1) {
 +        uint32_t sum = 0;
@@ -3010,7 +3081,7 @@ diff --git a/src/render/rt64_native_target.cpp b/src/render/rt64_native_target.c
  
  namespace RT64 {
      // NativeTarget
-@@ -369,4 +447,122 @@
+@@ -369,4 +471,125 @@
          writeBuffer.nativeReadbackBuffer->unmap();
          writeBufferHistoryIndex++;
      }
@@ -3102,6 +3173,12 @@ diff --git a/src/render/rt64_native_target.cpp b/src/render/rt64_native_target.c
 +            readback = switchTextureReadbackCache.data();
 +        }
 +        uint8_t *destination = data;
++        if (switchTextureReadbackEncodedBytes) {
++            assert(sourcePixelSize == 4);
++            switchPackEncodedBytes(readback, destination, rowWidth * rowCount);
++            switchTextureReadbackBuffer->unmap();
++            return;
++        }
 +
 +        for (uint32_t y = 0; y < rowCount; y++) {
 +            const uint32_t framebufferY = rowStart + y;
@@ -3109,10 +3186,7 @@ diff --git a/src/render/rt64_native_target.cpp b/src/render/rt64_native_target.c
 +                const uint32_t pixelIndex = y * rowWidth + x;
 +                const uint8_t *sourcePixel = readback + pixelIndex * sourcePixelSize;
 +                uint16_t nativeValue = 0;
-+                if (switchTextureReadbackEncodedBytes) {
-+                    nativeValue = uint16_t(uint16_t(sourcePixel[0]) << 8U) | sourcePixel[1];
-+                }
-+                else if (switchTextureReadbackN64Format == G_IM_FMT_DEPTH) {
++                if (switchTextureReadbackN64Format == G_IM_FMT_DEPTH) {
 +                    float depth;
 +                    std::memcpy(&depth, sourcePixel, sizeof(depth));
 +                    nativeValue = switchEncodeDepth16(depth);

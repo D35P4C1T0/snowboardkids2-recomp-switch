@@ -29,6 +29,12 @@ and NetLoader. This page accompanies [the roadmap](SWITCH_PERFORMANCE_PLAN.md).
   `--direct-readbacks` for the original path. `--cache-readbacks` explicitly
   selects caching. Byte-for-byte tests cover every supported dither pattern,
   encoded depth, float depth, odd dimensions, row offsets, and buffer reuse.
+* Already-encoded RGBA8 pixels use a separate packing helper to retain their
+  first two bytes. The Switch compiler vectorizes sixteen-pixel blocks; a scalar
+  tail handles smaller counts. Stronger compiler optimization is restricted to
+  this helper. Color/depth shader output, RAM byte order, and fences are preserved.
+  Tests check packed bytes independently and cover 15/16/17 and 31/32/33-pixel
+  boundaries; the built Switch object was checked for vector loads/stores.
 * Optional NVK asynchronous execution retains at most two pending submissions
   per channel and eight pending points per synchronization object. Backpressure
   waits for the oldest fence. The first engine bind drains synchronously;
@@ -51,6 +57,9 @@ and NetLoader. This page accompanies [the roadmap](SWITCH_PERFORMANCE_PLAN.md).
 | Direct-readback comparison | `full-20261003-135758.log` | Deliberately restores the slower path; user noticed reduced smoothness |
 | Final default package | `performance-default-live.log` | 126 s; cached readback + synchronous GPU; user confirmed smoother play, good audio and textures |
 | FPS overlay | `performance-fps-overlay-live.log` | Build passes; 68 s hardware run; counter visible in title and character-selection captures |
+| Combined depth-active draw/color copyback | `performance-combined-copyback-live.log` | User confirmed correct audio/textures and unchanged apparent FPS; remains opt-in |
+| Detailed framebuffer timing | `performance-framebuffer-phases-live.log` | Default rendering restored; identifies preparation, recording, tile loading, and RAM commit costs |
+| Vector pixel packing | `performance-packed-readback-live.log` | User reported about 45 FPS, correct audio/textures; CPU conversion cost fell modestly |
 
 Logs are saved under the ignored `build-switch-logs/` directory. The confirmed
 synchronous audio build is preserved as `build-switch-baseline/audio-fixed.nro`;
@@ -120,9 +129,10 @@ intervals, audio RSP tasks, display-list handling, workload/present dependency
 waits, framebuffer draw/copyback, texture decode/upload, shader compilation,
 pipeline creation, graphics worker GPU waits, CPU framebuffer conversion/cache-copy, queue submit, driver lock/submit, and presentation interval.
 Native audio feed/starvation/failure are zero-duration event counters.
-VI/RSP/display-list and framebuffer histogram hooks were added after the
-confirmed audio run; their build passes, but their hardware timing results
-remain to be collected.
+The final default run's 80–126 second interval measured display-list handling
+at 33.14 ms, framebuffer drawing at 4.39 ms per submission, and framebuffer
+copyback at 2.66 ms per submission. Separate color, depth, combined draw/color,
+and draw-only scopes now distinguish the phases within the aggregate scopes.
 
 Presentation classifications distinguish a new workload, an interpolated pass,
 and reuse of a workload ID. They are scheduling proxies, not pixel comparisons
@@ -138,6 +148,7 @@ Run a comparison after opening NetLoader, without a TCP port preflight:
 SWITCH_NRO_ARGS='--async-submissions' ./scripts/switch-run.sh 192.168.222.235 full
 SWITCH_NRO_ARGS='--no-profile --no-fps' ./scripts/switch-run.sh 192.168.222.235 full
 SWITCH_NRO_ARGS='--async-submissions --direct-readbacks' ./scripts/switch-run.sh 192.168.222.235 full
+SWITCH_NRO_ARGS='--batch-framebuffer-copyback' ./scripts/switch-run.sh 192.168.222.235 full
 SWITCH_NRO_ARGS='--legacy-texture-uploads' ./scripts/switch-run.sh 192.168.222.235 full
 SWITCH_NRO_ARGS='--legacy-audio-backend' ./scripts/switch-run.sh 192.168.222.235 full
 python3 scripts/analyze-switch-log.py build-switch-logs/<run>.log
@@ -151,6 +162,38 @@ Faults, probe results, and other diagnostics still cover the entire log.
 Options may be combined. Legacy audio intentionally restores the fragile
 handoff for diagnosis. Use the same race route and power/display mode when
 comparing. R3 captures remain available through the run script.
+
+`--batch-framebuffer-copyback` is an experimental depth-active framebuffer path.
+It appends color conversion/readback to the intact draw command list, reducing
+three submissions to two when depth copyback is needed. The existing graphics
+depth conversion remains in its own submission, and both CPU readbacks still
+wait for GPU completion. The default retains isolated draw/color submissions
+because the first hardware comparison did not establish a useful speedup.
+
+The combined path passed a short race test with correct audio/textures and no
+logged GPU fault. Its 80–126 second interval measured median **44.66 FPS**
+versus **44.36 FPS** for the prior default. The user also observed similar FPS.
+This small, uncontrolled difference does not establish a useful speedup, so the
+packaged default keeps isolated depth-active drawing and color readback.
+Additional scopes measure framebuffer tile loading, preparation, setup, command
+recording, the graphics RSP processor, and the complete CPU RDRAM commit. These
+scopes overlap existing timers and must not be summed as a frame budget.
+
+The timing build's 80–126 second interval measured CPU conversion at **1.17 ms**
+per copy, total CPU RAM commit at **1.22 ms**, framebuffer preparation at
+**0.91 ms** per pair, tile loading at **0.50 ms**, command recording at
+**0.28 ms**, setup at **0.01 ms**, and graphics RSP descriptor preparation at
+**0.02 ms**. Graphics RSP here measures CPU preparation, not GPU execution.
+The subsequent packing build's 130–180 second race interval reduced
+mean CPU conversion to approximately **0.94 ms** per copy. The user reported
+about **45 FPS** with correct audio/textures. Scene routes were not replayed;
+the lower conversion cost does not establish a controlled FPS gain. The new
+packing helper is enabled in the default package, while combined framebuffer
+submissions remain experimental. Sustained race performance is still below
+60 FPS. The packing run lasted 249.7 seconds with no logged GPU fault or
+audio-backend failure; captures `manual-20261003-142657.jpg` and
+`manual-20261003-142753.jpg` show clear racing textures. This is a short hardware
+check, not the 30-minute stress gate.
 
 ## Build and host validation
 

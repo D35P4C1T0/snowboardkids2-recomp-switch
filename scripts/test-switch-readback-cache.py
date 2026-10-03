@@ -9,7 +9,7 @@ root = Path(__file__).resolve().parent.parent
 subprocess.run(['git', '-C', str(root/'build-switch-deps/rt64'), 'apply', '--reverse', '--check',
                 str(root/'switch/patches/rt64-switch.patch')], check=True)
 source = (root/'build-switch-deps/rt64/src/render/rt64_native_target.cpp').read_text()
-helpers = source[source.index('namespace {'):source.index('\n#endif')]
+helpers = source[source.index('namespace {'):source.index('\n}\n#endif')+2]
 start = source.index('    void NativeTarget::copyToRAMCPU(')
 method = source[start:source.index('\n    }', start)+6].replace('void NativeTarget::', 'void ')
 stub = r'''
@@ -52,7 +52,7 @@ int main(int argc,char**argv) {
     else setenv("SK2_SWITCH_CACHE_READBACKS",argv[1],1);
     const bool cached=std::strcmp(argv[1],"0")!=0;
     NativeTarget target;
-    const unsigned widths[]={320,1,3,13,285};
+    const unsigned widths[]={320,1,3,13,15,16,17,31,32,33,285};
     for(unsigned width:widths) for(unsigned height:{1U,3U,52U})
     for(unsigned start:{0U,7U}) for(unsigned kind:{0U,1U,2U}) for(unsigned pattern=0;pattern<4;pattern++) {
         auto& input=target.switchTextureReadbackBuffer->bytes;
@@ -75,6 +75,10 @@ int main(int argc,char**argv) {
         target.copyToRAMCPU(output.data()+8);
         assert(!target.switchTextureReadbackBuffer->mapped);
         for(unsigned i=0;i<8;i++) assert(output[i]==0xad && output[output.size()-1-i]==0xad);
+        if(kind==1) for(unsigned i=0;i<width*height;i++) {
+            assert(output[8+i*2]==input[i*4]);
+            assert(output[8+i*2+1]==input[i*4+1]);
+        }
         if(cached) assert(target.switchTextureReadbackCache==input);
         else assert(target.switchTextureReadbackCache.empty());
         assert(std::fwrite(output.data(),1,output.size(),stdout)==output.size());
@@ -85,7 +89,7 @@ with tempfile.TemporaryDirectory(prefix='sk2-readback-') as temp:
     src=Path(temp)/'test.cpp'; exe=Path(temp)/'test'
     src.write_text(stub.split('struct NativeTarget')[0]+helpers+'\nstruct NativeTarget'+stub.split('struct NativeTarget')[1]+method+'\n};\n'+tests)
     subprocess.run([os.environ.get('CXX','c++'),'-std=c++17','-D_POSIX_C_SOURCE=200809L',
-                    '-Wall','-Wextra','-Werror',str(src),'-o',str(exe)],check=True)
+                    '-O2','-Wall','-Wextra','-Werror',str(src),'-o',str(exe)],check=True)
     direct=subprocess.check_output([str(exe),'0'])
     cached=subprocess.check_output([str(exe),'1'])
     default=subprocess.check_output([str(exe),'default'])
