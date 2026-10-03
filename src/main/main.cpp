@@ -608,6 +608,12 @@ void update_gfx(void*) {
 
 static SDL_AudioCVT audio_convert;
 static SDL_AudioDeviceID audio_device = 0;
+static std::mutex audio_mutex;
+static std::array<float, 8> duplicated_sample_buffer{};
+#if defined(__SWITCH__)
+static sk2::audio::QueueCorrector audio_corrector;
+static std::vector<float> corrected_audio;
+#endif
 
 // Samples per channel per second.
 static uint32_t sample_rate = 48000;
@@ -627,10 +633,10 @@ static uint32_t discarded_output_frames;
 constexpr uint32_t bytes_per_frame = input_channels * sizeof(float);
 
 void queue_samples(int16_t* audio_data, size_t sample_count) {
+    std::lock_guard audio_lock(audio_mutex);
     // Buffer for holding the output of swapping the audio channels. This is reused across
     // calls to reduce runtime allocations.
     static std::vector<float> swap_buffer;
-    static std::array<float, duplicated_input_frames * input_channels> duplicated_sample_buffer;
 #if defined(__SWITCH__)
     uint32_t chunk_peak = 0;
 #endif
@@ -689,7 +695,15 @@ void queue_samples(int16_t* audio_data, size_t sample_count) {
 
     // Prevent audio latency from building up by skipping samples in incoming audio when too many samples are already
     // queued. Skip samples based on how many microseconds of samples are queued already.
-    uint32_t skip_factor = cur_queued_microseconds / 100000;
+    uint32_t skip_factor = 0;
+#if defined(__SWITCH__)
+    audio_corrector.process(samples_to_queue, num_bytes_to_queue / (output_channels * sizeof(float)),
+        cur_queued_microseconds, corrected_audio);
+    samples_to_queue = corrected_audio.data();
+    num_bytes_to_queue = uint32_t(corrected_audio.size() * sizeof(float));
+    skip_factor = audio_corrector.correction() > 0.0;
+#else
+    skip_factor = uint32_t(std::min<uint64_t>(cur_queued_microseconds / 100000, 8));
     if (skip_factor != 0) {
         uint32_t skip_ratio = 1 << skip_factor;
         num_bytes_to_queue /= skip_ratio;
@@ -698,6 +712,7 @@ void queue_samples(int16_t* audio_data, size_t sample_count) {
             samples_to_queue[2 * i + 1] = samples_to_queue[2 * skip_ratio * i + 1];
         }
     }
+#endif
 
     // Queue the swapped audio data.
     // Offset the data start by only half the discarded frame count as the other half of the discarded frames are at the
@@ -770,6 +785,7 @@ void queue_samples(int16_t* audio_data, size_t sample_count) {
 }
 
 size_t get_frames_remaining() {
+    std::lock_guard audio_lock(audio_mutex);
     constexpr float buffer_offset_frames = 1.0f;
     // Get the number of remaining buffered audio bytes.
     uint64_t buffered_byte_count = sk2::audio::remaining_input_frames(
@@ -803,12 +819,18 @@ void update_audio_converter() {
 }
 
 void set_frequency(uint32_t freq) {
+    std::lock_guard audio_lock(audio_mutex);
+    if (!freq || freq == sample_rate) return;
     sample_rate = freq;
-
+    duplicated_sample_buffer.fill(0);
+#if defined(__SWITCH__)
+    audio_corrector.reset();
+#endif
     update_audio_converter();
 }
 
 bool reset_audio(uint32_t output_freq) {
+    std::lock_guard audio_lock(audio_mutex);
     SDL_AudioSpec spec_desired{ .freq = (int) output_freq,
                                 .format = AUDIO_F32,
                                 .channels = (Uint8) output_channels,
