@@ -13,6 +13,8 @@
 #include <mutex>
 #include <thread>
 #include <condition_variable>
+#include <chrono>
+#include "audio_queue.h"
 
 #if !defined(__SWITCH__)
 #include "nfd.h"
@@ -679,8 +681,8 @@ void queue_samples(int16_t* audio_data, size_t sample_count) {
         throw std::runtime_error("Error using SDL audio converter");
     }
 
-    uint64_t cur_queued_microseconds =
-        uint64_t(SDL_GetQueuedAudioSize(audio_device)) / bytes_per_frame * 1000000 / sample_rate;
+    uint64_t cur_queued_microseconds = sk2::audio::queued_microseconds(
+        SDL_GetQueuedAudioSize(audio_device), output_sample_rate, output_channels);
     uint32_t num_bytes_to_queue =
         audio_convert.len_cvt - output_channels * discarded_output_frames * sizeof(swap_buffer[0]);
     float* samples_to_queue = swap_buffer.data() + output_channels * discarded_output_frames / 2;
@@ -706,6 +708,20 @@ void queue_samples(int16_t* audio_data, size_t sample_count) {
     static uint64_t empty_queue_count = 0;
     static uint64_t queue_failure_count = 0;
     static uint32_t interval_peak = 0;
+    static uint64_t interval_min_us = UINT64_MAX, interval_max_us = 0, interval_gap_us = 0;
+    static uint64_t interval_input_frames = 0, interval_output_frames = 0, interval_corrections = 0;
+    static auto previous_queue_time = std::chrono::steady_clock::time_point{};
+    const auto queue_time = std::chrono::steady_clock::now();
+    if (previous_queue_time != std::chrono::steady_clock::time_point{}) {
+        interval_gap_us = std::max(interval_gap_us, uint64_t(std::chrono::duration_cast<
+            std::chrono::microseconds>(queue_time - previous_queue_time).count()));
+    }
+    previous_queue_time = queue_time;
+    interval_min_us = std::min(interval_min_us, cur_queued_microseconds);
+    interval_max_us = std::max(interval_max_us, cur_queued_microseconds);
+    interval_input_frames += sample_count / input_channels;
+    interval_output_frames += num_bytes_to_queue / (output_channels * sizeof(float));
+    interval_corrections += skip_factor != 0;
     const uint32_t queued_bytes = SDL_GetQueuedAudioSize(audio_device);
 
     queue_count++;
@@ -741,6 +757,14 @@ void queue_samples(int16_t* audio_data, size_t sample_count) {
             int(SDL_GetAudioDeviceStatus(audio_device)), interval_peak, double(cur_main_volume));
         switch_log_checkpoint(message);
         interval_peak = 0;
+        std::snprintf(message, sizeof(message),
+            "audio: timing min_us=%llu max_us=%llu gap_us=%llu input_frames=%llu output_frames=%llu corrections=%llu",
+            (unsigned long long)interval_min_us, (unsigned long long)interval_max_us,
+            (unsigned long long)interval_gap_us, (unsigned long long)interval_input_frames,
+            (unsigned long long)interval_output_frames, (unsigned long long)interval_corrections);
+        switch_log_checkpoint(message);
+        interval_min_us = UINT64_MAX;
+        interval_max_us = interval_gap_us = interval_input_frames = interval_output_frames = interval_corrections = 0;
     }
 #endif
 }
@@ -748,10 +772,8 @@ void queue_samples(int16_t* audio_data, size_t sample_count) {
 size_t get_frames_remaining() {
     constexpr float buffer_offset_frames = 1.0f;
     // Get the number of remaining buffered audio bytes.
-    uint64_t buffered_byte_count = SDL_GetQueuedAudioSize(audio_device);
-
-    // Scale the byte count based on the ratio of sample rates and channel counts.
-    buffered_byte_count = buffered_byte_count * 2 * sample_rate / output_sample_rate / output_channels;
+    uint64_t buffered_byte_count = sk2::audio::remaining_input_frames(
+        SDL_GetQueuedAudioSize(audio_device), sample_rate, output_sample_rate, output_channels) * bytes_per_frame;
 
     // Adjust the reported count to be some number of refreshes in the future, which helps ensure that
     // there are enough samples even if the audio thread experiences a small amount of lag. This prevents
