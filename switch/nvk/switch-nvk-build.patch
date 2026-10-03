@@ -1,8 +1,7 @@
 diff --git a/Dockerfile b/Dockerfile
-index 0068105..d3334f6 100644
 --- a/Dockerfile
 +++ b/Dockerfile
-@@ -17,7 +17,7 @@ RUN python3 -m pip install --break-system-packages --no-cache-dir 'meson>=1.4' m
+@@ -17,7 +17,7 @@
  ENV RUSTUP_HOME=/opt/rust/rustup CARGO_HOME=/opt/rust/cargo
  ENV PATH="/opt/rust/cargo/bin:${PATH}"
  RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
@@ -12,10 +11,9 @@ index 0068105..d3334f6 100644
  
  # bindgen (C->Rust FFI for NAK) + cbindgen (Rust->C headers for NIL, the nouveau image-layout lib).
 diff --git a/build-native-tools.sh b/build-native-tools.sh
-index 4c11abf..a51129f 100644
 --- a/build-native-tools.sh
 +++ b/build-native-tools.sh
-@@ -29,9 +29,14 @@ meson setup "$NB" \
+@@ -29,9 +29,14 @@
    -Dstatic-libclc=all \
    "$@"
  
@@ -35,12 +33,9 @@ index 4c11abf..a51129f 100644
  echo "=== installed native tools ==="
  ls -la "$PREFIX/bin/" | grep -iE 'clc|precomp|nak' || true
 diff --git a/build-std-sysroot.sh b/build-std-sysroot.sh
-old mode 100644
-new mode 100755
-index 8f8139b..7cb17b8
 --- a/build-std-sysroot.sh
 +++ b/build-std-sysroot.sh
-@@ -12,7 +12,7 @@ RUSTC_SYSROOT="$(rustc --print sysroot)"
+@@ -12,7 +12,7 @@
  rm -rf /tmp/stdsr && mkdir -p /tmp/stdsr/src && cd /tmp/stdsr
  printf '#![no_main]\n' > src/lib.rs
  printf '[package]\nname="stdsr"\nversion="0.0.0"\nedition="2021"\n[lib]\ncrate-type=["rlib"]\n[profile.release]\npanic="abort"\n' > Cargo.toml
@@ -50,10 +45,9 @@ index 8f8139b..7cb17b8
  # 2. Assemble a sysroot: copy host sysroot structure for the target, then overlay our built std rlibs.
  DEPS=/tmp/stdsr/target/$TGT/release/deps
 diff --git a/package-nvk.sh b/package-nvk.sh
-index 9692eb5..bccae6d 100644
 --- a/package-nvk.sh
 +++ b/package-nvk.sh
-@@ -74,6 +74,10 @@ done
+@@ -74,6 +74,10 @@
  if [ -d mesa-25/include/vk_video ]; then
    rm -rf "$OUT/include/vk_video"; cp -r mesa-25/include/vk_video "$OUT/include/vk_video"
  fi
@@ -64,11 +58,7 @@ index 9692eb5..bccae6d 100644
  
  echo "=== [4/4] VERIFY symbols (nm) ==="
  # The loaderless-ICD contract: the ONLY strong exported entry is vk_icdGetInstanceProcAddr; every
-diff --git a/rustc-switch.sh b/rustc-switch.sh
-old mode 100644
-new mode 100755
 diff --git a/winsys/drm_shim.c b/winsys/drm_shim.c
-index 5f53f36..ce842fc 100644
 --- a/winsys/drm_shim.c
 +++ b/winsys/drm_shim.c
 @@ -32,6 +32,7 @@
@@ -79,15 +69,52 @@ index 5f53f36..ce842fc 100644
  
  #include <switch.h>
  #include <xf86drm.h>
-@@ -101,6 +102,7 @@ struct shim_bo {
+@@ -49,6 +50,9 @@
+  * traces land in the app's own log file. Always defined so the app can extern
+  * it regardless of DRM_SHIM_DEBUG. */
+ void (*g_drm_shim_log_sink)(const char *) = NULL;
++extern void switch_perf_record(const char *, uint64_t, uint64_t) __attribute__((weak));
++static int64_t shim_monotonic_ns(void);
++static int shim_async_drain_all(void);
+ 
+ #ifdef DRM_SHIM_DEBUG
+ #include <stdio.h>
+@@ -101,7 +105,10 @@
     uint64_t gpu_va;       /* GPU VA: auto (internal) or VM_BIND addr (NVK BOs) */
     uint64_t gpu_bo_offset;/* VM_BIND bo_offset, for VA->CPU back-translation   */
     NvKind   kind;         /* the BO's PTE kind (from GEM_NEW tile_flags)       */
 +   NvKind   mapped_kind;  /* effective PTE kind from the successful VM_BIND    */
  };
++
++#include "switch_async.h"
  
  struct shim_syncobj {
-@@ -539,17 +541,21 @@ static int nouveau_gem_info(struct drm_nouveau_gem_info *info)
+    bool     used;
+@@ -109,6 +116,7 @@
+    uint64_t value;        /* timeline point (binary syncobjs ignore)           */
+    bool     has_fence;    /* M2: a real GPU fence was attached by EXEC         */
+    NvFence  fence;        /* libnx syncpoint fence to wait on                  */
++   struct shim_async_history history;
+ };
+ 
+ /* A real libnx GPFIFO channel + the builtin cmdbuf carrying the Maxwell
+@@ -121,6 +129,7 @@
+    uint32_t     fence_num_cmds;  /* dwords of the fence-incr cmdlist           */
+    uint32_t     flush_num_cmds;  /* dwords of the cache-flush cmdlist          */
+    uint32_t     setobj_num_cmds; /* dwords of the per-subchannel SetObject bind */
++   struct shim_async_queue pending;
+    bool         engines_bound;   /* SetObject bind emitted before 1st EXEC      */
+    int          zcull_bo;        /* bos[] slot for the Zcull context           */
+ };
+@@ -211,6 +220,7 @@
+ 
+ static void shim_nv_down(void)
+ {
++   (void)shim_async_drain_all();
+    /* Close any channels still open (frees their builtin BOs too). */
+    for (int i = 0; i < SHIM_MAX_CHANNELS; i++) {
+       if (g_dev.channels[i].used) {
+@@ -539,17 +549,21 @@
   * (kills the ~9.4ms memcpy the present profiling found). Returns false if no
   * bound BO covers the VA. Thread-safe (takes the device lock).               */
  bool drm_shim_bo_nvmap_by_va(uint64_t gpu_va, uint32_t *out_nvmap_id,
@@ -115,7 +142,25 @@ index 5f53f36..ce842fc 100644
           found = true;
           break;
        }
-@@ -633,7 +639,8 @@ static uint32_t gen_flush_cmdlist(uint32_t *buf)
+@@ -563,13 +577,16 @@
+    /* CPU-side wait for BO idle. We don't track per-BO fences yet; submissions
+     * are serialized through the channel syncpoint, so this is a no-op for now.
+     * (A per-BO fence map would make this precise — M2 follow-up.) */
+-   return bo_lookup(req->handle) ? 0 : -ENOENT;
++   int result = shim_async_drain_all();
++   return result ? result : bo_lookup(req->handle) ? 0 : -ENOENT;
+ }
+ 
+ int drmCloseBufferHandle(int fd, uint32_t handle)
+ {
+    if (!drm_shim_owns_fd(fd)) { errno = EBADF; return -EBADF; }
+    mutexLock(&g_dev.lock);
++   int result = shim_async_drain_all();
++   if (result) { mutexUnlock(&g_dev.lock); return result; }
+    struct shim_bo *bo = bo_lookup(handle);
+    if (bo) {
+       /* Release the GPU-VA mapping before closing. NVK closes + reuses GEM
+@@ -633,7 +650,8 @@
     *cmd++ = 0x369 | (0 << 13) | (0x1011 << 16) | (4 << 29); /* unknown flush */
     *cmd++ = 0x50A | (0 << 13) | (0 << 16) | (4 << 29);      /* flush TICs */
     *cmd++ = 0x509 | (0 << 13) | (0 << 16) | (4 << 29);      /* flush TSCs */
@@ -125,7 +170,36 @@ index 5f53f36..ce842fc 100644
     return cmd - buf;
  }
  
-@@ -816,6 +823,7 @@ static int vm_bind_op(const struct drm_nouveau_vm_bind_op *op)
+@@ -741,6 +759,8 @@
+    struct shim_channel *ch = channel_lookup((uint32_t)req->channel);
+    if (!ch)
+       return 0;
++   int result = shim_async_enabled() ? shim_async_reap(&ch->pending, req->channel, 2) : 0;
++   if (result) return result;
+    nvGpuChannelClose(&ch->chan);
+    for (int bo = ch->cmdbuf_bo; bo == ch->cmdbuf_bo; ) { /* free cmdbuf */
+       if (bo >= 0 && g_dev.bos[bo].used) {
+@@ -781,6 +801,8 @@
+                           op->handle == 0 && !sparse);
+ 
+    if (is_unmap) {
++      int result = shim_async_drain_all();
++      if (result) return result;
+       nvioctlNvhostAsGpu_UnmapBuffer(fd, op->addr);  /* leaves the arena reserved */
+       return 0;
+    }
+@@ -791,6 +813,10 @@
+       return 0;
+ 
+    struct shim_bo *bo = bo_lookup(op->handle);
++   if (bo && bo->gpu_va) {
++      int result = shim_async_drain_all();
++      if (result) return result;
++   }
+    if (!bo)
+       return -ENOENT;
+ 
+@@ -816,6 +842,7 @@
     if (R_SUCCEEDED(rc)) {
        bo->gpu_va = op->addr;
        bo->gpu_bo_offset = op->bo_offset;
@@ -133,10 +207,16 @@ index 5f53f36..ce842fc 100644
     } else {
        return -EINVAL;
     }
-@@ -843,6 +851,69 @@ static int nouveau_vm_bind(struct drm_nouveau_vm_bind *req)
-    return 0;
- }
- 
+@@ -838,7 +865,93 @@
+    for (uint32_t i = 0; i < req->sig_count; i++) {
+       struct shim_syncobj *s = syncobj_lookup(sigs[i].handle);
+       /* empty EXEC: signal immediately (no GPU work) -> the timeline point is reached now. */
+-      if (s) { s->signaled = true; s->has_fence = false; s->value = sigs[i].timeline_value; }
++      if (s) { s->signaled = true; s->has_fence = false; s->value = sigs[i].timeline_value; shim_async_signal(&s->history, s->value); }
++   }
++   return 0;
++}
++
 +/* A channel reset can advance its syncpoint despite failed GPU work. Never
 + * treat a completed fence as success until the native error notifier is clear.
 + * Keep detailed native faults available without enabling noisy NVK_TRACE.
@@ -200,16 +280,74 @@ index 5f53f36..ce842fc 100644
 +   g_drm_shim_log_sink(message);
 +}
 +
++static int shim_async_fence_result(uint32_t id, const NvFence *fence, int timeout_us)
++{
++   struct shim_channel *ch = channel_lookup(id);
++   if (!ch || ch->pending.failed) return -EIO;
++   if (shim_channel_check_error(ch)) { ch->pending.failed = true; return -EIO; }
++   Result result = nvFenceWait(fence, timeout_us);
++   if (shim_channel_check_error(ch)) { ch->pending.failed = true; return -EIO; }
++   if (R_FAILED(result)) return timeout_us ? -EIO : -ETIME;
++   return 0;
++}
++
++static int shim_async_drain_all(void)
++{
++   if (!shim_async_enabled()) return 0;
++   for (unsigned i = 0; i < SHIM_MAX_CHANNELS; i++) {
++      if (g_dev.channels[i].used) {
++         int result = shim_async_reap(&g_dev.channels[i].pending, i + 1, 2);
++         if (result) return result;
++      }
+    }
+    return 0;
+ }
+@@ -846,8 +959,17 @@
  static int nouveau_exec(struct drm_nouveau_exec *req)
  {
     struct shim_channel *ch = channel_lookup((uint32_t)req->channel);
-@@ -863,8 +934,14 @@ static int nouveau_exec(struct drm_nouveau_exec *req)
+-   if (!ch)
+-      return -ENODEV;
++   if (!ch) return -ENODEV;
++   const bool asynchronous = shim_async_enabled();
++   const bool first_submit = !ch->engines_bound;
++   if (asynchronous) {
++      int result = shim_async_reap(&ch->pending, req->channel, 0);
++      if (result) return result;
++      if (ch->pending.count == SHIM_ASYNC_QUEUE_LIMIT) {
++         result = shim_async_reap(&ch->pending, req->channel, 1);
++         if (result) return result;
++      }
++   }
+ 
+    SHIM_LOG("EXEC enter chan=%u push_count=%u wait=%u sig=%u\n",
+             (unsigned)req->channel, req->push_count, req->wait_count, req->sig_count);
+@@ -863,8 +985,33 @@
      * semaphore waits would be the optimization. */
     for (uint32_t i = 0; i < req->wait_count; i++) {
        struct shim_syncobj *s = syncobj_lookup(waits[i].handle);
 -      if (s && s->has_fence)
 -         nvFenceWait(&s->fence, 2000000LL); /* us! 2s cap (was -1=infinite) */
-+      if (s && s->has_fence) {
++      if (asynchronous) {
++         if (!s || !s->history.available || s->history.submitted < waits[i].timeline_value) return -EINVAL;
++         bool ready = false;
++         int result = shim_async_ready(&s->history, waits[i].timeline_value, waits[i].timeline_value != 0, false, &ready);
++         if (result) return result;
++         if (!ready) {
++            for (unsigned j = 0; j < s->history.count; j++) {
++               const struct shim_async_point *point = &s->history.points[j];
++               if (waits[i].timeline_value ? point->value >= waits[i].timeline_value : j + 1 == s->history.count) {
++                  result = shim_async_fence_result(point->channel, &point->fence, 2000000);
++                  if (result) return result;
++                  break;
++               }
++            }
++            result = shim_async_ready(&s->history, waits[i].timeline_value,
++               waits[i].timeline_value != 0, false, &ready);
++            if (result || !ready) return result ? result : -EIO;
++         }
++      }
++      else if (s && s->has_fence) {
 +         Result wait_result = nvFenceWait(&s->fence, 2000000LL);
 +         if (R_FAILED(wait_result)) {
 +            report_submit_status("dependency FAILED", &s->fence, wait_result);
@@ -220,10 +358,26 @@ index 5f53f36..ce842fc 100644
     }
  
     /* Empty EXEC (no pushbuf to run): do NOT submit a spurious fence cmdlist +
-@@ -896,6 +973,14 @@ static int nouveau_exec(struct drm_nouveau_exec *req)
+@@ -878,7 +1025,13 @@
+          struct shim_syncobj *s = syncobj_lookup(sigs[i].handle);
+          /* Attach the GPU fence + record the TIMELINE point this submit signals. The point
+           * counts as "reached" only when this fence completes (drmSyncobjQuery polls it). */
+-         if (s) { s->fence = f; s->has_fence = true; s->signaled = true; s->value = sigs[i].timeline_value; }
++         if (s) {
++            if (asynchronous) {
++               int result = shim_async_attach(&s->history, sigs[i].timeline_value, &f, req->channel);
++               if (result) return result;
++            }
++            s->fence = f; s->has_fence = true; s->signaled = true; s->value = sigs[i].timeline_value;
++         }
+       }
+       return 0;
+    }
+@@ -895,6 +1048,14 @@
+       SHIM_LOG("EXEC bind engines (setobj %u dw) on chan=%u\n",
                 ch->setobj_num_cmds, (unsigned)req->channel);
     }
- 
++
 +   /* CPU-visible BOs are uncached on the CPU but GPU mappings are cacheable.
 +    * Invalidate data and descriptor caches after CPU updates, as deko3d does
 +    * at queue flush boundaries. This command list used to be built but never
@@ -231,11 +385,10 @@ index 5f53f36..ce842fc 100644
 +   uint64_t flush_va = ch->cmdbuf_va + 4 * ch->fence_num_cmds;
 +   nvGpuChannelAppendEntry(&ch->chan, flush_va, ch->flush_num_cmds,
 +                           GPFIFO_ENTRY_NOT_MAIN | GPFIFO_ENTRY_NO_PREFETCH, 0);
-+
+ 
     for (uint32_t i = 0; i < req->push_count; i++) {
        /* Force NOT_MAIN | NO_PREFETCH on every push, matching deko3d's working 3D
-        * submissions. NVK passes flags=0 (MAIN + prefetch ENABLED); on Horizon a
-@@ -940,6 +1025,13 @@ static int nouveau_exec(struct drm_nouveau_exec *req)
+@@ -940,6 +1101,13 @@
      * submit but failed the 2nd (fill) — deko's standard path doesn't. */
     nvGpuChannelIncrFence(&ch->chan);
  
@@ -249,7 +402,7 @@ index 5f53f36..ce842fc 100644
     /* ⭐ v32: append the BUILTIN FENCE CMDLIST — the actual Maxwell command that
      * INCREMENTS the syncpt on the GPU (gen_fence_cmdlist: method 0x0B2 with
      * syncpt_id|incr-bit). IncrFence alone only bumps libnx's expected counter;
-@@ -956,6 +1048,10 @@ static int nouveau_exec(struct drm_nouveau_exec *req)
+@@ -956,21 +1124,16 @@
     SHIM_LOG("EXEC kickoff returned rc=0x%x (chan=%u push_count=%u)\n",
              rc, (unsigned)req->channel, req->push_count);
     if (R_FAILED(rc)) {
@@ -260,10 +413,10 @@ index 5f53f36..ce842fc 100644
        return -EIO;
     }
  
-@@ -963,15 +1059,6 @@ static int nouveau_exec(struct drm_nouveau_exec *req)
+    /* The real completion fence: kickoff advanced c->fence by the increment. */
     NvFence fence;
     nvGpuChannelGetFence(&ch->chan, &fence);
- 
+-
 -   /* v32: the v31 -1 hack is REVERTED — with the fence cmdlist appended above,
 -    * the GPU actually reaches the full GetFence value (as in the reference), so
 -    * use it as-is. (v31 confirmed the init off-by-one was only the missing
@@ -272,21 +425,33 @@ index 5f53f36..ce842fc 100644
 -      struct shim_syncobj *s = syncobj_lookup(sigs[i].handle);
 -      if (s) { s->fence = fence; s->has_fence = true; s->signaled = true; }
 -   }
--
+ 
     /* Drain: wait for THIS submit's GPU work to finish before returning, so the
      * NEXT submit starts on an idle channel (fixes the case where a prior big
-     * submit is still in-flight holding kernel resources -> next submit 0xd5c),
-@@ -983,40 +1070,26 @@ static int nouveau_exec(struct drm_nouveau_exec *req)
+@@ -980,43 +1143,45 @@
+     * NB: nvFenceWait timeout is in MICROSECONDS (not ns!). 2e6 us = 2s.
+     * (was 2e9 here = 2000s = ~33min => looked like an infinite hang on a
+     * channel whose init EXEC never completes its end-of-submit syncpt incr). */
++   if (asynchronous) {
++      ch->pending.fences[ch->pending.count++] = fence;
++      if (first_submit) {
++         int result = shim_async_reap(&ch->pending, req->channel, 2);
++         if (result) return result;
++      }
++      for (uint32_t i = 0; i < req->sig_count; i++) {
++         struct shim_syncobj *object = syncobj_lookup(sigs[i].handle);
++         if (!object) return -ENOENT;
++         int result = shim_async_attach(&object->history, sigs[i].timeline_value, &fence, req->channel);
++         if (result) return result;
++         object->fence = fence; object->has_fence = true;
++         object->signaled = false; object->value = sigs[i].timeline_value;
++      }
++      return 0;
++   }
     Result wr = nvFenceWait(&fence, 2000000LL);
     SHIM_LOG("EXEC drain chan=%u fence=%u/%u rc=0x%x\n",
              (unsigned)req->channel, fence.id, fence.value, wr);
-+   if (R_FAILED(wr) || getenv("NVK_TRACE"))
-+      report_submit_status("completion", &fence, wr);
-+   if (R_FAILED(wr)) {
-+      shim_channel_check_error(ch);
-+      return -EIO;
-+   }
- 
+-
 -   /* DIAG: read the CURRENT syncpt value vs the target. On a drain TIMEOUT this
 -    * pinpoints WHERE the GPU work stalled: current≈0 => the init never started /
 -    * stalls at the very front; current≈target => it stalls at a FINAL wait. (No
@@ -298,12 +463,8 @@ index 5f53f36..ce842fc 100644
 -      SHIM_LOG("EXEC drain syncpt[%u] current=%u target=%u reached=%d readrc=0x%x\n",
 -               fence.id, (unsigned)cur, fence.value,
 -               (int)(cur >= fence.value), srr);
-+   int error = shim_channel_check_error(ch);
-+   if (error) {
-+      report_submit_status("execution FAILED", &fence, wr);
-+      return error;
-    }
- 
+-   }
+-
 -   /* Read the channel error notifier: the kickoff is accepted (rc=0) but the
 -    * GPU executes ASYNC and may FAULT (MMU fault / illegal method / PBDMA err),
 -    * which resets the channel and makes every later submit return Timeout
@@ -324,26 +485,61 @@ index 5f53f36..ce842fc 100644
 -                  err.type, err.info[0], err.info[1], err.info[2], err.info[3],
 -                  err.info[4], err.info[5], err.info[6], err.info[7],
 -                  err.info[8], err.info[9], err.info[10], err.info[11]);
++   if (R_FAILED(wr) || getenv("NVK_TRACE"))
++      report_submit_status("completion", &fence, wr);
++   if (R_FAILED(wr)) {
++      shim_channel_check_error(ch);
++      return -EIO;
++   }
++
++   int error = shim_channel_check_error(ch);
++   if (error) {
++      report_submit_status("execution FAILED", &fence, wr);
++      return error;
++   }
++
 +   /* v32: the v31 -1 hack is REVERTED — with the fence cmdlist appended above,
 +    * the GPU actually reaches the full GetFence value (as in the reference), so
 +    * use it as-is. (v31 confirmed the init off-by-one was only the missing
 +    * trailing increment, now provided by the cmdlist.) */
 +   for (uint32_t i = 0; i < req->sig_count; i++) {
 +      struct shim_syncobj *s = syncobj_lookup(sigs[i].handle);
-+      if (s) { s->fence = fence; s->has_fence = true; s->signaled = true; s->value = sigs[i].timeline_value; }
++      if (s) { s->fence = fence; s->has_fence = true; s->signaled = true; s->value = sigs[i].timeline_value; shim_async_signal(&s->history, s->value); }
     }
  
     return 0;
-@@ -1261,17 +1334,12 @@ int drmPrimeFDToHandle(int fd, int prime_fd, uint32_t *handle)
+@@ -1033,7 +1198,12 @@
+    if (!g_dev.nv_up)          { errno = ENODEV; return -ENODEV; }
+ 
+    int ret;
++   const char *profile_setting = getenv("SK2_SWITCH_PROFILE");
++   const bool profile = switch_perf_record && cmd == DRM_NOUVEAU_EXEC &&
++                        (!profile_setting || profile_setting[0] != '0');
++   int64_t begin = profile ? shim_monotonic_ns() : 0;
+    mutexLock(&g_dev.lock);
++   int64_t locked = profile ? shim_monotonic_ns() : 0;
+    switch (cmd) {
+    case DRM_NOUVEAU_GETPARAM:
+       ret = nouveau_getparam((struct drm_nouveau_getparam *)data);
+@@ -1071,6 +1241,10 @@
+       break;
+    }
+    mutexUnlock(&g_dev.lock);
++   if (profile) {
++      switch_perf_record("nvk_lock_wait", locked - begin, 0);
++      switch_perf_record("nvk_submit", shim_monotonic_ns() - locked, 0);
++   }
+ 
+    SHIM_LOG("ioctl cmd=0x%lx -> %d\n", cmd, ret);
+    if (ret < 0)
+@@ -1261,17 +1435,12 @@
  /* drmSyncobjWait blocks on actual GPU completion via nvFenceWait.              */
  /* ------------------------------------------------------------------------- */
  
 -/* DRM syncobj waits take an ABSOLUTE CLOCK_MONOTONIC ns deadline; nvFenceWait
 - * takes a RELATIVE microsecond timeout (-1 = infinite). Convert. */
 -static int32_t shim_abs_ns_to_rel_us(int64_t abs_ns)
-+/* DRM uses an absolute CLOCK_MONOTONIC deadline, not a per-handle timeout. */
-+static int64_t shim_monotonic_ns(void)
- {
+-{
 -   if (abs_ns < 0)
 -      return -1;
 -   uint64_t now = armTicksToNs(armGetSystemTick());
@@ -351,31 +547,68 @@ index 5f53f36..ce842fc 100644
 -      return 0;
 -   uint64_t rel_us = ((uint64_t)abs_ns - now) / 1000;
 -   return (rel_us > (uint64_t)INT32_MAX) ? -1 : (int32_t)rel_us;
++/* DRM uses an absolute CLOCK_MONOTONIC deadline, not a per-handle timeout. */
++static int64_t shim_monotonic_ns(void)
++{
 +   struct timespec now;
 +   clock_gettime(CLOCK_MONOTONIC, &now);
 +   return (int64_t)now.tv_sec * 1000000000LL + now.tv_nsec;
  }
  
  static struct shim_syncobj *syncobj_lookup(uint32_t handle)
-@@ -1333,7 +1401,7 @@ int drmSyncobjSignal(int fd, const uint32_t *handles, uint32_t handle_count)
+@@ -1298,6 +1467,8 @@
+    g_dev.syncobjs[slot].used     = true;
+    g_dev.syncobjs[slot].signaled = (flags & DRM_SYNCOBJ_CREATE_SIGNALED) != 0;
+    g_dev.syncobjs[slot].value    = 0;
++   memset(&g_dev.syncobjs[slot].history, 0, sizeof(g_dev.syncobjs[slot].history));
++   if (flags & DRM_SYNCOBJ_CREATE_SIGNALED) shim_async_signal(&g_dev.syncobjs[slot].history, 0);
+    mutexUnlock(&g_dev.lock);
+    if (handle)
+       *handle = (uint32_t)slot + 1;
+@@ -1321,7 +1492,7 @@
+    mutexLock(&g_dev.lock);
+    for (uint32_t i = 0; i < handle_count; i++) {
+       struct shim_syncobj *s = syncobj_lookup(handles[i]);
+-      if (s) { s->signaled = false; s->value = 0; s->has_fence = false; }
++      if (s) { s->signaled = false; s->value = 0; s->has_fence = false; memset(&s->history, 0, sizeof(s->history)); }
+    }
+    mutexUnlock(&g_dev.lock);
+    return 0;
+@@ -1333,7 +1504,7 @@
     mutexLock(&g_dev.lock);
     for (uint32_t i = 0; i < handle_count; i++) {
        struct shim_syncobj *s = syncobj_lookup(handles[i]);
 -      if (s) s->signaled = true;
-+      if (s) { s->signaled = true; s->has_fence = false; }
++      if (s) { s->signaled = true; s->has_fence = false; shim_async_signal(&s->history, s->value); }
     }
     mutexUnlock(&g_dev.lock);
     return 0;
-@@ -1346,7 +1414,7 @@ int drmSyncobjTimelineSignal(int fd, const uint32_t *handles,
+@@ -1346,7 +1517,7 @@
     mutexLock(&g_dev.lock);
     for (uint32_t i = 0; i < handle_count; i++) {
        struct shim_syncobj *s = syncobj_lookup(handles[i]);
 -      if (s) { s->signaled = true; if (points) s->value = points[i]; }
-+      if (s) { s->signaled = true; s->has_fence = false; if (points && points[i] > s->value) s->value = points[i]; }
++      if (s) { s->signaled = true; s->has_fence = false; if (points && points[i] > s->value) s->value = points[i]; shim_async_signal(&s->history, s->value); }
     }
     mutexUnlock(&g_dev.lock);
     return 0;
-@@ -1377,61 +1445,75 @@ int drmSyncobjQuery(int fd, uint32_t *handles,
+@@ -1364,6 +1535,15 @@
+    for (uint32_t i = 0; i < handle_count; i++) {
+       mutexLock(&g_dev.lock);
+       struct shim_syncobj *s = syncobj_lookup(handles[i]);
++      if (shim_async_enabled()) {
++         if (!s) { mutexUnlock(&g_dev.lock); return -ENOENT; }
++         int result = shim_async_progress(&s->history);
++         uint64_t completed = s->history.completed;
++         mutexUnlock(&g_dev.lock);
++         if (result) return result;
++         if (points) points[i] = completed;
++         continue;
++      }
+       bool     has_fence = s && s->has_fence;
+       uint64_t value     = s ? s->value : 0;
+       NvFence  fence     = has_fence ? s->fence : (NvFence){0};
+@@ -1377,61 +1557,88 @@
     return 0;
  }
  
@@ -383,9 +616,6 @@ index 5f53f36..ce842fc 100644
 - * waits) blocks on every handle; otherwise return when the first is ready. A
 - * handle with no attached fence is already-signalled (CPU-signalled or never
 - * submitted). */
--int drmSyncobjWait(int fd, uint32_t *handles, unsigned num_handles,
--                   int64_t timeout_nsec, unsigned flags,
--                   uint32_t *first_signaled)
 +/* NVK waits for submission from another thread as well as GPU completion.
 + * An empty, unsignaled syncobj is pending, never complete. Timeline waits
 + * must also observe the requested point before considering its fence.
@@ -394,25 +624,10 @@ index 5f53f36..ce842fc 100644
 +static int shim_syncobj_wait(int fd, uint32_t *handles, const uint64_t *points,
 +                             unsigned count, int64_t deadline, unsigned flags,
 +                             uint32_t *first_signaled)
- {
-    if (!drm_shim_owns_fd(fd)) { errno = EBADF; return -EBADF; }
--   int32_t timeout_us = shim_abs_ns_to_rel_us(timeout_nsec);
--   /* DEBUG cap: never wait forever, so a non-signalling fence yields a logged
--    * timeout instead of a frozen app. The fill should complete in << 3s. */
--   if (timeout_us < 0 || timeout_us > 3000000)
--      timeout_us = 3000000;
++{
++   if (!drm_shim_owns_fd(fd)) { errno = EBADF; return -EBADF; }
 +   if (count == 0) return 0;
-    const bool wait_all = (flags & DRM_SYNCOBJ_WAIT_FLAGS_WAIT_ALL) != 0;
--   int ret = 0;
--
--   for (unsigned i = 0; i < num_handles; i++) {
--      /* Snapshot the fence under the lock, then block on the GPU WITHOUT the
--       * lock held — otherwise a long wait would stall other threads' submits. */
--      mutexLock(&g_dev.lock);
--      struct shim_syncobj *s = syncobj_lookup(handles[i]);
--      bool    has_fence = s && s->has_fence;
--      NvFence fence     = has_fence ? s->fence : (NvFence){0};
--      mutexUnlock(&g_dev.lock);
++   const bool wait_all = (flags & DRM_SYNCOBJ_WAIT_FLAGS_WAIT_ALL) != 0;
 +   const bool available = (flags & DRM_SYNCOBJ_WAIT_FLAGS_WAIT_AVAILABLE) != 0;
 +
 +   for (;;) {
@@ -425,23 +640,25 @@ index 5f53f36..ce842fc 100644
 +            errno = ENOENT;
 +            return -ENOENT;
 +         }
++         if (shim_async_enabled()) {
++            bool ready = false;
++            int result = shim_async_ready(&s->history, points ? points[i] : 0, points != NULL, available, &ready);
++            const bool submitted = s->history.available && (!points || s->history.submitted >= points[i]);
++            mutexUnlock(&g_dev.lock);
++            if (result) { errno = -result; return result; }
++            if (!submitted && !(flags & DRM_SYNCOBJ_WAIT_FLAGS_WAIT_FOR_SUBMIT)) return -EINVAL;
++            if (ready) {
++               ready_count++;
++               if (!wait_all) { if (first_signaled) *first_signaled = i; return 0; }
++            }
++            continue;
++         }
 +         const bool has_fence = s->has_fence;
 +         const bool submitted = (has_fence || s->signaled) &&
 +            (!points || points[i] == 0 || s->value >= points[i]);
 +         const NvFence fence = s->fence;
 +         mutexUnlock(&g_dev.lock);
- 
--      bool ready = !has_fence;   /* no fence => already done */
--      if (!ready)
--         ready = R_SUCCEEDED(nvFenceWait(&fence, timeout_us));
--
--      if (ready) {
--         if (first_signaled) *first_signaled = i;
--         if (!wait_all)                  /* WAIT_ANY: first ready is enough */
--            return 0;
--      } else if (wait_all) {
--         errno = ETIME;                  /* this one timed out; WAIT_ALL fails */
--         return -ETIME;
++
 +         if (!submitted && !(flags & DRM_SYNCOBJ_WAIT_FLAGS_WAIT_FOR_SUBMIT)) {
 +            errno = EINVAL;
 +            return -EINVAL;
@@ -455,7 +672,7 @@ index 5f53f36..ce842fc 100644
 +               return 0;
 +            }
 +         }
-       }
++      }
 +      if (wait_all && ready_count == count) {
 +         if (first_signaled) *first_signaled = 0;
 +         return 0;
@@ -464,20 +681,53 @@ index 5f53f36..ce842fc 100644
 +      if (remaining <= 0) { errno = ETIME; return -ETIME; }
 +      // A short sleep bounds CPU use and preserves WAIT_ANY responsiveness.
 +      svcSleepThread(remaining < 50000 ? remaining : 50000);
-    }
++   }
++}
++
+ int drmSyncobjWait(int fd, uint32_t *handles, unsigned num_handles,
+                    int64_t timeout_nsec, unsigned flags,
+                    uint32_t *first_signaled)
+ {
+-   if (!drm_shim_owns_fd(fd)) { errno = EBADF; return -EBADF; }
+-   int32_t timeout_us = shim_abs_ns_to_rel_us(timeout_nsec);
+-   /* DEBUG cap: never wait forever, so a non-signalling fence yields a logged
+-    * timeout instead of a frozen app. The fill should complete in << 3s. */
+-   if (timeout_us < 0 || timeout_us > 3000000)
+-      timeout_us = 3000000;
+-   const bool wait_all = (flags & DRM_SYNCOBJ_WAIT_FLAGS_WAIT_ALL) != 0;
+-   int ret = 0;
+-
+-   for (unsigned i = 0; i < num_handles; i++) {
+-      /* Snapshot the fence under the lock, then block on the GPU WITHOUT the
+-       * lock held — otherwise a long wait would stall other threads' submits. */
+-      mutexLock(&g_dev.lock);
+-      struct shim_syncobj *s = syncobj_lookup(handles[i]);
+-      bool    has_fence = s && s->has_fence;
+-      NvFence fence     = has_fence ? s->fence : (NvFence){0};
+-      mutexUnlock(&g_dev.lock);
+-
+-      bool ready = !has_fence;   /* no fence => already done */
+-      if (!ready)
+-         ready = R_SUCCEEDED(nvFenceWait(&fence, timeout_us));
+-
+-      if (ready) {
+-         if (first_signaled) *first_signaled = i;
+-         if (!wait_all)                  /* WAIT_ANY: first ready is enough */
+-            return 0;
+-      } else if (wait_all) {
+-         errno = ETIME;                  /* this one timed out; WAIT_ALL fails */
+-         return -ETIME;
+-      }
+-   }
 -   if (!wait_all && num_handles > 0) {
 -      errno = ETIME;                     /* WAIT_ANY: none became ready */
 -      ret = -ETIME;
 -   }
 -   return ret;
- }
- 
+-}
+-
 -/* Timeline syncobjs aren't advertised (drmGetCap reports no timeline), but keep
 - * a correct binary-style wait in case a caller reaches here. */
-+int drmSyncobjWait(int fd, uint32_t *handles, unsigned num_handles,
-+                   int64_t timeout_nsec, unsigned flags,
-+                   uint32_t *first_signaled)
-+{
 +   return shim_syncobj_wait(fd, handles, NULL, num_handles, timeout_nsec,
 +                            flags, first_signaled);
 +}
@@ -494,11 +744,100 @@ index 5f53f36..ce842fc 100644
  }
  
  /* Cross-process / sync_file sharing is not supported on the Switch. */
+diff --git a/winsys/switch_async.h b/winsys/switch_async.h
+new file mode 100644
+--- /dev/null
++++ b/winsys/switch_async.h
+@@ -0,0 +1,85 @@
++#ifndef SWITCH_ASYNC_H
++#define SWITCH_ASYNC_H
++/* Bounded queues, with completion checks supplied by the native channel.
++ * Callers serialize updates with the device lock. Polls never block. */
++#define SHIM_ASYNC_QUEUE_LIMIT 2
++#define SHIM_ASYNC_POINT_LIMIT 8
++static int shim_async_fence_result(uint32_t channel, const NvFence *fence, int timeout_us);
++struct shim_async_queue {
++   NvFence fences[SHIM_ASYNC_QUEUE_LIMIT];
++   unsigned count;
++   bool failed;
++};
++struct shim_async_point { uint64_t value; NvFence fence; uint32_t channel; };
++struct shim_async_history {
++   struct shim_async_point points[SHIM_ASYNC_POINT_LIMIT];
++   unsigned count;
++   uint64_t submitted, completed;
++   bool available, completed_valid;
++};
++static inline bool shim_async_enabled(void)
++{
++   const char *value = getenv("NVK_SWITCH_ASYNC");
++   return value && *value == '1';
++}
++/* mode: 0 = poll; 1 = block on oldest; 2 = drain all. */
++static inline int shim_async_reap(struct shim_async_queue *queue, uint32_t channel, int mode)
++{
++   if (queue->failed) return -EIO;
++   while (queue->count) {
++      int result = shim_async_fence_result(channel, &queue->fences[0], mode ? 2000000 : 0);
++      if (result == -ETIME && !mode) return 0;
++      if (result) { queue->failed = true; return result; }
++      memmove(queue->fences, queue->fences + 1, (--queue->count) * sizeof(NvFence));
++      if (mode == 1) return 0;
++   }
++   return 0;
++}
++static inline int shim_async_progress(struct shim_async_history *history)
++{
++   while (history->count) {
++      const struct shim_async_point *point = &history->points[0];
++      int result = shim_async_fence_result(point->channel, &point->fence, 0);
++      if (result == -ETIME) return 0;
++      if (result) return result;
++      if (point->value > history->completed) history->completed = point->value;
++      history->completed_valid = true;
++      memmove(history->points, history->points + 1, (--history->count) * sizeof(*point));
++   }
++   return 0;
++}
++static inline int shim_async_attach(struct shim_async_history *history, uint64_t value,
++                                    const NvFence *fence, uint32_t channel)
++{
++   int result = shim_async_progress(history);
++   if (result) return result;
++   if (history->count == SHIM_ASYNC_POINT_LIMIT) {
++      const struct shim_async_point *oldest = &history->points[0];
++      result = shim_async_fence_result(oldest->channel, &oldest->fence, 2000000);
++      if (result) return result;
++      result = shim_async_progress(history);
++      if (result || history->count == SHIM_ASYNC_POINT_LIMIT) return result ? result : -EIO;
++   }
++   history->points[history->count++] = (struct shim_async_point){value, *fence, channel};
++   history->submitted = value;
++   history->available = true;
++   return 0;
++}
++static inline void shim_async_signal(struct shim_async_history *history, uint64_t value)
++{
++   memset(history, 0, sizeof(*history));
++   history->submitted = history->completed = value;
++   history->available = history->completed_valid = true;
++}
++static inline int shim_async_ready(struct shim_async_history *history, uint64_t value,
++                                   bool timeline, bool available, bool *ready)
++{
++   *ready = false;
++   int result = shim_async_progress(history);
++   if (result) return result;
++   if (!history->available) return 0;
++   if (available) *ready = !timeline || history->submitted >= value;
++   else *ready = history->completed_valid && (timeline ? history->completed >= value : !history->count);
++   return 0;
++}
++#endif
 diff --git a/winsys/wsi/wsi_common_switch.c b/winsys/wsi/wsi_common_switch.c
-index 5136fe3..41b2c21 100644
 --- a/winsys/wsi/wsi_common_switch.c
 +++ b/winsys/wsi/wsi_common_switch.c
-@@ -46,7 +46,8 @@ __attribute__((weak)) void dusk_switch_log(const char *msg) { (void)msg; }
+@@ -46,7 +46,8 @@
   * nwindowQueueBuffer, no per-frame CPU copy/swizzle. Recipe = Dan-RE
   * FUN_71000f2c00 + dan-re/RE_NOTES.md §131-178. */
  extern bool drm_shim_bo_nvmap_by_va(uint64_t gpu_va, uint32_t *out_nvmap_id,
@@ -508,7 +847,7 @@ index 5136fe3..41b2c21 100644
  extern bool nvk_switch_image_layout(VkImage image, uint32_t *row_stride_B,
                                      uint32_t *block_height_log2, uint64_t *offset_B,
                                      uint64_t *size_B, uint8_t *pte_kind,
-@@ -60,15 +61,27 @@ static bool
+@@ -60,15 +61,27 @@
  wsi_switch_build_graphic_buffer(NvGraphicBuffer *gb, VkImage image,
                                  VkFormat vk_format, VkExtent2D extent)
  {
@@ -538,7 +877,7 @@ index 5136fe3..41b2c21 100644
  
     const bool bgra = (vk_format == VK_FORMAT_B8G8R8A8_UNORM);
     memset(gb, 0, sizeof(*gb));
-@@ -93,7 +106,7 @@ wsi_switch_build_graphic_buffer(NvGraphicBuffer *gb, VkImage image,
+@@ -93,7 +106,7 @@
     gb->planes[0].color_format      = bgra ? NvColorFormat_A8R8G8B8 : NvColorFormat_A8B8G8R8;
     gb->planes[0].layout            = NvLayout_BlockLinear;    /* = 3                  */
     gb->planes[0].pitch             = row_stride_B;
@@ -547,7 +886,7 @@ index 5136fe3..41b2c21 100644
     gb->planes[0].kind              = NvKind_Generic_16BX2;    /* = 0xfe, display kind */
     gb->planes[0].block_height_log2 = block_height_log2;
     gb->planes[0].scan              = NvDisplayScanFormat_Progressive;
-@@ -325,7 +338,11 @@ wsi_switch_swapchain_acquire_next_image(struct wsi_swapchain *wsi_chain,
+@@ -325,7 +338,11 @@
           nwindowCancelBuffer(chain->window, slot, NULL);
           return VK_ERROR_OUT_OF_DATE_KHR;
        }
@@ -560,7 +899,7 @@ index 5136fe3..41b2c21 100644
        if (trace) { printf("[wsi-zc] acquire: fence waited, slot=%d ready\n", slot); fflush(stdout); }
        chain->images[slot].acquire_fence = mf;
        chain->images[slot].busy = true;
-@@ -524,10 +541,28 @@ wsi_switch_surface_create_swapchain(VkIcdSurfaceBase *icd_surface,
+@@ -524,10 +541,28 @@
      * scanout buffer (build the NvGraphicBuffer with kind=0xfe + the image's NIL
      * layout, then nwindowConfigureBuffer). slot == image index (identity). If any
      * image can't be wrapped, fall back to the libnx-framebuffer CPU-copy path. */
@@ -593,7 +932,7 @@ index 5136fe3..41b2c21 100644
        if (!wsi_switch_build_graphic_buffer(&chain->images[i].gb,
                                             chain->images[i].base.image,
                                             chain->vk_format, chain->extent)) {
-@@ -544,19 +579,21 @@ wsi_switch_surface_create_swapchain(VkIcdSurfaceBase *icd_surface,
+@@ -544,19 +579,21 @@
        printf("[wsi-zc] zero-copy ENABLED (block-linear scanout, kind=0xfe)\n"); fflush(stdout);
        dusk_switch_log("[wsi] zero-copy ENABLED (block-linear nwindow scanout, kind=0xfe)\n");
     } else {

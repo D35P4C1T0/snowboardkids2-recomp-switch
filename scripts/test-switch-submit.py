@@ -36,12 +36,14 @@ typedef u32 Result;
 typedef struct { unsigned id, value; } NvFence;
 typedef struct { uint64_t timestamp; u32 info32; uint16_t info16, status; } NvNotification;
 typedef struct { u32 type, info[31]; } NvError;
+#include "switch_async.h"
 struct shim_channel {
     int chan; bool engines_bound; uint64_t cmdbuf_va;
     unsigned fence_num_cmds, flush_num_cmds, setobj_num_cmds;
+    struct shim_async_queue pending;
 };
 struct shim_bo { bool used; uint64_t gpu_va, size, gpu_bo_offset; void *cpu; };
-struct shim_syncobj { bool signaled, has_fence; NvFence fence; uint64_t value; };
+struct shim_syncobj { bool signaled, has_fence; NvFence fence; uint64_t value; struct shim_async_history history; };
 struct drm_nouveau_sync { u32 handle; uint64_t timeline_value; };
 struct drm_nouveau_exec_push { uint64_t va; u32 va_len, flags; };
 struct drm_nouveau_exec { u32 channel, push_count, wait_count, sig_count; uint64_t push_ptr, wait_ptr, sig_ptr; };
@@ -51,6 +53,8 @@ static struct shim_syncobj syncobj;
 static Result kickoff_result, fence_result, notification_result;
 static unsigned fault_type, error_type, logged, detail_reads;
 static bool decoded_method;
+static unsigned gpu_progress, next_fence, blocking_waits;
+static bool async_gpu;
 static struct { uint64_t va; u32 len, flags; } entries[8];
 static unsigned entry_count;
 static struct shim_channel *channel_lookup(unsigned id) { return id == 1 ? &channel : NULL; }
@@ -73,15 +77,19 @@ static Result nvGpuChannelGetErrorInfo(int *ch, NvError *e) {
 }
 static int nvFenceGetFd(void) { return 0; }
 static Result nvioctlNvhostCtrl_SyncptRead(int fd, unsigned id, u32 *cur) { (void)fd; (void)id; *cur=100; return 0; }
-static Result nvFenceWait(const NvFence *f, int timeout) { (void)f; (void)timeout; return fence_result; }
-static void nvGpuChannelGetFence(int *ch, NvFence *f) { (void)ch; *f=(NvFence){1,100}; }
+static Result nvFenceWait(const NvFence *f, int timeout) {
+    if (!async_gpu) return fence_result;
+    if (timeout && gpu_progress < f->value) { blocking_waits++; gpu_progress=f->value; }
+    return gpu_progress >= f->value ? 0 : 1;
+}
+static void nvGpuChannelGetFence(int *ch, NvFence *f) { (void)ch; *f=(NvFence){1,async_gpu ? next_fence : 100}; }
 static void nvGpuChannelAppendEntry(int *ch, uint64_t va, u32 len, u32 flags, u32 extra) {
     (void)ch; (void)extra;
     assert(entry_count < 8);
     entries[entry_count].va=va; entries[entry_count].len=len; entries[entry_count].flags=flags;
     entry_count++;
 }
-static void nvGpuChannelIncrFence(int *ch) { (void)ch; }
+static void nvGpuChannelIncrFence(int *ch) { (void)ch; if (async_gpu) next_fence++; }
 static Result kickoff_retry(int *ch) { (void)ch; return kickoff_result; }
 '''
 tests = r'''
@@ -93,6 +101,8 @@ static void reset(void) {
     channel.fence_num_cmds=3; channel.flush_num_cmds=10; channel.setobj_num_cmds=10;
     notification_result=0xea01; /* libnx: no pending notification */
     g_drm_shim_log_sink=log_sink;
+    unsetenv("NVK_SWITCH_ASYNC"); async_gpu=false;
+    gpu_progress=next_fence=blocking_waits=0;
 }
 int main(void) {
     struct drm_nouveau_exec_push push={0x1000,4,0};
@@ -129,14 +139,44 @@ int main(void) {
     reset(); req.wait_count=1; req.wait_ptr=(uintptr_t)&signal;
     syncobj.has_fence=true; syncobj.value=3; fence_result=1;
     assert(nouveau_exec(&req)==-EIO && syncobj.value==3);
+    reset(); setenv("NVK_SWITCH_ASYNC","1",1); async_gpu=true;
+    req.wait_count=0; req.sig_count=1;
+    assert(nouveau_exec(&req)==0 && blocking_waits==1); /* first engine bind drains */
+    entry_count=0; signal.timeline_value=8;
+    assert(nouveau_exec(&req)==0 && !syncobj.signaled && syncobj.history.count==1);
+    assert(gpu_progress==1 && next_fence==2); /* returns with work pending */
+    entry_count=0; signal.timeline_value=9;
+    assert(nouveau_exec(&req)==0 && channel.pending.count==2);
+    entry_count=0; signal.timeline_value=10;
+    assert(nouveau_exec(&req)==0 && blocking_waits==2 && channel.pending.count==2);
+    assert(syncobj.history.completed==8 && next_fence==4); /* backpressure retires oldest */
+    gpu_progress=4;
+    assert(shim_async_progress(&syncobj.history)==0 && syncobj.history.completed==10);
+    notification_result=0; fault_type=32;
+    assert(shim_async_progress(&syncobj.history)==0); /* already retired */
+    entry_count=0;
+    assert(nouveau_exec(&req)==-EIO && channel.pending.failed);
+    reset(); setenv("NVK_SWITCH_ASYNC","1",1); async_gpu=true; signal.timeline_value=7;
+    assert(nouveau_exec(&req)==0);
+    entry_count=0; signal.timeline_value=8;
+    assert(nouveau_exec(&req)==0);
+    gpu_progress=100; notification_result=0; fault_type=32; g_drm_shim_log_sink=NULL;
+    assert(shim_async_progress(&syncobj.history)==-EIO);
+    assert(syncobj.history.completed==7 && channel.pending.failed); /* reset must not publish failed point */
+    reset(); setenv("NVK_SWITCH_ASYNC","1",1); async_gpu=true; signal.timeline_value=0;
+    assert(nouveau_exec(&req)==0);
+    entry_count=0; assert(nouveau_exec(&req)==0);
+    entry_count=0; req.wait_count=1; req.wait_ptr=(uintptr_t)&signal;
+    assert(nouveau_exec(&req)==0 && gpu_progress>=2); /* binary dependency waits latest fence, not completed point 0 */
     puts("PASS: cache boundaries, native GPU faults, failed work never signals/recycles, timeout/kickoff/dependency failures");
 }
 '''
 functions = '\n'.join(function(name) for name in [
-    'gen_flush_cmdlist', 'shim_channel_check_error', 'report_submit_status', 'nouveau_exec'])
+    'gen_flush_cmdlist', 'shim_channel_check_error', 'report_submit_status', 'shim_async_fence_result', 'nouveau_exec'])
 with tempfile.TemporaryDirectory(prefix='sk2-submit-test-') as temp:
     src=Path(temp)/'test.c'; binary=Path(temp)/'test'
     src.write_text(stub+'\n'+functions+'\n'+tests)
-    subprocess.run([os.environ.get('CC','cc'), '-std=c11', '-Wall', '-Wextra',
+    subprocess.run([os.environ.get('CC','cc'), '-std=c11', '-D_POSIX_C_SOURCE=200809L',
+                    '-I', str(ROOT / 'build-switch-nvk/source/winsys'), '-Wall', '-Wextra',
                     '-Wno-unused-variable', '-Werror', str(src), '-o', str(binary)], check=True)
     subprocess.run([str(binary)], check=True)

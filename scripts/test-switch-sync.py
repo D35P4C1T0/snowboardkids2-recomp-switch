@@ -24,15 +24,19 @@ stub = r'''
 #include <errno.h>
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 #define DRM_SYNCOBJ_WAIT_FLAGS_WAIT_ALL 1
 #define DRM_SYNCOBJ_WAIT_FLAGS_WAIT_FOR_SUBMIT 2
 #define DRM_SYNCOBJ_WAIT_FLAGS_WAIT_AVAILABLE 4
 #define R_SUCCEEDED(r) ((r) == 0)
+#define R_FAILED(r) ((r) != 0)
 typedef struct { unsigned id, value; } NvFence;
-struct shim_syncobj { bool used, signaled; uint64_t value; bool has_fence; NvFence fence; };
+#include "switch_async.h"
+struct shim_syncobj { bool used, signaled; uint64_t value; bool has_fence; NvFence fence; struct shim_async_history history; };
 static struct { int lock; struct shim_syncobj syncobjs[4]; } g_dev;
 static int64_t now;
 static unsigned gpu_progress[4], sleeps;
+static bool native_fault;
 static void (*on_sleep)(void);
 static bool drm_shim_owns_fd(int fd) { return fd == 1; }
 static void mutexLock(int *lock) { assert(*lock == 0); *lock = 1; }
@@ -43,6 +47,13 @@ static struct shim_syncobj *syncobj_lookup(uint32_t handle) {
 static int nvFenceWait(const NvFence *fence, int timeout) {
     assert(!g_dev.lock && timeout == 0);
     return gpu_progress[fence->id] >= fence->value ? 0 : 1;
+}
+static int shim_async_fence_result(uint32_t channel, const NvFence *fence, int timeout) {
+    (void)channel;
+    if (native_fault) return -EIO;
+    assert(timeout==0 || timeout==2000000);
+    if (timeout) gpu_progress[fence->id]=fence->value;
+    return gpu_progress[fence->id]>=fence->value ? 0 : -ETIME;
 }
 static int64_t shim_monotonic_ns(void) { return now; }
 static void svcSleepThread(int64_t duration) {
@@ -56,7 +67,8 @@ tests = r'''
 static void reset(void) {
     memset(&g_dev, 0, sizeof(g_dev)); memset(gpu_progress, 0, sizeof(gpu_progress));
     for (unsigned i=0; i<4; i++) g_dev.syncobjs[i].used = true;
-    now=0; sleeps=0; on_sleep=NULL;
+    now=0; sleeps=0; on_sleep=NULL; native_fault=false;
+    unsetenv("NVK_SWITCH_ASYNC");
 }
 static void submit_later(void) {
     if (sleeps == 2) {
@@ -97,14 +109,40 @@ int main(void) {
     assert(drmSyncobjWait(9,handles,1,0,pending,NULL)==-EBADF);
     handles[0]=99;
     assert(drmSyncobjWait(1,handles,1,0,pending,NULL)==-ENOENT);
+    reset(); setenv("NVK_SWITCH_ASYNC","1",1); handles[0]=1;
+    NvFence first={0,1}, second={0,2};
+    assert(shim_async_attach(&g_dev.syncobjs[0].history,3,&first,1)==0);
+    assert(shim_async_attach(&g_dev.syncobjs[0].history,5,&second,1)==0);
+    assert(drmSyncobjTimelineWait(1,handles,&point,1,0,pending,NULL)==-ETIME);
+    assert(drmSyncobjTimelineWait(1,handles,&point,1,0,pending|DRM_SYNCOBJ_WAIT_FLAGS_WAIT_AVAILABLE,NULL)==0);
+    uint64_t queried=99;
+    assert(drmSyncobjQuery(1,handles,&queried,1)==0 && queried==0);
+    gpu_progress[0]=1;
+    assert(drmSyncobjQuery(1,handles,&queried,1)==0 && queried==3);
+    assert(drmSyncobjTimelineWait(1,handles,&point,1,0,pending,NULL)==0); /* lower point complete, higher pending */
+    point=5;
+    assert(drmSyncobjTimelineWait(1,handles,&point,1,0,pending,NULL)==-ETIME);
+    native_fault=true; queried=99;
+    assert(drmSyncobjQuery(1,handles,&queried,1)==-EIO && queried==99);
+    assert(g_dev.syncobjs[0].history.completed==3);
+    native_fault=false;
+    gpu_progress[0]=2;
+    assert(drmSyncobjQuery(1,handles,&queried,1)==0 && queried==5);
+    assert(drmSyncobjTimelineWait(1,handles,&point,1,0,pending,NULL)==0);
+    assert(drmSyncobjReset(1,handles,1)==0);
+    assert(drmSyncobjWait(1,handles,1,0,pending,NULL)==-ETIME);
+    assert(drmSyncobjSignal(1,handles,1)==0);
+    assert(drmSyncobjWait(1,handles,1,0,pending,NULL)==0);
     puts("PASS: pending fence, late submission, timeline value, GPU completion, wait-any/all, reset, deadline, invalid handles");
 }
 '''
 functions = '\n'.join(function(name) for name in [
-    'shim_syncobj_wait', 'drmSyncobjWait', 'drmSyncobjTimelineWait',
+    'drmSyncobjQuery', 'shim_syncobj_wait', 'drmSyncobjWait', 'drmSyncobjTimelineWait',
     'drmSyncobjSignal', 'drmSyncobjReset'])
 with tempfile.TemporaryDirectory(prefix='sk2-sync-test-') as temp:
     src = Path(temp)/'test.c'; binary=Path(temp)/'test'
     src.write_text(stub+'\n'+functions+'\n'+tests)
-    subprocess.run([os.environ.get('CC','cc'), '-std=c11', '-Wall', '-Wextra', '-Werror', str(src), '-o', str(binary)], check=True)
+    subprocess.run([os.environ.get('CC','cc'), '-std=c11', '-D_POSIX_C_SOURCE=200809L',
+                    '-I', str(root / 'build-switch-nvk/source/winsys'),
+                    '-Wall', '-Wextra', '-Werror', str(src), '-o', str(binary)], check=True)
     subprocess.run([str(binary)], check=True)

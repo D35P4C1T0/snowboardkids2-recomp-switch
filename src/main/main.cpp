@@ -1180,6 +1180,8 @@ int main(int argc, char** argv) {
         }
         if (std::strcmp(argv[i], "--legacy-texture-uploads") == 0)
             SDL_setenv("SK2_SWITCH_BATCH_UPLOADS", "0", 1);
+        if (std::strcmp(argv[i], "--async-submissions") == 0)
+            SDL_setenv("NVK_SWITCH_ASYNC", "1", 1);
         if (std::strcmp(argv[i], "--legacy-audio-backend") == 0)
             SDL_setenv("SK2_SWITCH_LEGACY_AUDIO", "1", 1);
     }

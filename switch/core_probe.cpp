@@ -105,6 +105,8 @@ int main(int argc, char** argv) {
     bool include_inline = false;
     for (int i = 1; i < argc; i++) {
         include_inline |= std::strcmp(argv[i], "--inline-transfers") == 0;
+        if (std::strcmp(argv[i], "--async-submissions") == 0)
+            setenv("NVK_SWITCH_ASYNC", "1", 1);
     }
     const bool sockets_ready = R_SUCCEEDED(socketInitializeDefault());
     if (sockets_ready && __nxlink_host.s_addr != 0) {
