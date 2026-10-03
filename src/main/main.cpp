@@ -1200,6 +1200,10 @@ int main(int argc, char** argv) {
     (void) argv;
 #if defined(__SWITCH__)
     for (int i = 1; i < argc; i++) {
+        if (std::strcmp(argv[i], "--direct-readbacks") == 0)
+            SDL_setenv("SK2_SWITCH_CACHE_READBACKS", "0", 1);
+        if (std::strcmp(argv[i], "--cache-readbacks") == 0)
+            SDL_setenv("SK2_SWITCH_CACHE_READBACKS", "1", 1);
         if (std::strcmp(argv[i], "--no-fps") == 0)
             SDL_setenv("SK2_SWITCH_FPS", "0", 1);
         if (std::strcmp(argv[i], "--no-profile") == 0) {
@@ -1249,6 +1253,10 @@ int main(int argc, char** argv) {
     switch_log_checkpoint(asynchronous && *asynchronous == '1'
         ? "startup: NVK bounded asynchronous submissions selected"
         : "startup: NVK synchronous submissions selected");
+    const char* cached_readbacks = SDL_getenv("SK2_SWITCH_CACHE_READBACKS");
+    switch_log_checkpoint(!cached_readbacks || *cached_readbacks != '0'
+        ? "startup: cached CPU framebuffer readback selected"
+        : "startup: direct CPU framebuffer readback selected");
     g_drm_shim_log_sink = switch_driver_log_sink;
 
     // NVK does not advertise the non-conformant GM20B device unless the

@@ -2917,16 +2917,19 @@ diff --git a/src/render/rt64_framebuffer_renderer.h b/src/render/rt64_framebuffe
 diff --git a/src/render/rt64_native_target.cpp b/src/render/rt64_native_target.cpp
 --- a/src/render/rt64_native_target.cpp
 +++ b/src/render/rt64_native_target.cpp
-@@ -2,6 +2,8 @@
+@@ -2,7 +2,11 @@
  // RT64
  //
  
 +#include <algorithm>
 +#include <cmath>
  #include <cstring>
++#include <cstdlib>
++#include "common/rt64_switch_perf.h"
  
  #include "rt64_native_target.h"
-@@ -11,6 +13,80 @@
+ 
+@@ -11,6 +15,80 @@
  
  #include "rt64_render_target.h"
  #include "rt64_render_worker.h"
@@ -3007,7 +3010,7 @@ diff --git a/src/render/rt64_native_target.cpp b/src/render/rt64_native_target.c
  
  namespace RT64 {
      // NativeTarget
-@@ -369,4 +445,108 @@
+@@ -369,4 +447,122 @@
          writeBuffer.nativeReadbackBuffer->unmap();
          writeBufferHistoryIndex++;
      }
@@ -3070,6 +3073,7 @@ diff --git a/src/render/rt64_native_target.cpp b/src/render/rt64_native_target.c
 +    }
 +
 +    void NativeTarget::copyToRAMCPU(uint8_t *data) {
++        RT64SwitchPerfScope encodeProfile("framebuffer_cpu_encode");
 +        assert(data != nullptr);
 +        assert(switchTextureReadbackBuffer != nullptr);
 +        assert(switchTextureReadbackSize == G_IM_SIZ_16b);
@@ -3084,6 +3088,19 @@ diff --git a/src/render/rt64_native_target.cpp b/src/render/rt64_native_target.c
 +
 +        RenderRange readRange(0, sourceByteCount);
 +        const uint8_t *readback = reinterpret_cast<const uint8_t *>(switchTextureReadbackBuffer->map(0, &readRange));
++        // GPU-visible readback mappings are uncached on Switch. Copy once into
++        // reusable cached memory before the encoder's repeated byte accesses.
++        // Keep the direct path for a controlled hardware comparison.
++        static const bool cachedReadback = [] {
++            const char* setting = std::getenv("SK2_SWITCH_CACHE_READBACKS");
++            return !setting || *setting != '0';
++        }();
++        if (cachedReadback) {
++            RT64SwitchPerfScope cacheProfile("framebuffer_readback_cache");
++            switchTextureReadbackCache.resize(sourceByteCount);
++            std::memcpy(switchTextureReadbackCache.data(), readback, sourceByteCount);
++            readback = switchTextureReadbackCache.data();
++        }
 +        uint8_t *destination = data;
 +
 +        for (uint32_t y = 0; y < rowCount; y++) {
@@ -3121,12 +3138,13 @@ diff --git a/src/render/rt64_native_target.cpp b/src/render/rt64_native_target.c
 diff --git a/src/render/rt64_native_target.h b/src/render/rt64_native_target.h
 --- a/src/render/rt64_native_target.h
 +++ b/src/render/rt64_native_target.h
-@@ -44,6 +44,19 @@
+@@ -44,6 +44,20 @@
          uint32_t readBufferHistoryCount = 0;
          uint32_t writeBufferHistoryCount = 0;
          uint32_t writeBufferHistoryIndex = 0;
 +#if defined(__SWITCH__)
 +        std::unique_ptr<RenderBuffer> switchTextureReadbackBuffer;
++        std::vector<uint8_t> switchTextureReadbackCache;
 +        uint32_t switchTextureReadbackBufferSize = 0;
 +        uint32_t switchTextureReadbackRowWidth = 0;
 +        uint32_t switchTextureReadbackRowStart = 0;
@@ -3141,7 +3159,7 @@ diff --git a/src/render/rt64_native_target.h b/src/render/rt64_native_target.h
  
          NativeTarget();
          ~NativeTarget();
-@@ -56,7 +69,11 @@
+@@ -56,7 +70,11 @@
          uint32_t copyFromRAM(RenderWorker *worker, FramebufferChange &emptyFbChange, uint32_t width, uint32_t height, uint32_t rowStart, uint8_t siz, uint8_t fmt, const uint8_t *data, bool invalidateTargets, const ShaderLibrary *shaderLibrary);
          void copyToNative(RenderWorker *worker, RenderTarget *srcTarget, uint32_t rowWidth, uint32_t rowStart, uint32_t rowEnd, uint8_t siz, uint8_t fmt, uint32_t ditherPattern, uint32_t ditherRandomSeed, const ShaderLibrary *shaderLibrary);
          void copyToRAM(uint32_t rowStart, uint32_t rowEnd, uint32_t width, uint8_t siz, uint8_t *data);
