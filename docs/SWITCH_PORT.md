@@ -1,10 +1,38 @@
-# Nintendo Switch port plan
+# Nintendo Switch port status and plan
 
 ## Goal
 
 Produce a native Horizon OS homebrew build of Snowboard Kids 2: Recompiled with the same broad user experience as Ship of Harkinian on Switch: an NRO launched through Homebrew Menu title takeover, controller-first menus, persistent saves/configuration, user-supplied game data on the SD card, mods, widescreen rendering, and stable audio/video pacing.
 
 The port must not contain or download copyrighted game data. Users will copy their own supported Snowboard Kids 2 ROM to the application directory.
+
+## Current status — 2026-10-03
+
+Development branch: `codex/switch-performance`; latest implementation checkpoint:
+`41ee648`. The full NRO and SD-card archive build from the pinned dependency
+patches. Hardware testing currently uses `192.168.222.235`.
+
+| Area | Tested progress |
+| --- | --- |
+| Textures | GPU cache-coherency fix passes focused transfer/draw probes; tester repeatedly confirms correct race textures |
+| Audio | Queue accounting/continuity and native SDL handoff fixes implemented; tester confirms continuous sound |
+| Uploads | Fenced image batching enabled; 64 transfer, 3 draw, and 11 batched-image checks pass |
+| Readback | Cached CPU copy and vector pixel packing enabled; byte-equivalence tests pass; latest conversion mean 0.94 ms per copy |
+| Performance | Tester reports about 45 FPS; presentation counter visible; detailed stage timing available |
+| GPU scheduling | Synchronous default retained; bounded asynchronous and combined draw/color submissions are experimental |
+
+The latest packing build ran for 249.7 seconds without a logged GPU or
+audio-backend failure, with correct audio/textures confirmed by the tester.
+These short sessions do not establish release readiness or sustained 60 FPS.
+The 30-minute stress gate, wider course/item/menu coverage, handheld/docked
+tests, save/controller validation, and suspend/resume remain outstanding.
+Cold shader/pipeline initialization also remains costly.
+
+See [performance results](SWITCH_PERFORMANCE_RESULTS.md) for measurements,
+comparison caveats, build/test commands, and diagnostic flags. The
+[performance roadmap](SWITCH_PERFORMANCE_PLAN.md) tracks implemented phases
+and remaining work. The dated investigations below preserve earlier evidence;
+their historical FPS and audio queue readings are not the current checkpoint.
 
 ## GPU coherency investigation — 2026-10-01
 
@@ -48,8 +76,8 @@ presentation. Reproduce the fault-prone inline matrix explicitly with:
 
 ```sh
 ./scripts/switch-build.sh core
-./scripts/switch-run.sh 10.0.0.107 core
-SWITCH_NRO_ARGS='--inline-transfers' ./scripts/switch-run.sh 10.0.0.107 core
+./scripts/switch-run.sh 192.168.222.235 core
+SWITCH_NRO_ARGS='--inline-transfers' ./scripts/switch-run.sh 192.168.222.235 core
 python3 scripts/analyze-switch-log.py build-switch-logs/core-YYYYMMDD-HHMMSS.log
 python3 scripts/test-switch-submit.py
 python3 scripts/test-switch-sync.py
@@ -92,6 +120,10 @@ priority (`0xe001`).
 
 ## Earlier port status — 2026-08-23
 
+The following completed-work list records the August checkpoint. The backlog
+has been annotated with subsequent texture/performance progress; use the
+October status above for current measurements and audio validation.
+
 ### Working and hardware-tested
 
 - [x] Full aarch64 game runtime builds and packages as a native NRO.
@@ -116,7 +148,7 @@ priority (`0xe001`).
 - [x] NetLoader-only R3 capture workflow: R3 captures the next composed frame,
   the host watcher downloads it automatically, and normal SD launches retain
   the original R3 mapping.
-- [x] Best hardware run so far: 145.6 seconds, 30.2 FPS median gameplay,
+- [x] Best hardware run at the August checkpoint: 145.6 seconds, 30.2 FPS median gameplay,
   healthy audio, 136 MiB peak Vulkan budget use, and no reported Vulkan fatal
   before the title/log connection closed.
 - [x] Reproducible dependency patch chain; every follow-up patch passes forward
@@ -129,11 +161,10 @@ priority (`0xe001`).
 
 #### P0 — Rendering correctness and stability
 
-- [ ] Eliminate remaining HUD corruption in text, item icons, and item boxes.
-- [ ] Eliminate corruption in frontend-generated launcher buttons, version
-  text, file-select messages, and other transparent 2D layers. R3 captures
-  confirm this is not limited to N64-decoded textures.
-- [ ] Eliminate intermittent residual world-texture corruption.
+- [x] Correct the reported texture corruption with the October GPU cache fix.
+  Focused probes pass and the tester confirms correct textures in later races.
+- [ ] Complete visual regression coverage of all HUD/item icons, launcher
+  buttons, transparent layers, and world effects across multiple courses.
 - [ ] Audit the raw-TMEM/S2DEX sampling path separately from decoded textures.
   Moving raw-TMEM images onto the decoded-texture staging strategy was tested
   and rejected because it made HUD corruption worse.
@@ -144,15 +175,15 @@ priority (`0xe001`).
 - [ ] Validate both handheld and docked output on the supported NVK/Horizon
   combination.
 
-### Next texture tests
+### Visual regression coverage
 
 Run each candidate through `./scripts/switch-run.sh <switch-ip> full`. Pause at
 each named screen and press R3 once; the host stores timestamped JPEGs under
 `build-switch-logs/`.
 
-1. Make the GPU upload verifier reproducible in the dependency patch chain.
-   Compare source bytes against a cache-correct image-to-buffer readback for a
-   generated launcher button, a decoded N64 texture, and a raw-TMEM texture.
+1. Re-run the durable core transfer/draw/batch probes after changing GPU
+   synchronization or cache maintenance. The baseline verifier is implemented
+   and passes; extend it for new rendering paths as needed.
 2. Capture the launcher after its buttons and version text are visible, then
    file select, title menu, character select, race HUD before item pickup, race
    HUD with an item, pause, and results. Keep one clean reference capture for
@@ -166,9 +197,9 @@ each named screen and press R3 once; the host stores timestamped JPEGs under
 5. After the first visual fix, repeat item pickup/use, dialogue glyphs, all
    character portraits, every item icon, and S2DEX-heavy menus on multiple
    courses. Reject fixes that only improve one capture.
-6. Re-run a 30-minute menu/race loop at stock clocks. Require no device loss,
-   no growing Vulkan allocation count, healthy audio queues, and gameplay at
-   or above the current high-20s/low-30s FPS baseline.
+6. Run a 30-minute menu/race loop at stock clocks. Require no device loss,
+   no growing Vulkan allocation count, continuous sound, and no performance
+   regression against the latest roughly 45 FPS checkpoint on the same route.
 
 Rejected diagnostic directions should not be reintroduced without new
 evidence: ubershader-only rendering left corruption intact and reduced
@@ -180,15 +211,18 @@ zero in the captured failures.
 
 #### P1 — Performance and frame pacing
 
-- [ ] Reduce the roughly 25-second first ubershader/pipeline initialization.
-- [ ] Improve heavy gameplay from the current high-20s/low-30s FPS baseline
-  while preserving correct framebuffer copyback.
+- [ ] Reduce cold pipeline initialization; recent runs spend roughly 31 seconds
+  in the longest initialization and about 44 seconds across 72 pipelines.
+- [x] Improve CPU framebuffer readback with caching and vector packing;
+  byte-equivalence tests pass and tested audio/textures remain correct.
+- [ ] Improve heavy gameplay beyond the current roughly 45 FPS checkpoint
+  while preserving exact framebuffer copyback and normal game/audio speed.
 - [ ] Remove runtime pipeline-creation hitches. NVK currently serializes only
   a 4,896-byte cache for this workload, so specialized pipelines still rebuild
   after launch.
 - [ ] Measure thermals, clocks, and frame pacing on both Erista and Mariko.
-- [ ] Keep 60 FPS disabled until simulation timing and sustained rendering are
-  proven; 30 FPS remains the safe target.
+- [ ] Establish sustained 60 Hz presentation with correct interpolation and
+  frame pacing. A 60 Hz output target does not imply 60 FPS in races.
 
 #### P1 — Platform and gameplay parity
 
@@ -338,10 +372,12 @@ Exit gate: the base game is completable with saves, menus, audio, rumble, and su
   worker while rendering falls back to the precompiled ubershader. The Switch
   worker currently uses the ordinary pthread priority; the background-priority
   request was rejected on hardware.
-  Hardware runs reached roughly 37--40 FPS after specialization. NVK currently
+  Earlier hardware runs reached roughly 37--40 FPS after specialization;
+  current tests with cached/vectorized readback report about 45 FPS. NVK currently
   serializes a fixed 4,896-byte cache for this workload, so first-use specialized
   pipeline compilation can still cause visible hitches after every launch.
-- Offer 30 fps as the safe baseline; expose 60 fps only after frame pacing and thermal testing.
+- Target sustained 60 Hz only after frame pacing and thermal testing establish
+  it on hardware; current race output remains around 45 FPS.
 - Test 720p handheld and 1080p docked scaling. The Switch baseline renders the
   game at native N64 resolution and uses the VI pass for the fixed 720p output.
   The first workload is split into guarded setup/framebuffer submissions. A
@@ -354,7 +390,7 @@ Exit gate: the base game is completable with saves, menus, audio, rumble, and su
 
 | Area | First playable target | Later target |
 | --- | --- | --- |
-| Rendering | 720p, 16:9, 30 fps, FIFO | docked scaling, 60 fps where stable |
+| Rendering | Fixed 720p FIFO output; roughly 45 FPS in current race tests | sustained 60 FPS, wider docked/handheld validation |
 | Input | one controller, remapping, rumble | four-player, gyro audit |
 | Audio | 48 kHz stereo through SDL2 | suspend/resume and latency tuning |
 | Storage | ROM/config/save/mod directories on SD | migration and recovery UX |
@@ -536,16 +572,10 @@ The NRO does not create or write `startup.log`. Switch diagnostics are emitted
 only through the nonblocking nxlink checkpoint stream, so logging performs no
 SD-card I/O during either network or normal launches.
 
-To diagnose the native-resolution NVK loss without changing the safe default,
-create this empty marker and launch through nxlink:
-
-```text
-sdmc:/switch/snowboardkids2-recompiled/config/diagnostic-native-resolution
-```
-
-This selects 1x and splits only the first workload into setup/RSP and
-framebuffer submissions. The live log identifies which half loses the device.
-Remove the marker to return to the normal 2x/480p path.
+The earlier native-resolution diagnostic is now the default rendering path,
+with guarded first-workload submissions. The former
+`config/diagnostic-native-resolution` marker is no longer needed or read.
+`config/force-480p` selects the older 2x internal path for comparison.
 
 The full build attempts NVK zero-copy scanout by default. If that path crashes
 on a particular firmware/libnx combination, create this empty recovery marker

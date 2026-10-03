@@ -1,8 +1,19 @@
 # Switch performance implementation — 2026-10-03
 
 Branch: `codex/switch-performance`. Texture-correct baseline: `4d03da9`.
+Latest implementation checkpoint: `41ee648` (vector pixel packing).
 Hardware: user's Switch at `192.168.222.235`, launched through title takeover
 and NetLoader. This page accompanies [the roadmap](SWITCH_PERFORMANCE_PLAN.md).
+
+## Current checkpoint
+
+The latest default includes repaired audio, corrected GPU cache coherency,
+fenced texture-upload batching, cached/vectorized CPU framebuffer readback,
+and the presentation FPS counter. The tester reported approximately **45 FPS**
+with correct audio and textures. Synchronous GPU submissions remain the
+default; asynchronous execution and combined draw/color copyback are opt-in.
+The full build and relevant host tests pass. Sustained 60 FPS, controlled
+performance comparisons, and the 30-minute hardware stress gate are unfinished.
 
 ## Implemented behavior
 
@@ -55,7 +66,7 @@ and NetLoader. This page accompanies [the roadmap](SWITCH_PERFORMANCE_PLAN.md).
 | Asynchronous full game | `full-20261003-133346.log` | 180.2 s; user reported correct behavior; no logged GPU fault or audio-backend failure |
 | Cached framebuffer readback | `full-20261003-134934.log` | 283.1 s; user confirmed smoother output, correct audio and textures; no logged GPU/backend failure |
 | Direct-readback comparison | `full-20261003-135758.log` | Deliberately restores the slower path; user noticed reduced smoothness |
-| Final default package | `performance-default-live.log` | 126 s; cached readback + synchronous GPU; user confirmed smoother play, good audio and textures |
+| Cached default before vector packing | `performance-default-live.log` | 126 s; cached readback + synchronous GPU; user confirmed smoother play, good audio and textures |
 | FPS overlay | `performance-fps-overlay-live.log` | Build passes; 68 s hardware run; counter visible in title and character-selection captures |
 | Combined depth-active draw/color copyback | `performance-combined-copyback-live.log` | User confirmed correct audio/textures and unchanged apparent FPS; remains opt-in |
 | Detailed framebuffer timing | `performance-framebuffer-phases-live.log` | Default rendering restored; identifies preparation, recording, tile loading, and RAM commit costs |
@@ -102,8 +113,8 @@ Both runs used asynchronous submissions, fixed audio, and the FPS overlay. The
 user was asked to use the same course, but inputs and exact scenes were not
 recorded/replayed. Treat these as observed run results, not a controlled
 percentage speedup. The direct comparison is diagnostic and is **not** the
-packaged default. The final default package uses cached readback with the
-synchronous GPU fallback. Its **80–126 second** report range had median
+packaged default. The default package before vector packing used cached
+readback with the synchronous GPU fallback. Its **80–126 second** report range had median
 **44.36 FPS**, p10 **41.06**, and minimum **39.55**. CPU framebuffer conversion
 mean was **1.15 ms**; no GPU or audio-backend failure was logged during the
 126-second run. The user confirmed smoother play with good audio/textures.
@@ -129,7 +140,8 @@ intervals, audio RSP tasks, display-list handling, workload/present dependency
 waits, framebuffer draw/copyback, texture decode/upload, shader compilation,
 pipeline creation, graphics worker GPU waits, CPU framebuffer conversion/cache-copy, queue submit, driver lock/submit, and presentation interval.
 Native audio feed/starvation/failure are zero-duration event counters.
-The final default run's 80–126 second interval measured display-list handling
+The cached default run before vector packing measured display-list handling
+in its 80–126 second interval
 at 33.14 ms, framebuffer drawing at 4.39 ms per submission, and framebuffer
 copyback at 2.66 ms per submission. Separate color, depth, combined draw/color,
 and draw-only scopes now distinguish the phases within the aggregate scopes.
@@ -248,10 +260,11 @@ permanent implementation.
    and save/controller behavior. A short probe cannot satisfy this gate.
 3. Use the expanded VI/RSP/display-list profile to isolate the remaining CPU
    and GPU limits. Compare profiling enabled/disabled to quantify overhead.
-4. The cached default still spends about **33 ms** per display list and
-   **20 ms** per workload in the recorded warm interval, with overlapping CPU
-   and GPU waits. Next, isolate required color/depth copyback from redundant
-   synchronization before removing fences. Preserve exact RDRAM results.
+4. The packing build's 130–180 second interval measured about **31 ms** per
+   display list and **21 ms** per workload, with overlapping CPU/GPU waits.
+   Combining depth-active draw/color submissions did not show a clear benefit.
+   Use the separate framebuffer scopes to examine remaining copyback and
+   dependency waits before changing fences. Preserve exact RDRAM results.
 5. Address expensive composition, copyback/dependency waits, and cold shader
    compilation only where measurements show benefit. CPU texture decoding is
    currently too small to justify a broad SIMD rewrite. Cross-channel GPU

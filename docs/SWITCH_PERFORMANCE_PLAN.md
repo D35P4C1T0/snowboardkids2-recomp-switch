@@ -6,6 +6,26 @@ See [implementation results](SWITCH_PERFORMANCE_RESULTS.md) for tested changes,
 current measurements, and outstanding release gates. The evidence below
 records the original analysis; it is not the current implementation status.
 
+## Progress — 2026-10-03
+
+Implementation checkpoint: `41ee648` on `codex/switch-performance`.
+
+| Area | Current state | Remaining validation |
+| --- | --- | --- |
+| Audio accounting and continuity | Implemented and host-tested; native SDL buffer handoff repaired; tester confirms continuous sound | Long sessions, latency, suspend/resume |
+| Frame/audio measurement | Bounded stage histograms, warm-interval analysis, and presentation FPS counter implemented and hardware-tested | Controlled routes and profiling overhead comparison |
+| Texture upload batching | Fenced batches of up to eight images; transfer/draw probes pass; textures remain correct in races | Broader courses/items/menu coverage |
+| Asynchronous submissions | Bounded queues, completion/fault handling, and resource-retirement tests; short probe/game runs pass | Opt-in until stress and controlled performance tests pass |
+| Framebuffer readback | Cached copy and vector packing enabled by default; byte tests pass; conversion measured at 0.94 ms per copy in the latest race interval | Further copyback/dependency optimization with exact RAM results |
+| Combined framebuffer submissions | Opt-in draw/color batching tested with correct sound/textures | No clear FPS gain; retain conservative default |
+| Sustained 60 FPS and release gate | Current tester reports about 45 FPS; short runs show correct audio/textures | 30-minute uninterrupted stress test, broader platform tests, consistent 60 Hz pacing |
+
+The accounting fix alone did not repair choppy audio; the native backend
+handoff change did. Readback improvements reduced CPU conversion work, but the
+latest tests do not prove a controlled FPS speedup or sustained 60 FPS. The
+phase descriptions below retain the original proposal; use the table above and
+[results](SWITCH_PERFORMANCE_RESULTS.md) for the current state.
+
 ## Objective and constraints
 
 Aim for consistently paced 60 Hz output with continuous audio at normal game

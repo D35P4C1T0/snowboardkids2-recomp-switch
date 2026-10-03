@@ -2,7 +2,9 @@
 
 [Snowboard Kids 2: Recompiled](https://github.com/cdlewis/snowboardkids2-recomp) is a project that uses [N64: Recompiled](https://github.com/Mr-Wiseguy/N64Recomp) to **statically recompile** Snowboard Kids 2 into a native port with many new features, enhancements, and extensive mod support. This project uses [RT64](https://github.com/rt64/rt64) as the rendering engine to provide some of these enhancements.
 
-### [Download the latest release here](https://github.com/cdlewis/snowboardkids2-recomp/releases/latest).
+This fork adds a native Nintendo Switch homebrew port. See the [Switch status](#nintendo-switch-homebrew) below for the tested behavior, build instructions, and remaining work.
+
+### [Download the upstream desktop release here](https://github.com/cdlewis/snowboardkids2-recomp/releases/latest).
 
 You can read more about the Snowboard Kids 2 recompilation process [here](https://blog.chrislewis.au/snowboard-kids-2-is-recompiled/).
 
@@ -18,6 +20,7 @@ You're also welcome to join the [Snowboard Kids Community Discord](https://disco
 
 ## Table of Contents
 
+- [Nintendo Switch Homebrew](#nintendo-switch-homebrew)
 - [System Requirements](#system-requirements)
 - [Features](#features)
 - [Planned Features](#planned-features)
@@ -28,7 +31,23 @@ You're also welcome to join the [Snowboard Kids Community Discord](https://disco
 - [Libraries Used and Projects Referenced](#libraries-used-and-projects-referenced)
 - [Credits](#credits)
 
+## Nintendo Switch Homebrew
+
+Status updated **2026-10-03** on `codex/switch-performance`, through implementation commit `41ee648`.
+
+The full game builds as a native NRO and has been tested on real hardware through Homebrew Menu title takeover. The GPU cache fix corrected the reported texture corruption, and the native audio backend fix corrected choppy sound. The latest race test retained correct audio and textures, with the tester reporting about **45 FPS**. Sustained 60 FPS remains a target; the port is still under development.
+
+Recent changes include fenced texture-upload batching, cached CPU framebuffer readback, vector packing of encoded pixels, an on-screen presentation FPS counter, and detailed frame/audio timing. CPU framebuffer conversion averaged **1.17 ms per copy** before the packing change and **0.94 ms** in the later tested race interval. Routes were not replayed, so these observations do not establish a controlled FPS speedup.
+
+The default uses synchronous GPU submissions and cached readback. Bounded asynchronous submissions and combined draw/color copyback are experimental options. A 30-minute uninterrupted stress run, broader course/item coverage, handheld/docked testing, and save/controller/suspend validation remain outstanding.
+
+Use [BUILDING.md](BUILDING.md#nintendo-switch-homebrew) to build and package the Switch version. The build produces `build-switch-full/snowboardkids2-switch-sdcard.zip`; extract it at the SD-card root and add your own supported ROM as `switch/snowboardkids2-recompiled/snowboardkids2.z64`. Launch through title takeover. The upstream desktop release linked above is a separate distribution.
+
+See the [tested results and diagnostic options](docs/SWITCH_PERFORMANCE_RESULTS.md), [performance roadmap](docs/SWITCH_PERFORMANCE_PLAN.md), and [port status and architecture](docs/SWITCH_PORT.md) for evidence and remaining release gates.
+
 ## System Requirements
+
+The requirements below apply to the upstream desktop build. For Switch, follow the title-takeover setup in [BUILDING.md](BUILDING.md#nintendo-switch-homebrew).
 
 A GPU supporting Direct3D 12.0 (Shader Model 6), Vulkan 1.2, or Metal Argument Buffers Tier 2 support is required to run this project. The oldest GPUs that should be supported for each vendor are:
 
@@ -44,6 +63,8 @@ Windows users should have the [Visual C++ Redistributable](https://learn.microso
 If you have issues with crashes on startup, make sure your graphics drivers are fully up to date.
 
 ## Features
+
+The following describes the upstream feature set. Switch platform parity is still being validated; see the [Switch status](#nintendo-switch-homebrew) and [remaining platform work](docs/SWITCH_PORT.md#p1--platform-and-gameplay-parity).
 
 #### Plug and Play
 
@@ -111,6 +132,7 @@ Unlike N64 ports in the past, this project is not based on the source code provi
 - Windows: `%LOCALAPPDATA%\SnowboardKids2Recompiled\saves`
 - Linux: `~/.config/SnowboardKids2Recompiled/saves`
 - macOS: `~/Library/Application Support/SnowboardKids2Recompiled/saves`
+- Switch: `sdmc:/switch/snowboardkids2-recompiled/saves`
 
 #### How do I choose a different ROM?
 
@@ -124,11 +146,12 @@ Yes, if you place a file named `portable.txt` in the same folder as the executab
 
 ## Known Issues
 
+- Switch: sustained 60 FPS, cold shader-startup cost, and the full hardware release gates remain unresolved; see the [current Switch results](docs/SWITCH_PERFORMANCE_RESULTS.md).
 - Overlays such as MSI Afterburner and other software such as Wallpaper Engine can cause performance issues with this project that prevent the game from rendering correctly. Disabling such software is recommended.
 
 ## Building
 
-Building is not required to play this project, as prebuilt binaries (which do not contain game assets) can be found in the [Releases](https://github.com/cdlewis/snowboardkids2-recomp/releases/latest) section. Instructions on how to build this project can be found in the [BUILDING.md](BUILDING.md) file.
+Upstream desktop binaries (which do not contain game assets) can be found in the [Releases](https://github.com/cdlewis/snowboardkids2-recomp/releases/latest) section. Build the Switch homebrew package using [BUILDING.md](BUILDING.md#nintendo-switch-homebrew). Desktop build instructions are in the same file.
 
 ## Libraries Used and Projects Referenced
 

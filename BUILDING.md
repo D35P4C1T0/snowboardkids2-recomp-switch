@@ -79,7 +79,13 @@ Voilà! You should now have a `SnowboardKids2Recompiled` executable in the build
 > [!IMPORTANT]  
 > In the game itself, you should be using a standard ROM, not the decompressed one.
 
-## Nintendo Switch port
+## Nintendo Switch homebrew
+
+The full game is hardware-tested with corrected textures and audio, an FPS
+counter, and cached/vectorized framebuffer readback. Current races are around
+45 FPS; sustained 60 FPS and the long hardware stress gate remain outstanding.
+See [tested results](docs/SWITCH_PERFORMANCE_RESULTS.md) for the latest evidence
+and [port status](docs/SWITCH_PORT.md) for the remaining platform work.
 
 With devkitA64, libnx, and `switch-sdl2` installed, build the validated SDK/SDL
 bootstrap with:
@@ -99,7 +105,7 @@ export SK2_SWITCH_NVK_ROOT="$PWD/build-switch-nvk/source/nvk-switch"
 
 This produces `build-switch-core/snowboardkids2-core-probe.nro`. See
 [`docs/SWITCH_PORT.md`](docs/SWITCH_PORT.md) for hardware-test details and the
-remaining playable-build gates.
+remaining release gates.
 
 After the bootstrap passes on hardware, generate the game sources from your
 own decompressed NTSC-U 1.1 ROM:
@@ -127,8 +133,8 @@ For fast hardware iteration, enter hbmenu through Atmosphere title takeover
 (hold R while launching a game), press Y to start NetLoader, then run:
 
 ```bash
-export SWITCH_IP=192.168.1.123
-./scripts/switch-run.sh
+export SWITCH_IP=192.168.222.235 # Replace with your Switch's NetLoader address.
+./scripts/switch-run.sh "$SWITCH_IP" full
 ```
 
 The NRO is uploaded without removing the SD-card payload or ROM. Timestamped
@@ -156,7 +162,25 @@ After a run, generate a compact performance and failure summary with:
 ```
 
 Add `--csv build-switch-logs/perf.csv` to export the two-second performance
-windows for plotting or comparison between builds. Switch builds also report
-the first audio queue and periodic audio health (queue underruns, SDL failures,
-device status, buffered bytes, and sample peak), so a silent run can be
-distinguished from renderer starvation without enabling verbose SDL logging.
+windows for plotting or comparison between builds. Use `--start-seconds` and
+`--end-seconds` to compare warm report intervals; faults are still checked
+across the complete log. The top-left FPS counter counts completed
+presentations, including interpolated frames, rather than simulation ticks.
+`--no-fps` hides it, and `--no-profile` disables detailed timing histograms.
+
+Pass diagnostic options through `SWITCH_NRO_ARGS`:
+
+```bash
+SWITCH_NRO_ARGS='--no-profile --no-fps' ./scripts/switch-run.sh "$SWITCH_IP" full
+SWITCH_NRO_ARGS='--async-submissions' ./scripts/switch-run.sh "$SWITCH_IP" full
+```
+
+Synchronous GPU submissions and cached readback are the default. Asynchronous
+submissions and `--batch-framebuffer-copyback` remain experimental.
+`--direct-readbacks` and `--legacy-audio-backend` are comparison controls that
+can reduce smoothness or restore choppy sound. See the
+[complete option reference](docs/SWITCH_PERFORMANCE_RESULTS.md#profiling-and-comparison-controls).
+
+Audio diagnostics include queue duration, production gaps, catch-up chunks,
+SDL/backend failures, and observed empty queues. These counters complement
+listening tests; an empty-queue observation alone is not an audible underrun.
