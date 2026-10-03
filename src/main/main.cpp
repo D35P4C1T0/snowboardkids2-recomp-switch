@@ -1140,6 +1140,10 @@ int main(int argc, char** argv) {
     (void) argc;
     (void) argv;
 #if defined(__SWITCH__)
+    for (int i = 1; i < argc; i++) {
+        if (std::strcmp(argv[i], "--legacy-audio-backend") == 0)
+            SDL_setenv("SK2_SWITCH_LEGACY_AUDIO", "1", 1);
+    }
     std::set_terminate([]() {
         const std::exception_ptr active_exception = std::current_exception();
         if (active_exception != nullptr) {

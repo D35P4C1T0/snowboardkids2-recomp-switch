@@ -482,6 +482,9 @@ endif()
 
 if (CMAKE_SYSTEM_NAME STREQUAL "NintendoSwitch")
     list(APPEND SOURCES ${CMAKE_SOURCE_DIR}/switch/full_main.cpp)
+    # Resolve SDL's Switch bootstrap here so its unmodified archive backend
+    # is not pulled in. The private interface is pinned to SDL 2.28.5.
+    list(APPEND SOURCES ${CMAKE_SOURCE_DIR}/switch/sdl2/SDL_switchaudio.c)
 endif()
 
 target_include_directories(SnowboardKids2Recompiled PRIVATE
