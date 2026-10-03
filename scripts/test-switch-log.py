@@ -76,6 +76,11 @@ batch probe: ALL PASS
         data, output = self.parse('batch probe: submitting phase=0 count=8\n')
         self.assertEqual(data['batch_status'], 'incomplete')
 
+    def test_legacy_and_split_framebuffer_timings(self):
+        data, output = self.parse("slow: FB RDRAM draw frame=1 wait=23.00 ms\nslow: FB RDRAM color copyback frame=2 total=26.50 ms submit=5.00 ms fence=21.50 ms\n")
+        self.assertEqual([item[0] for item in data['slow_framebuffers']], [23.0, 26.5])
+        self.assertIn('max=26.50 ms', output)
+
     def test_truncated_profiles_are_ignored(self):
         data, output = self.parse("profile: stage=nvk_submit count=10 mean_us=200\naudio: timing min_us=1 max_us=2\n")
         self.assertEqual(data['profiles'], [])

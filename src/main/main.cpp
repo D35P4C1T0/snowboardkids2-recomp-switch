@@ -91,7 +91,7 @@ static bool switch_profile_enabled = true;
 extern "C" void switch_perf_record(const char* stage, uint64_t elapsed_ns, uint64_t id) {
     if (!switch_profile_enabled) return;
     struct Entry { const char* name = nullptr; sk2::perf::Histogram stats; uint64_t id = 0; };
-    static std::array<Entry, 24> entries;
+    static std::array<Entry, 32> entries;
     static std::mutex mutex;
     static auto last_report = std::chrono::steady_clock::now();
     std::lock_guard lock(mutex);

@@ -18,7 +18,7 @@ PERF_RE = re.compile(
     r"GPU wait (?P<gpu>[\d.]+) ms"
     r"(?:, max frame (?P<max_frame>[\d.]+) ms, max GPU wait (?P<max_gpu>[\d.]+) ms, samples (?P<samples>\d+))?"
 )
-SLOW_FB_RE = re.compile(r"slow: (?P<context>FB RDRAM .*) wait=(?P<wait>[\d.]+) ms")
+SLOW_FB_RE = re.compile(r"slow: (?P<context>FB RDRAM .*) (?:wait|total)=(?P<wait>[\d.]+) ms")
 MEMORY_RE = re.compile(
     r"plume memory: submit=(?P<submit>\d+) usage=(?P<usage>\d+) MiB "
     r"budget=(?P<budget>\d+) MiB allocations=(?P<allocations>\d+) MiB "
