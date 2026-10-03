@@ -117,13 +117,22 @@ diff --git a/recompui/CMakeLists.txt b/recompui/CMakeLists.txt
 diff --git a/recompui/src/base/ui_state.cpp b/recompui/src/base/ui_state.cpp
 --- a/recompui/src/base/ui_state.cpp
 +++ b/recompui/src/base/ui_state.cpp
-@@ -32,6 +32,13 @@
+@@ -5,6 +5,7 @@
+ #include <SDL2/SDL_video.h>
+ #endif
+ #include <chrono>
++#include <cstdio>
+ 
+ #include "rt64_render_hooks.h"
+ 
+@@ -32,6 +33,14 @@
  #include "rml_hacks/ui_rml_hacks.hpp"
  #include "rml_elements/ui_rml_elements.h"
  #include "util/file.h"
 +
 +#if defined(__SWITCH__)
 +void switch_log_checkpoint(const char*, bool);
++extern "C" float switch_fps_value() __attribute__((weak));
 +#define RECOMPUI_SWITCH_CHECKPOINT(message) ::switch_log_checkpoint(message, false)
 +#else
 +#define RECOMPUI_SWITCH_CHECKPOINT(message) ((void)0)
@@ -131,7 +140,20 @@ diff --git a/recompui/src/base/ui_state.cpp b/recompui/src/base/ui_state.cpp
  
  static std::atomic_bool cursor_enabled = true;
  
-@@ -236,14 +243,19 @@
+@@ -225,6 +234,12 @@
+     std::unique_ptr<SystemInterface_SDL> system_interface;
+     recompui::RmlRenderInterface_RT64 render_interface;
+     Rml::Context* context;
++#if defined(__SWITCH__)
++    // This separate context never captures menu/controller input.
++    Rml::Context* fps_context = nullptr;
++    Rml::Element* fps_text = nullptr;
++    std::string fps_label;
++#endif
+     recompui::UiEventListenerInstancer event_listener_instancer;
+ 
+     UIState(const UIState& rhs) = delete;
+@@ -236,14 +251,19 @@
          this->window = window;
  
          system_interface = std::make_unique<SystemInterface_SDL>();
@@ -151,7 +173,7 @@ diff --git a/recompui/src/base/ui_state.cpp b/recompui/src/base/ui_state.cpp
  
          recompui::register_custom_elements();
  
-@@ -251,11 +263,18 @@
+@@ -251,11 +271,18 @@
          recompui::apply_color_hack();
  
          int width, height;
@@ -170,11 +192,30 @@ diff --git a/recompui/src/base/ui_state.cpp b/recompui/src/base/ui_state.cpp
          {
              struct FontFace {
                  const char* filename;
-@@ -283,12 +302,18 @@
+@@ -283,12 +310,37 @@
                  Rml::LoadFontFace(extra_font_path.string(), false);
              }
          }
 +        RECOMPUI_SWITCH_CHECKPOINT("ui: fonts loaded");
++#if defined(__SWITCH__)
++        const char* fps_setting = SDL_getenv("SK2_SWITCH_FPS");
++        if (switch_fps_value && (!fps_setting || *fps_setting != '0')) {
++            fps_context = Rml::CreateContext("switch_fps", {width, height});
++            if (!fps_context) throw std::runtime_error("Failed to create FPS overlay context");
++            auto* document = fps_context->LoadDocumentFromMemory(R"rml(
++                <rml><head><style>
++                    body { margin: 0px; font-size: 22px; color: #ffffff; pointer-events: none; }
++                    #switch-fps { position: absolute; left: 16px; top: 14px; width: 132px;
++                        padding: 6px 10px; background-color: #000000b0; text-align: center; }
++                </style></head><body><div id="switch-fps">FPS --.-</div></body></rml>
++            )rml");
++            if (!document) throw std::runtime_error("Failed to load FPS overlay document");
++            document->SetProperty("font-family", primary_font_family);
++            fps_text = document->GetElementById("switch-fps");
++            document->Show(Rml::ModalFlag::None, Rml::FocusFlag::None);
++            RECOMPUI_SWITCH_CHECKPOINT("ui: FPS counter enabled");
++        }
++#endif
      }
  
      Rml::Vector2i scale_mouse_position(int x, int y) {
@@ -189,7 +230,7 @@ diff --git a/recompui/src/base/ui_state.cpp b/recompui/src/base/ui_state.cpp
  
          Rml::Vector2i context_dimensions = context->GetDimensions();
          if (window_width <= 0 || window_height <= 0) {
-@@ -303,10 +328,15 @@
+@@ -303,10 +355,15 @@
  
      void create_menus() {
          recompui::init_styling(recompui::file::get_asset_path("recomp.rcss"));
@@ -205,7 +246,7 @@ diff --git a/recompui/src/base/ui_state.cpp b/recompui/src/base/ui_state.cpp
      }
  
      void unload() {
-@@ -531,7 +561,12 @@
+@@ -531,7 +588,12 @@
  extern SDL_Window* window;
  
  void recompui::get_window_size(int& width, int& height) {
@@ -218,7 +259,7 @@ diff --git a/recompui/src/base/ui_state.cpp b/recompui/src/base/ui_state.cpp
  }
  
  inline const std::string read_file_to_string(std::filesystem::path path) {
-@@ -542,11 +577,14 @@
+@@ -542,11 +604,14 @@
  }
  
  void init_hook(plume::RenderInterface* interface, plume::RenderDevice* device) {
@@ -233,7 +274,7 @@ diff --git a/recompui/src/base/ui_state.cpp b/recompui/src/base/ui_state.cpp
  }
  
  moodycamel::ConcurrentQueue<SDL_Event> ui_event_queue{};
-@@ -683,6 +721,9 @@
+@@ -683,6 +748,9 @@
  }
  
  void draw_hook(plume::RenderCommandList* command_list, plume::RenderFramebuffer* swap_chain_framebuffer) {
@@ -243,7 +284,7 @@ diff --git a/recompui/src/base/ui_state.cpp b/recompui/src/base/ui_state.cpp
  
      apply_background_input_mode();
  
-@@ -693,7 +734,13 @@
+@@ -693,7 +761,13 @@
  
      // Return to the launcher if no menu is open and the game isn't started.
      if (!recompui::is_any_context_shown() && !ultramodern::is_game_started()) {
@@ -257,17 +298,23 @@ diff --git a/recompui/src/base/ui_state.cpp b/recompui/src/base/ui_state.cpp
      }
  
      std::lock_guard lock{ ui_state_mutex };
-@@ -918,6 +965,9 @@
+@@ -917,7 +991,14 @@
+     ui_state->update_primary_input(mouse_moved, non_mouse_interacted);
      ui_state->update_focus(mouse_moved, non_mouse_interacted);
  
-     if (recompui::is_any_context_shown()) {
+-    if (recompui::is_any_context_shown()) {
++    bool render_ui = recompui::is_any_context_shown();
++#if defined(__SWITCH__)
++    render_ui = render_ui || ui_state->fps_context;
++#endif
++    if (render_ui) {
 +#if defined(__SWITCH__)
 +        if (trace_first_draw) RECOMPUI_SWITCH_CHECKPOINT("ui draw: visible context entered");
 +#endif
          int width = swap_chain_framebuffer->getWidth();
          int height = swap_chain_framebuffer->getHeight();
  
-@@ -934,17 +984,44 @@
+@@ -934,17 +1015,59 @@
          prev_height = height;
  
          if (recompui::is_context_shown(recompui::get_launcher_context_id())) {
@@ -297,6 +344,21 @@ diff --git a/recompui/src/base/ui_state.cpp b/recompui/src/base/ui_state.cpp
          ui_state->context->Render();
 +#if defined(__SWITCH__)
 +        if (trace_first_draw) RECOMPUI_SWITCH_CHECKPOINT("ui draw: RmlUi render returned");
++#endif
++#if defined(__SWITCH__)
++        if (ui_state->fps_context) {
++            ui_state->fps_context->SetDimensions({width, height});
++            char label[32];
++            const float fps = switch_fps_value();
++            if (fps > 0.0f) std::snprintf(label, sizeof(label), "FPS %.1f", double(fps));
++            else std::snprintf(label, sizeof(label), "FPS --.-");
++            if (ui_state->fps_label != label) {
++                ui_state->fps_label = label;
++                ui_state->fps_text->SetInnerRML(label);
++            }
++            ui_state->fps_context->Update();
++            ui_state->fps_context->Render();
++        }
 +#endif
          ui_state->render_interface.end(command_list, swap_chain_framebuffer);
 -    }

@@ -40,7 +40,8 @@ and NetLoader. This page accompanies [the roadmap](SWITCH_PERFORMANCE_PLAN.md).
 | Initial accounting/continuity build | `full-20261003-125140.log` | Textures correct; user reported audio still choppy |
 | Native audio backend build | `full-20261003-131251.log` | User described audio as "flawless"; no logged GPU fault/backend failure during the run |
 | Asynchronous texture probe | `performance-async-core-live.log` | 64 transfers, 3 draws, 11 batched-image checks, presentation and cleanup passed |
-| Asynchronous full game | Pending | Awaiting race validation |
+| Asynchronous full game | `full-20261003-133346.log` | 180.2 s; user reported correct behavior; no logged GPU fault or audio-backend failure |
+| FPS overlay | `performance-fps-overlay-live.log` | Build passes; 68 s hardware run; counter visible in title and character-selection captures |
 
 Logs are saved under the ignored `build-switch-logs/` directory. The confirmed
 synchronous audio build is preserved as `build-switch-baseline/audio-fixed.nro`;
@@ -60,14 +61,30 @@ upload **1.47 ms**. These overlapping stages must not be summed as a frame
 budget. Scenes and race routes were not controlled across runs; their medians
 are not a valid A/B speedup claim. Cold pipeline creation remains expensive.
 
+The asynchronous full run had gameplay median **32.36 FPS**, p10 **25.89 FPS**,
+minimum **22.66 FPS**, and lighter windows reaching **60 FPS**. NVK CPU submission
+mean fell to about **0.44 ms**, but display-list handling averaged **36.14 ms**.
+The user reported correct sound/textures. This short, uncontrolled run does not
+prove a race speedup or satisfy the stress gate; asynchronous mode stays opt-in.
+
+## On-screen counter
+
+A small top-left counter is enabled by default on Switch, independently of
+profiling. It counts completed presentations over half-second windows, including
+interpolated frames, and does not represent the original simulation tick rate.
+The overlay has its own RmlUi context, does not capture input, and uses the
+existing single-sampled presentation pass. `--no-fps` hides it for comparisons.
+Hardware captures `manual-20261003-134252.jpg` and `manual-20261003-134307.jpg`
+show **31.1 FPS** in the title attract scene and **54.0 FPS** in character
+selection. These captures do not establish sustained race performance.
+
 ## Profiling and comparison controls
 
 Two-second bounded histograms record count, mean, p50, p95, p99, maximum,
 16.67 ms deadline misses, and available workload identifiers. Stages cover VI
 intervals, audio RSP tasks, display-list handling, workload/present dependency
 waits, framebuffer draw/copyback, texture decode/upload, shader compilation,
-pipeline creation, graphics
-worker GPU waits, queue submit, driver lock/submit, and presentation interval.
+pipeline creation, graphics worker GPU waits, queue submit, driver lock/submit, and presentation interval.
 Native audio feed/starvation/failure are zero-duration event counters.
 VI/RSP/display-list and framebuffer histogram hooks were added after the
 confirmed audio run; their build passes, but their hardware timing results
@@ -85,7 +102,7 @@ Run a comparison after opening NetLoader, without a TCP port preflight:
 ```sh
 ./scripts/switch-run.sh 192.168.222.235 full
 SWITCH_NRO_ARGS='--async-submissions' ./scripts/switch-run.sh 192.168.222.235 full
-SWITCH_NRO_ARGS='--no-profile' ./scripts/switch-run.sh 192.168.222.235 full
+SWITCH_NRO_ARGS='--no-profile --no-fps' ./scripts/switch-run.sh 192.168.222.235 full
 SWITCH_NRO_ARGS='--legacy-texture-uploads' ./scripts/switch-run.sh 192.168.222.235 full
 SWITCH_NRO_ARGS='--legacy-audio-backend' ./scripts/switch-run.sh 192.168.222.235 full
 python3 scripts/analyze-switch-log.py build-switch-logs/<run>.log

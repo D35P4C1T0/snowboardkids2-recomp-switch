@@ -174,12 +174,13 @@ diff --git a/src/common/rt64_switch_perf.h b/src/common/rt64_switch_perf.h
 new file mode 100644
 --- /dev/null
 +++ b/src/common/rt64_switch_perf.h
-@@ -0,0 +1,30 @@
+@@ -0,0 +1,31 @@
 +#pragma once
 +#include <chrono>
 +#include <cstdint>
 +#include <cstdlib>
 +#if defined(__SWITCH__)
++extern "C" void switch_fps_presented() __attribute__((weak));
 +extern "C" void switch_perf_record(const char*, uint64_t, uint64_t) __attribute__((weak));
 +#endif
 +class RT64SwitchPerfScope {
@@ -1125,7 +1126,7 @@ diff --git a/src/hle/rt64_present_queue.cpp b/src/hle/rt64_present_queue.cpp
  
                  if (presentWaitEnabled) {
                      ext.swapChain->wait();
-@@ -400,10 +564,96 @@
+@@ -400,10 +564,97 @@
  
                  RenderCommandSemaphore *waitSemaphore = drawSemaphores[swapChainIndex].get();
                  presentTimestamp = Timer::current();
@@ -1167,6 +1168,7 @@ diff --git a/src/hle/rt64_present_queue.cpp b/src/hle/rt64_present_queue.cpp
 +                perfGpuWaitUs = std::chrono::duration_cast<std::chrono::microseconds>(
 +                    Timer::current() - perfStageStart).count();
 +                if (tracePresent) RT64_PRESENT_SWITCH_CHECKPOINT("rt64 present: deferred GPU wait returned");
++                if (switch_fps_presented) switch_fps_presented();
 +
 +                if (screenshotCapture && (screenshotReadbackBuffer != nullptr)) {
 +                    const uint32_t screenshotSize = screenshotWidth * screenshotHeight * 4;
@@ -1222,7 +1224,7 @@ diff --git a/src/hle/rt64_present_queue.cpp b/src/hle/rt64_present_queue.cpp
      }
  
      void PresentQueue::skipInterpolation() {
-@@ -426,11 +676,16 @@
+@@ -426,11 +677,16 @@
      }
      
      void PresentQueue::threadAdvanceBarrier() {
@@ -1241,7 +1243,7 @@ diff --git a/src/hle/rt64_present_queue.cpp b/src/hle/rt64_present_queue.cpp
          Thread::setCurrentThreadName("RT64 Present");
  
          // Create the semaphore the acquire method will use.
-@@ -449,6 +704,10 @@
+@@ -449,6 +705,10 @@
          uint32_t displayTimingRate = UINT32_MAX;
          const bool displayTiming = ext.device->getCapabilities().displayTiming;
          bool swapChainValid = !ext.swapChain->needsResize();
@@ -1252,7 +1254,7 @@ diff --git a/src/hle/rt64_present_queue.cpp b/src/hle/rt64_present_queue.cpp
          while (presentThreadRunning) {
              {
                  std::unique_lock<std::mutex> cursorLock(cursorMutex);
-@@ -464,6 +723,7 @@
+@@ -464,6 +724,7 @@
              }
  
              if (processCursor >= 0) {
@@ -1260,7 +1262,7 @@ diff --git a/src/hle/rt64_present_queue.cpp b/src/hle/rt64_present_queue.cpp
                  std::unique_lock<std::mutex> threadLock(threadMutex);
                  const bool needsResize = ext.swapChain->needsResize() || !swapChainValid;
                  if (needsResize) {
-@@ -504,7 +764,8 @@
+@@ -504,7 +765,8 @@
                  skipPresent = skipPresent || ext.swapChain->isEmpty();
  
                  Present &present = presents[processCursor];
@@ -1270,7 +1272,7 @@ diff --git a/src/hle/rt64_present_queue.cpp b/src/hle/rt64_present_queue.cpp
  
                  if (!presentThreadRunning) {
                      continue;
-@@ -515,20 +776,43 @@
+@@ -515,20 +777,43 @@
                      notifyPresentId(present);
                  }
                  else {
@@ -1318,7 +1320,7 @@ diff --git a/src/hle/rt64_present_queue.cpp b/src/hle/rt64_present_queue.cpp
              }
          }
  
-@@ -542,6 +826,9 @@
+@@ -542,6 +827,9 @@
  
              const RenderCommandList *commandList = ext.presentGraphicsWorker->commandList.get();
              RenderCommandSemaphore *waitSemaphore = acquiredSemaphore.get();

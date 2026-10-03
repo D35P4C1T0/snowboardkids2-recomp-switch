@@ -87,6 +87,32 @@ constexpr int sk2_max_players = 4;
 #if defined(__SWITCH__)
 void switch_log_checkpoint(const char* message, bool reset);
 static bool switch_profile_enabled = true;
+static std::atomic<float> switch_display_fps{0.0f};
+
+extern "C" float switch_fps_value() {
+    return switch_display_fps.load(std::memory_order_relaxed);
+}
+
+extern "C" void switch_fps_presented() {
+    // Count completed presentations, including interpolation, independently
+    // of detailed profiling. UI rendering reads the previous half-second window.
+    using Clock = std::chrono::steady_clock;
+    static auto window_start = Clock::time_point{};
+    static uint32_t frames = 0;
+    const auto now = Clock::now();
+    if (window_start == Clock::time_point{}) {
+        window_start = now;
+        return;
+    }
+    frames++;
+    const auto elapsed = now - window_start;
+    if (elapsed >= std::chrono::milliseconds(500)) {
+        switch_display_fps.store(float(frames / std::chrono::duration<double>(elapsed).count()),
+            std::memory_order_relaxed);
+        frames = 0;
+        window_start = now;
+    }
+}
 
 extern "C" void switch_perf_record(const char* stage, uint64_t elapsed_ns, uint64_t id) {
     if (!switch_profile_enabled) return;
@@ -1174,6 +1200,8 @@ int main(int argc, char** argv) {
     (void) argv;
 #if defined(__SWITCH__)
     for (int i = 1; i < argc; i++) {
+        if (std::strcmp(argv[i], "--no-fps") == 0)
+            SDL_setenv("SK2_SWITCH_FPS", "0", 1);
         if (std::strcmp(argv[i], "--no-profile") == 0) {
             switch_profile_enabled = false;
             SDL_setenv("SK2_SWITCH_PROFILE", "0", 1);
@@ -1217,6 +1245,10 @@ int main(int argc, char** argv) {
     switch_initialize_logging();
     switch_log_checkpoint("startup: entered main", true);
     switch_log_checkpoint("startup: nonblocking nxlink checkpoints enabled");
+    const char* asynchronous = SDL_getenv("NVK_SWITCH_ASYNC");
+    switch_log_checkpoint(asynchronous && *asynchronous == '1'
+        ? "startup: NVK bounded asynchronous submissions selected"
+        : "startup: NVK synchronous submissions selected");
     g_drm_shim_log_sink = switch_driver_log_sink;
 
     // NVK does not advertise the non-conformant GM20B device unless the
