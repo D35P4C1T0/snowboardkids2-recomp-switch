@@ -1,7 +1,10 @@
 # Switch performance roadmap
 
 Written 2026-10-01. Baseline: `4d03da9`, the hardware-confirmed texture fix.
-This is a plan, not an implementation or a new hardware test.
+Implementation started on `codex/switch-performance` on 2026-10-03.
+See [implementation results](SWITCH_PERFORMANCE_RESULTS.md) for tested changes,
+current measurements, and outstanding release gates. The evidence below
+records the original analysis; it is not the current implementation status.
 
 ## Objective and constraints
 
@@ -229,7 +232,7 @@ benefit.
 
 ## Phase 6 — Hardware comparison and release gate
 
-When hardware testing resumes, use `scripts/switch-run.sh 10.0.0.107 full`.
+When hardware testing resumes, use `scripts/switch-run.sh 192.168.222.235 full`.
 Keep course, character, route, graphics settings, handheld/docked mode, and
 clock configuration fixed for each comparison. Test both cold and warm cache
 states, documenting which one produced each result.
