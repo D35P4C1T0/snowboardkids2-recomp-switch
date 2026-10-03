@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import math
 import re
 import statistics
 from dataclasses import dataclass
@@ -102,11 +103,12 @@ def parse_log(path: Path) -> dict[str, object]:
             values = dict(re.findall(r"(\w+)=([\w.-]+)", message))
             required = {'stage', 'count', 'mean_us', 'p50_us', 'p95_us', 'p99_us', 'max_us', 'late', 'id'}
             if required <= values.keys() and all(values[key].isdigit() for key in required - {'stage'}):
-                profiles.append({key: values[key] if key == 'stage' else int(values[key]) for key in required})
+                profiles.append({**{key: values[key] if key == 'stage' else int(values[key]) for key in required},
+                                 'timestamp_ms': timestamp_ms})
         if message.startswith("audio: timing "):
             values = {key: int(value) for key, value in re.findall(r"(\w+)=(\d+)", message)}
             if {"min_us", "max_us", "gap_us", "input_frames", "output_frames", "corrections"} <= values.keys():
-                audio_timing.append(values)
+                audio_timing.append({**values, 'timestamp_ms': timestamp_ms})
         if message.startswith("batch probe:"):
             batch_started = True
             if message.endswith(("ALL PASS", "FAILED")):
@@ -226,6 +228,19 @@ def parse_log(path: Path) -> dict[str, object]:
     }
 
 
+def select_metrics(data: dict[str, object], start_seconds: float, end_seconds: float | None) -> None:
+    """Restrict sampled metrics while preserving every fault and diagnostic."""
+    if not math.isfinite(start_seconds) or start_seconds < 0 or (end_seconds is not None and
+        (not math.isfinite(end_seconds) or end_seconds < start_seconds)):
+        raise ValueError("Metric interval must have 0 <= start <= end")
+    start_ms = start_seconds * 1000
+    end_ms = end_seconds * 1000 if end_seconds is not None else float('inf')
+    data['perf'] = [sample for sample in data['perf'] if start_ms <= sample.timestamp_ms <= end_ms]
+    for key in ('profiles', 'audio_timing'):
+        data[key] = [sample for sample in data[key] if start_ms <= sample['timestamp_ms'] <= end_ms]
+    data['metrics_interval'] = (start_seconds, end_seconds)
+
+
 def print_summary(path: Path, data: dict[str, object]) -> None:
     perf: list[PerfSample] = data["perf"]  # type: ignore[assignment]
     slow_framebuffers: list[tuple[float, str]] = data["slow_framebuffers"]  # type: ignore[assignment]
@@ -233,6 +248,9 @@ def print_summary(path: Path, data: dict[str, object]) -> None:
     memory: list[dict[str, int]] = data["memory"]  # type: ignore[assignment]
 
     print(f"Log: {path}")
+    if 'metrics_interval' in data:
+        start, end = data['metrics_interval']
+        print(f"Metric report timestamps: {start:g}s to {end if end is not None else 'end'}; faults and other diagnostics cover the whole log")
     print(f"Duration: {data['duration_ms'] / 1000:.1f} s")
     for mode in data["modes"]:  # type: ignore[union-attr]
         print(f"Mode: {mode}")
@@ -425,9 +443,16 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("log", type=Path, help="nxlink log produced by scripts/switch-run.sh")
     parser.add_argument("--csv", type=Path, help="write parsed performance windows as CSV")
+    parser.add_argument("--start-seconds", type=float, help="include sampled metrics reported at/after this log time")
+    parser.add_argument("--end-seconds", type=float, help="include sampled metrics reported at/before this log time")
     args = parser.parse_args()
 
     data = parse_log(args.log)
+    if args.start_seconds is not None or args.end_seconds is not None:
+        try:
+            select_metrics(data, args.start_seconds or 0, args.end_seconds)
+        except ValueError as error:
+            parser.error(str(error))
     print_summary(args.log, data)
     if args.csv is not None:
         write_csv(args.csv, data["perf"])  # type: ignore[arg-type]

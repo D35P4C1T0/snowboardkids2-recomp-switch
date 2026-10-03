@@ -76,6 +76,25 @@ batch probe: ALL PASS
         data, output = self.parse('batch probe: submitting phase=0 count=8\n')
         self.assertEqual(data['batch_status'], 'incomplete')
 
+    def test_interval_filters_metrics_but_keeps_faults(self):
+        data, _ = self.parse("""[ 1000 ms] perf: 30.00 fps, frame 33.33 ms, acquire 0.01 ms, present 0.02 ms, GPU wait 1.00 ms
+[ 2000 ms] perf: 60.00 fps, frame 16.67 ms, acquire 0.01 ms, present 0.02 ms, GPU wait 1.00 ms
+[ 1000 ms] profile: stage=nvk_submit count=10 mean_us=200 p50_us=250 p95_us=500 p99_us=750 max_us=700 late=0 id=12
+[ 2000 ms] profile: stage=nvk_submit count=10 mean_us=100 p50_us=250 p95_us=500 p99_us=750 max_us=700 late=0 id=12
+[ 1000 ms] audio: timing min_us=20000 max_us=60000 gap_us=28000 input_frames=100 output_frames=200 corrections=0
+[ 2000 ms] audio: timing min_us=20000 max_us=60000 gap_us=17000 input_frames=100 output_frames=200 corrections=0
+[ 3000 ms] NVK native fault: result=0x0 type=3
+""")
+        analyzer.select_metrics(data, 2, 2)
+        self.assertEqual([sample.fps for sample in data['perf']], [60.0])
+        self.assertEqual([sample['mean_us'] for sample in data['profiles']], [100])
+        self.assertEqual([sample['gap_us'] for sample in data['audio_timing']], [17000])
+        self.assertEqual(len(data['driver_faults']), 1)
+        with self.assertRaises(ValueError): analyzer.select_metrics(data, 3, 2)
+        with self.assertRaises(ValueError): analyzer.select_metrics(data, -1, None)
+        with self.assertRaises(ValueError): analyzer.select_metrics(data, float("nan"), None)
+        with self.assertRaises(ValueError): analyzer.select_metrics(data, 0, float("inf"))
+
     def test_legacy_and_split_framebuffer_timings(self):
         data, output = self.parse("slow: FB RDRAM draw frame=1 wait=23.00 ms\nslow: FB RDRAM color copyback frame=2 total=26.50 ms submit=5.00 ms fence=21.50 ms\n")
         self.assertEqual([item[0] for item in data['slow_framebuffers']], [23.0, 26.5])
