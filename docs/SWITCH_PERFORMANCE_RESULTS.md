@@ -442,3 +442,241 @@ were held following this report; the prefix candidate has host checks but no
 hardware validation and remains disabled by default. Future performance work
 should prioritize measured memory traffic and upload/readback costs, comparing
 the same build and race route at recorded memory settings.
+
+
+## 2026-10-06 — Stock-memory bandwidth candidate
+
+The new `--packed-framebuffer-copyback` option uses dedicated `R8G8_UNORM`
+copyback targets. R/G contain the two big-endian native bytes, using the same
+color encoder and dither coordinates as the reference RGBA8 path. Both color
+and depth copyback now transfer **2 bytes/pixel instead of 4**. For example,
+a 320x240 slice drops from 307,200 to 153,600 GPU readback bytes. This is a
+reduction for eligible copybacks, not an estimate of total system bandwidth.
+
+Depth is encoded with the existing `FloatToDepth16(z, 0)` GPU helper directly
+into the two bytes. It avoids expanding depth into RGBA8 color followed by
+CPU RGBA16 conversion. The completed mapped bytes go straight to RDRAM via
+one bounded `memcpy`, with no pixel packer or scratch vector. Native rendering
+resolution, game logic, submission scheduling, completion fences, and fallback
+encoders retain their existing behavior. Dedicated targets retain their format
+across resize; ordinary render targets retain their original formats.
+
+This candidate is **opt-in pending hardware validation**. Reference mode is
+still the normal launch default. To test at stock clocks after entering
+NetLoader:
+
+```sh
+SWITCH_NRO_ARGS='--packed-framebuffer-copyback' ./scripts/switch-run.sh 10.0.0.56 full
+SWITCH_NRO_ARGS='--rgba-framebuffer-copyback' ./scripts/switch-run.sh 10.0.0.56 full
+```
+
+Replace the address if necessary. Use the same course, route, power/display
+mode, graphics configuration and warm cache state. Check depth occlusion,
+world/HUD/item textures, sound, and transitions. R3 captures and nxlink fault
+logs remain available. Do not combine asynchronous scheduling or other
+experiments during this comparison.
+
+For SD-card launches, an empty file at
+`sdmc:/switch/snowboardkids2-recompiled/config/packed-framebuffer-copyback`
+enables the candidate. Remove it to restore the reference, or override it
+with `--rgba-framebuffer-copyback` through NetLoader. Explicit launch arguments
+win over the marker. `scripts/package-switch.sh --packed-copyback` creates
+`snowboardkids2-switch-packed-copyback.zip`, including that marker, separately
+from the reference package.
+
+Four bounded traffic counters report `framebuffer_gpu_readback`,
+`framebuffer_cpu_read`, `framebuffer_ram_write`, and `framebuffer_scratch_copy`.
+Each records transfer count and payload bytes over its actual report interval.
+The analyzer reports bytes/transfer and MiB/s and supports the same warm time
+filters as timing histograms. These are logical payload counters, not memory
+controller measurements: they exclude cache-line amplification, GPU target
+writes, and unrelated traffic. Missing scratch-copy samples mean no scratch
+copy was counted. Producer collection stays allocation-free, and formatting
+occurs outside the collection lock. `--no-profile` disables these counters.
+
+Host validation:
+
+* `test-switch-packed-copyback.py` executes the production pixel shader body
+  with HLSL interface adapters. It checks all 65,536 native words, all 262,144
+  fixed-depth inputs against the prior quantized-color round trip, and color
+  dithering/HDR/row coordinates. DXC compiles the unchanged HLSL interface in
+  the Switch build; the host harness does not validate NVK execution.
+* `test-switch-readback-cache.py` exercises production GPU-copy recording and
+  CPU commit methods: exact two-byte footprints, nonzero row offsets, reuse,
+  unsupported/MSAA rejection, byte equality, untouched guards, unmap, and no
+  scratch mutation, alongside every existing reference mode.
+* Profiler tests verify concurrent timing/byte collection during a stalled
+  report, disabled counters, exact totals and snapshot reset. Log tests cover
+  byte-rate weighting, malformed records and time filtering.
+* The core probe accepts `--packed-framebuffer-copyback` to add native-byte
+  shader rendering/readback checks for 1x1, 3x3, 285x52 and 320x240 targets,
+  including tightly packed odd rows and nonzero source row offsets.
+
+The full game and core-probe NRO builds passed. Both SD-card archives were
+verified for ZIP integrity, the exact latest NRO, required assets, the correct
+candidate marker, and absence of ROM files. The submit/sync/async/retirement,
+copyback/upload scheduling, queue, byte/shader equivalence, profiler, analyzer,
+and pinned patch round-trip checks passed.
+
+Both candidate upload attempts (`full-20261006-202045.log` and
+`full-20261006-202308.log`) timed out connecting to NetLoader at 10.0.0.56.
+The host route used en0 on 10.0.0.67; the second TCP connection remained in
+SYN_SENT to the NetLoader port. Neither log contains startup or gameplay
+samples. A subsequent upload (`full-20261006-202549.log`) succeeded: startup
+confirmed packed RG8 copyback, synchronous submissions and native internal
+resolution, and the byte counters are reporting two-byte copyback payloads.
+Initial startup/menu samples do not establish a controlled stock-clock race
+speedup. Stock-clock 60 FPS and the 30-minute hardware stress gate remain
+unverified.
+
+
+## 2026-10-06 — Packed result and fused RAM-transfer candidate
+
+The user reported better performance with packed RG8 copyback, with perceived
+minimums around 48–49 FPS and solid behavior, and requested further reductions
+in memory traffic. The 120–145.1 s report interval in
+`full-20261006-202549.log` had median **51.74 FPS**, p10 **46.82**, and minimum
+**46.30**. These two-second log windows differ from the short-window on-screen
+counter. CPU encoding averaged **0.27 ms/copy**, with RAM commit averaging
+**0.32 ms**. No GPU fault, fatal error or audio-backend failure was logged in
+the 145.1 s run. The user was asked to test at stock settings; actual clocks
+were not captured. This manually driven run is not a controlled A/B speedup
+or a 30-minute stress result. The original packed NRO is preserved at
+`build-switch-baseline/packed-rg8.nro`.
+
+The next candidate is `--fused-framebuffer-transfers`, combined with
+`--packed-framebuffer-copyback`:
+
+* Packed GPU readback previously copied native bytes to RDRAM and then read
+  and rewrote all complete RAM words to swap their endianness. The candidate
+  swaps each loaded word directly into its final RAM destination, removing
+  the extra RAM read/write pass. It accepts whole-word, aligned packed slices;
+  narrow, odd, partial-word, misaligned and other-format slices retain the
+  prior commit path, including its existing tail semantics.
+* Framebuffer uploads previously swapped RAM into a cached scratch vector,
+  then copied that vector into the mapped staging buffer. Whole-word uploads
+  now swap directly into staging and leave the scratch vector untouched.
+  GPU staging-to-native copies, descriptors, resource history, dispatches,
+  completion fences and cache maintenance stay in their existing order.
+* The shared copy/swap helper uses alias-safe word accesses. The built Switch
+  object contains 16-byte vector loads, `REV32`, and stores, plus bounded
+  scalar tails. It never reads destination memory. No relaxed floating-point
+  flags are used.
+
+The new controls are independent and opt-in. Explicit arguments override
+SD-card marker files. `--staged-framebuffer-transfers` restores the previous
+RAM transfer behavior while retaining packed RG8 output:
+
+```sh
+SWITCH_NRO_ARGS='--packed-framebuffer-copyback --fused-framebuffer-transfers' ./scripts/switch-run.sh 10.0.0.56 full
+SWITCH_NRO_ARGS='--packed-framebuffer-copyback --staged-framebuffer-transfers' ./scripts/switch-run.sh 10.0.0.56 full
+```
+
+`scripts/package-switch.sh --fused-transfers` produces a separate
+`snowboardkids2-switch-fused-transfers.zip` with both candidate markers.
+Remove `config/fused-framebuffer-transfers` to compare the preceding packed
+mode from an SD-card launch; removing `config/packed-framebuffer-copyback`
+also restores RGBA8 reference output.
+
+The traffic collector now also reports `framebuffer_cpu_upload`,
+`framebuffer_gpu_upload`, `framebuffer_upload_scratch`, and
+`framebuffer_ram_swap`. A reference RAM-swap payload represents a read and
+rewrite of that byte count; it is not a hardware memory-controller counter.
+The collector used eight traffic entries in this candidate; the following texture-transfer candidate expands it to sixteen.
+
+The extended production-method harness compares staged/fused output across
+raw color, encoded RGBA8, packed RG8, float depth, all dither modes, odd widths,
+nonzero rows, aligned/partial-word sizes, unmap, guards and buffer reuse.
+It executes the actual framebuffer commit and upload-wrapper methods and
+actual mapped staging write block, checks scratch bypass and rejection without
+writes, and compares independent expected byte order. GPU submission scheduling
+is unchanged; the schedule/fence and pinned patch round-trip checks passed.
+`test-switch-memory-transfers.py --sanitize` also checks all source/destination
+alignments from 0–15 bytes, vector/tail boundaries and untouched guards under
+AddressSanitizer and UndefinedBehaviorSanitizer.
+
+The fused game NRO compiled and its separate SD-card archive was verified for
+integrity, the latest binary, both markers and assets, with no ROM included.
+Upload `full-20261006-203651.log` succeeded. Initial logging through 74.1 s
+confirmed both modes with no GPU fault or fatal error. Samples reported at/after
+50 s averaged 257 us for the fused helper and 258 us for complete RAM commit
+(2633 copies). CPU/GPU upload payload counters were present; no scratch-upload
+or RAM-swap payload was counted in that initial interval. These initial scenes
+are not a controlled comparison with the preceding race, and a stock-clock FPS
+gain for this second candidate was not established by those initial scenes.
+The user subsequently reported a small improvement but continued spikes.
+
+
+## 2026-10-06 — Active texture transfers and spike context
+
+The completed fused run (`full-20261006-203651.log`, 201.3 s) had no GPU fault,
+fatal error or audio-backend failure. Reports at/after 100 s contain 51 FPS
+windows: median **54.07**, p10 **46.72**, minimum **37.43**. The worst interval
+ended at 102.0 s. These are two-second report windows across manually driven
+scenes; they do not establish an A/B improvement over the preceding run.
+Actual clock frequencies were not logged.
+
+In that interval, complete framebuffer RAM commit averaged **0.27 ms** across
+11,834 transfers. Individual presentation intervals reached **70.55 ms**;
+`present_render` reached **48.67 ms**, `present_dependency` **31.10 ms**,
+`framebuffer_texture_wait` **20.21 ms**, and `texture_upload` **12.85 ms**.
+These overlapping CPU scopes must not be added together or interpreted as
+GPU timestamp measurements. Their maxima can belong to different events.
+The new candidate records enough context to locate each stage's maximum.
+Baseline FPS and stage-window CSVs are retained in `build-switch-logs/`, and
+the preceding fused binary is preserved at `build-switch-baseline/fused-rg8.nro`.
+
+The concrete memory-traffic fix is in the Switch CPU-decoded texture path.
+The staging pool retains each slot's largest buffer capacity, but the previous
+GPU buffer copy used that capacity for every later texture. A small texture
+reusing a large slot therefore copied unused stale bytes. Staging now copies
+exactly `width * height * formatSize` bytes, matching the existing tightly packed
+image footprint. The same active range is passed to upload-buffer unmap, so
+cache cleaning/flushing also excludes unused capacity. Raw TMEM and native
+framebuffer uploads now pass their written ranges to unmap as well.
+
+Buffer allocation sizes, lifetimes, staging/image command buffers, barriers,
+eight-list batch bound and completion fences remain intact. This correction
+applies to Switch uploads regardless of the packed/fused experimental modes.
+Its effect depends on the textures and retained slot capacities encountered.
+
+New `texture_cpu_write`, `texture_gpu_staging` and `texture_staging_capacity`
+traffic counters use a sixteen-entry bounded collector. The latter records the
+payload that the preceding capacity-based copy would have used. The analyzer
+reports avoided logical payload and its percentage for matched counter windows,
+excluding separate physical reads/writes and cache-line rounding. These are not
+hardware bandwidth
+counters. Reports with no transfers are omitted, so per-stage rates are weighted
+over that stage's active report intervals.
+
+Each timing window now includes `max_id`, `max_age_us` and `interval_ns`.
+`max_id` belongs to the largest sample rather than the last sample.
+Subtracting the peak age from the logger timestamp estimates completion time;
+formatting and collection latency limit precision. Histogram samples, including
+concurrent producers during a stalled log sink, still reset only after their
+snapshot is retained. No per-draw socket logging or heap allocation was added.
+
+```sh
+python3 scripts/analyze-switch-log.py build-switch-logs/full-20261006-205116.log --start-seconds 100 --csv build-switch-logs/active-texture-fps.csv --profiles-csv build-switch-logs/active-texture-profile.csv
+```
+
+Validation passed: production texture mapping/staging blocks under ASan/UBSan
+with grow/shrink and odd-dimension reuse, unchanged buffer tails, exact cache
+ranges, byte equality, traffic totals and barrier order; production framebuffer
+commit/upload byte-order and oversized staging ranges; upload prefix scheduling
+through 33 textures with all staging/image fences; profiler concurrency and
+peak attribution; twelve analyzer tests including legacy logs, missing traffic
+lines and CSV; and all seven pinned patch round trips. The full Switch NRO built successfully.
+The updated fused SD-card archive passed integrity, latest-binary, candidate
+marker and asset checks and includes no ROM.
+
+Hardware upload to `10.0.0.56` succeeded with packed copyback and fused
+transfers enabled, logging to `full-20261006-205116.log`. Logging through
+92.1 s confirms the new peak-context fields and no GPU fault or fatal error.
+The launcher had not reported Start Game, and decoded texture counters had
+not appeared; these initial ~60 FPS samples therefore do not measure this
+transfer-size correction in gameplay. The user subsequently accepted the
+current build and reported smooth gameplay with modest clock increases on a
+V1 Switch. That is subjective playtest confirmation; it does not establish a
+controlled stock-clock A/B speedup. The accepted NRO remains packaged in
+`snowboardkids2-switch-fused-transfers.zip`.

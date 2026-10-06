@@ -170,17 +170,57 @@ diff --git a/src/common/rt64_mapped_file.h b/src/common/rt64_mapped_file.h
 -};
 \ No newline at end of file
 +};
+diff --git a/src/common/rt64_switch_memory.h b/src/common/rt64_switch_memory.h
+new file mode 100644
+--- /dev/null
++++ b/src/common/rt64_switch_memory.h
+@@ -0,0 +1,34 @@
++#pragma once
++
++#include <cassert>
++#include <cstddef>
++#include <cstdint>
++#include <cstdlib>
++#include <cstring>
++
++namespace RT64 {
++inline bool switchFusedRAMTransfersEnabled() {
++    static const bool enabled = [] {
++        const char *value = std::getenv("SK2_SWITCH_FUSED_RAM_TRANSFERS");
++        return value && *value == '1';
++    }();
++    return enabled;
++}
++
++// Source and destination never overlap. memcpy word accesses allow unaligned
++// input and avoid aliasing assumptions. On AArch64 the vector loop becomes
++// contiguous loads, REV32, and stores, with no read of destination memory.
++#if defined(__GNUC__) && !defined(__clang__)
++__attribute__((optimize("O3")))
++#endif
++inline void switchCopySwap32(const uint8_t *__restrict source, uint8_t *__restrict destination, size_t byteCount) {
++    assert((byteCount % sizeof(uint32_t)) == 0);
++    const size_t wordCount = byteCount / sizeof(uint32_t);
++    for (size_t word = 0; word < wordCount; word++) {
++        uint32_t value;
++        std::memcpy(&value, source + word * sizeof(value), sizeof(value));
++        value = __builtin_bswap32(value);
++        std::memcpy(destination + word * sizeof(value), &value, sizeof(value));
++    }
++}
++}
 diff --git a/src/common/rt64_switch_perf.h b/src/common/rt64_switch_perf.h
 new file mode 100644
 --- /dev/null
 +++ b/src/common/rt64_switch_perf.h
-@@ -0,0 +1,31 @@
+@@ -0,0 +1,41 @@
 +#pragma once
 +#include <chrono>
 +#include <cstdint>
 +#include <cstdlib>
 +#if defined(__SWITCH__)
 +extern "C" void switch_fps_presented() __attribute__((weak));
++extern "C" void switch_perf_record_bytes(const char*, uint64_t, uint64_t) __attribute__((weak));
 +extern "C" void switch_perf_record(const char*, uint64_t, uint64_t) __attribute__((weak));
 +#endif
 +class RT64SwitchPerfScope {
@@ -206,6 +246,15 @@ new file mode 100644
 +#endif
 +    }
 +};
++
++inline void RT64SwitchRecordBytes(const char *stage, uint64_t bytes, uint64_t id = 0) {
++#if defined(__SWITCH__)
++    if (RT64SwitchPerfScope::enabled() && switch_perf_record_bytes)
++        switch_perf_record_bytes(stage, bytes, id);
++#else
++    (void)stage; (void)bytes; (void)id;
++#endif
++}
 diff --git a/src/common/rt64_thread.cpp b/src/common/rt64_thread.cpp
 --- a/src/common/rt64_thread.cpp
 +++ b/src/common/rt64_thread.cpp
@@ -606,12 +655,36 @@ diff --git a/src/hle/rt64_application_window.cpp b/src/hle/rt64_application_wind
 diff --git a/src/hle/rt64_framebuffer.cpp b/src/hle/rt64_framebuffer.cpp
 --- a/src/hle/rt64_framebuffer.cpp
 +++ b/src/hle/rt64_framebuffer.cpp
-@@ -1,3 +1,4 @@
+@@ -1,8 +1,12 @@
 +#include "common/rt64_switch_perf.h"
  //
  // RT64
  //
-@@ -174,6 +175,55 @@
+ 
+ #include "rt64_framebuffer.h"
++#if defined(__SWITCH__)
++#include "common/rt64_switch_memory.h"
++#endif
+ 
+ #include <algorithm>
+ #include <cassert>
+@@ -77,6 +81,15 @@
+ 
+         // Swap the endianness from the source.
+         const uint32_t nativeSize = NativeTarget::getNativeSize(width, rowCount, siz);
++#if defined(__SWITCH__)
++        if (switchFusedRAMTransfersEnabled() && ((nativeSize % sizeof(uint32_t)) == 0)) {
++            // The staging buffer is written at the same point as the reference
++            // memcpy. GPU copy, resource ownership and completion stay intact.
++            return nativeTarget.copyFromRAM(worker, fbChange, width, rowCount, rowStart, siz, fmt,
++                src, invalidateTargets, shaderLibrary, true);
++        }
++        RT64SwitchRecordBytes("framebuffer_upload_scratch", nativeSize);
++#endif
+         if (nativeSwappedRAM.size() < nativeSize) {
+             nativeSwappedRAM.resize(nativeSize);
+         }
+@@ -174,6 +187,58 @@
  #   endif
      }
  
@@ -632,26 +705,29 @@ diff --git a/src/hle/rt64_framebuffer.cpp b/src/hle/rt64_framebuffer.cpp
 +        assert(dstRowEnd <= height);
 +
 +        uint8_t *dstBytes = dst + dstRowStart * imageRowBytes(dstRowWidth);
-+        uint32_t *dstWords = reinterpret_cast<uint32_t *>(dstBytes);
-+        const uint32_t bytesToSwap = (dstRowEnd - dstRowStart) * imageRowBytes(dstRowWidth);
-+        uint32_t dstFirstWord = dstWords[0];
-+        nativeTarget.copyToRAMCPU(dstBytes);
++        if (!nativeTarget.copyToRDRAMCPU(dstBytes)) {
++            uint32_t *dstWords = reinterpret_cast<uint32_t *>(dstBytes);
++            const uint32_t bytesToSwap = (dstRowEnd - dstRowStart) * imageRowBytes(dstRowWidth);
++            uint32_t dstFirstWord = dstWords[0];
++            nativeTarget.copyToRAMCPU(dstBytes);
++            RT64SwitchRecordBytes("framebuffer_ram_swap", bytesToSwap);
 +
-+        if (bytesToSwap >= sizeof(uint32_t)) {
-+            uint32_t wordsToSwap = bytesToSwap / sizeof(uint32_t);
-+            while (wordsToSwap > 0) {
-+                *dstWords = _byteswap_ulong(*dstWords);
-+                wordsToSwap--;
-+                dstWords++;
++            if (bytesToSwap >= sizeof(uint32_t)) {
++                uint32_t wordsToSwap = bytesToSwap / sizeof(uint32_t);
++                while (wordsToSwap > 0) {
++                    *dstWords = _byteswap_ulong(*dstWords);
++                    wordsToSwap--;
++                    dstWords++;
++                }
 +            }
-+        }
-+        else {
-+            uint8_t *dstFirstWordU8 = reinterpret_cast<uint8_t *>(&dstFirstWord);
-+            for (uint32_t i = 0; i < bytesToSwap; i++) {
-+                dstFirstWordU8[i ^ 3] = dstBytes[i];
-+            }
++            else {
++                uint8_t *dstFirstWordU8 = reinterpret_cast<uint8_t *>(&dstFirstWord);
++                for (uint32_t i = 0; i < bytesToSwap; i++) {
++                    dstFirstWordU8[i ^ 3] = dstBytes[i];
++                }
 +
-+            dstWords[0] = dstFirstWord;
++                dstWords[0] = dstFirstWord;
++            }
 +        }
 +
 +#   ifdef DUMP_RAW_RDRAM
@@ -667,7 +743,7 @@ diff --git a/src/hle/rt64_framebuffer.cpp b/src/hle/rt64_framebuffer.cpp
      void Framebuffer::clearChanged() {
          widthChanged = false;
          sizChanged = false;
-@@ -199,4 +249,4 @@
+@@ -199,4 +264,4 @@
      uint64_t FramebufferTile::hash() const {
          return XXH3_64bits(this, sizeof(FramebufferTile));
      }
@@ -1874,7 +1950,7 @@ diff --git a/src/hle/rt64_state.cpp b/src/hle/rt64_state.cpp
                                  uint32_t readRowBytes = depthFb->imageRowBytes(colorImg.width);
                                  uint32_t readRowCount = depthFb->height - depthFb->readHeight;
                                  uint32_t readFbBytes = readRowBytes * readRowCount;
-@@ -1409,57 +1487,330 @@
+@@ -1409,57 +1487,343 @@
                                  if (depthFbChange != nullptr) {
                                      depthTarget->copyFromChanges(ext.framebufferGraphicsWorker, *depthFbChange, depthFb->width, readRowCount, depthFb->readHeight, ext.shaderLibrary);
                                      depthFbChanged = true;
@@ -1940,6 +2016,7 @@ diff --git a/src/hle/rt64_state.cpp b/src/hle/rt64_state.cpp
 +                                if (switchColorCopyTarget == nullptr) {
 +                                    switchColorCopyTarget = std::make_unique<RenderTarget>(0, Framebuffer::Type::Color,
 +                                        RenderMultisampling(), false);
++                                    switchColorCopyTarget->switchNativeBytes = RenderTarget::packedCopybackEnabled();
 +                                    switchColorCopyTarget->setupColor(ext.framebufferGraphicsWorker, rtWidth, rtHeight);
 +                                }
 +                                else {
@@ -2008,6 +2085,7 @@ diff --git a/src/hle/rt64_state.cpp b/src/hle/rt64_state.cpp
 +                            if (switchDepthCopyTarget == nullptr) {
 +                                switchDepthCopyTarget = std::make_unique<RenderTarget>(0, Framebuffer::Type::Color,
 +                                    RenderMultisampling(), false);
++                                switchDepthCopyTarget->switchNativeBytes = RenderTarget::packedCopybackEnabled();
 +                                switchDepthCopyTarget->setupColor(ext.framebufferGraphicsWorker, rtWidth, rtHeight);
 +                            }
 +                            else {
@@ -2017,13 +2095,24 @@ diff --git a/src/hle/rt64_state.cpp b/src/hle/rt64_state.cpp
 +                            // Avoid both NVK failure paths observed on
 +                            // hardware: D32 image readback and the depth
 +                            // framebuffer compute encoder. Existing graphics
-+                            // shader encodes exact depth16 into RGBA8 first.
-+                            switchDepthCopyTarget->copyFromTarget(ext.framebufferGraphicsWorker, depthTarget,
-+                                0, depthRowStart, depthWriteWidth, depthRowEnd - depthRowStart, ext.shaderLibrary);
-+                            switchDepthCPUReadback = depthFb->nativeTarget.copyToNativeCPU(ext.framebufferGraphicsWorker,
-+                                switchDepthCopyTarget.get(), depthWriteWidth, depthRowStart, depthRowEnd,
-+                                depthFb->siz, G_IM_FMT_RGBA, 3,
-+                                switchDepthCopybackSeeds[depthCopybackIndex].second, ext.shaderLibrary);
++                            // shaders encode depth16 through a color target.
++                            // Packed mode writes the native two bytes directly;
++                            // the reference keeps its RGBA8 color round trip.
++                            const bool packedDepth = switchDepthCopyTarget->switchNativeBytes;
++                            bool depthEncoded = false;
++                            if (packedDepth) {
++                                depthEncoded = switchDepthCopyTarget->encodeColorToNativeBytes(ext.framebufferGraphicsWorker,
++                                    depthTarget, depthWriteWidth, depthRowStart, depthRowEnd, 3, 0, ext.shaderLibrary);
++                            }
++                            else {
++                                switchDepthCopyTarget->copyFromTarget(ext.framebufferGraphicsWorker, depthTarget,
++                                    0, depthRowStart, depthWriteWidth, depthRowEnd - depthRowStart, ext.shaderLibrary);
++                            }
++                            switchDepthCPUReadback = (!packedDepth || depthEncoded) &&
++                                depthFb->nativeTarget.copyToNativeCPU(ext.framebufferGraphicsWorker,
++                                    switchDepthCopyTarget.get(), depthWriteWidth, depthRowStart, depthRowEnd,
++                                    depthFb->siz, G_IM_FMT_RGBA, 3,
++                                    switchDepthCopybackSeeds[depthCopybackIndex].second, ext.shaderLibrary, depthEncoded);
 +                            if (!switchDepthCPUReadback) {
 +                                depthFb->copyRenderTargetToNative(ext.framebufferGraphicsWorker, depthTarget,
 +                                    depthWriteWidth, depthRowStart, depthRowEnd, G_IM_FMT_DEPTH,
@@ -2242,7 +2331,7 @@ diff --git a/src/hle/rt64_state.cpp b/src/hle/rt64_state.cpp
              };
  
              // Before performing any rendering, render targets must be resized to their maximum possible size during the workload.
-@@ -1515,6 +1866,59 @@
+@@ -1515,6 +1879,59 @@
              renderSetup();
  
              // Start loading tiles, sampling tiles and drawing the framebuffer pairs as required.
@@ -2302,7 +2391,7 @@ diff --git a/src/hle/rt64_state.cpp b/src/hle/rt64_state.cpp
              for (uint32_t f = 0; f < workload.fbPairCount; f++) {
                  FramebufferPair &fbPair = workload.fbPairs[f];
                  const bool gpuCopiesEnabled = ext.emulatorConfig->framebuffer.copyWithGPU;
-@@ -1535,6 +1939,7 @@
+@@ -1535,6 +1952,7 @@
  
              // Render any remaining batches of framebuffers.
              renderAndSynchronize(workload.fbPairCount);
@@ -2310,7 +2399,7 @@ diff --git a/src/hle/rt64_state.cpp b/src/hle/rt64_state.cpp
          }
          else {
              // Process all tiles.
-@@ -1553,7 +1958,16 @@
+@@ -1553,7 +1971,16 @@
              ext.framebufferGraphicsWorker->commandList->end();
              ext.drawDataUploader->wait();
              ext.transformsUploader->wait();
@@ -2327,7 +2416,7 @@ diff --git a/src/hle/rt64_state.cpp b/src/hle/rt64_state.cpp
              ext.framebufferGraphicsWorker->wait();
              ext.textureCache->waitForGPUUploads();
          }
-@@ -1748,8 +2162,11 @@
+@@ -1748,8 +2175,11 @@
          }
          
          // Advance the workload queue at the end of a full synchronization.
@@ -2339,7 +2428,7 @@ diff --git a/src/hle/rt64_state.cpp b/src/hle/rt64_state.cpp
  
          // Make sure the profiler starts after the workload is advanced to ignore any waiting time.
          dlCpuProfiler.reset();
-@@ -1806,6 +2223,11 @@
+@@ -1806,6 +2236,11 @@
          // Extended GBI must be enabled again when the display list starts.
          disableExtendedGBI();
          clearExtended();
@@ -2351,7 +2440,7 @@ diff --git a/src/hle/rt64_state.cpp b/src/hle/rt64_state.cpp
      }
      
      void State::updateScreen(const VI &newVI, bool fromEarlyPresent) {
-@@ -1944,6 +2366,10 @@
+@@ -1944,6 +2379,10 @@
          renderTargetManager.destroyAll();
          renderTargetManager.setMultisampling(multisampling);
          dummyDepthTarget.reset();
@@ -2362,7 +2451,7 @@ diff --git a/src/hle/rt64_state.cpp b/src/hle/rt64_state.cpp
          framebufferRenderer->updateMultisampling();
          updateRenderFlagSampleCount();
      }
-@@ -2774,4 +3200,4 @@
+@@ -2774,4 +3213,4 @@
              break;
          }
      }
@@ -3005,7 +3094,7 @@ diff --git a/src/render/rt64_framebuffer_renderer.h b/src/render/rt64_framebuffe
 diff --git a/src/render/rt64_native_target.cpp b/src/render/rt64_native_target.cpp
 --- a/src/render/rt64_native_target.cpp
 +++ b/src/render/rt64_native_target.cpp
-@@ -2,7 +2,11 @@
+@@ -2,15 +2,120 @@
  // RT64
  //
  
@@ -3016,8 +3105,12 @@ diff --git a/src/render/rt64_native_target.cpp b/src/render/rt64_native_target.c
 +#include "common/rt64_switch_perf.h"
  
  #include "rt64_native_target.h"
++#if defined(__SWITCH__)
++#include "common/rt64_switch_memory.h"
++#endif
  
-@@ -11,6 +15,104 @@
+ #include "gbi/rt64_f3d.h"
+ #include "shared/rt64_fb_common.h"
  
  #include "rt64_render_target.h"
  #include "rt64_render_worker.h"
@@ -3122,7 +3215,52 @@ diff --git a/src/render/rt64_native_target.cpp b/src/render/rt64_native_target.c
  
  namespace RT64 {
      // NativeTarget
-@@ -369,4 +471,138 @@
+@@ -60,7 +165,7 @@
+         return rowSize * height;
+     }
+ 
+-    uint32_t NativeTarget::copyFromRAM(RenderWorker *worker, FramebufferChange &emptyFbChange, uint32_t width, uint32_t height, uint32_t rowStart, uint8_t siz, uint8_t fmt, const uint8_t *data, bool invalidateTargets, const ShaderLibrary *shaderLibrary) {
++    uint32_t NativeTarget::copyFromRAM(RenderWorker *worker, FramebufferChange &emptyFbChange, uint32_t width, uint32_t height, uint32_t rowStart, uint8_t siz, uint8_t fmt, const uint8_t *data, bool invalidateTargets, const ShaderLibrary *shaderLibrary, bool swapWords) {
+         assert(worker != nullptr);
+ 
+         // Create the buffers for change count readback if they've not been created yet.
+@@ -135,8 +240,25 @@
+         }
+ 
+         void *dstData = readBuffer.nativeUploadBuffer->map();
++#if defined(__SWITCH__)
++        RT64SwitchRecordBytes("framebuffer_cpu_upload", bufferSize);
++        if (swapWords) {
++            assert((bufferSize % sizeof(uint32_t)) == 0);
++            switchCopySwap32(data, static_cast<uint8_t*>(dstData), bufferSize);
++        }
++        else {
++            memcpy(dstData, data, bufferSize);
++        }
++#else
++        (void)swapWords;
+         memcpy(dstData, data, bufferSize);
++#endif
++#if defined(__SWITCH__)
++        const RenderRange writtenRange(0, bufferSize);
++        readBuffer.nativeUploadBuffer->unmap(0, &writtenRange);
++#else
+         readBuffer.nativeUploadBuffer->unmap();
++#endif
+ 
+         if (hasCurrentResource) {
+             // Clear the change count resource with a compute shader.
+@@ -151,6 +273,9 @@
+         // Copy the native upload resource to the dedicated resource.
+         worker->commandList->barriers(RenderBarrierStage::COPY, RenderBufferBarrier(readBuffer.nativeBuffer.get(), RenderBufferAccess::WRITE));
+         worker->commandList->copyBufferRegion(readBuffer.nativeBuffer.get(), readBuffer.nativeUploadBuffer.get(), bufferSize);
++#if defined(__SWITCH__)
++        RT64SwitchRecordBytes("framebuffer_gpu_upload", bufferSize);
++#endif
+         worker->commandList->barriers(RenderBarrierStage::COMPUTE, RenderBufferBarrier(readBuffer.nativeBuffer.get(), RenderBufferAccess::READ));
+ 
+         // Setup the native constants.
+@@ -369,4 +494,177 @@
          writeBuffer.nativeReadbackBuffer->unmap();
          writeBufferHistoryIndex++;
      }
@@ -3149,7 +3287,9 @@ diff --git a/src/render/rt64_native_target.cpp b/src/render/rt64_native_target.c
 +        srcTarget->resolveTarget(worker, shaderLibrary);
 +        RenderTexture *sourceTexture = srcTarget->getResolvedTexture();
 +        const RenderFormat sourceFormat = srcTarget->format;
-+        const bool supportedColor = (fmt == G_IM_FMT_RGBA) && (sourceFormat == RenderFormat::R8G8B8A8_UNORM);
++        const bool supportedColor = (fmt == G_IM_FMT_RGBA) &&
++            ((sourceFormat == RenderFormat::R8G8B8A8_UNORM) ||
++             (encodedBytes && (sourceFormat == RenderFormat::R8G8_UNORM)));
 +        const bool supportedDepth = (fmt == G_IM_FMT_DEPTH) && (sourceFormat == RenderFormat::D32_FLOAT);
 +        if (!supportedColor && !supportedDepth) {
 +            return false;
@@ -3181,6 +3321,30 @@ diff --git a/src/render/rt64_native_target.cpp b/src/render/rt64_native_target.c
 +        const RenderTextureCopyLocation source = RenderTextureCopyLocation::Subresource(sourceTexture);
 +        const RenderBox sourceBox(0, rowStart, rowWidth, rowEnd);
 +        worker->commandList->copyTextureRegion(destination, source, 0, 0, 0, &sourceBox);
++        RT64SwitchRecordBytes("framebuffer_gpu_readback", requiredBufferSize);
++        return true;
++    }
++
++    bool NativeTarget::copyToRDRAMCPU(uint8_t *data) {
++        const uint32_t bytes = switchTextureReadbackRowWidth *
++            (switchTextureReadbackRowEnd - switchTextureReadbackRowStart) * 2;
++        // Keep the established small/partial-word behavior in Framebuffer.
++        if (!switchFusedRAMTransfersEnabled() || !switchTextureReadbackEncodedBytes ||
++            (switchTextureReadbackRenderFormat != RenderFormat::R8G8_UNORM) ||
++            (bytes == 0) || ((bytes % sizeof(uint32_t)) != 0) ||
++            ((reinterpret_cast<uintptr_t>(data) % alignof(uint32_t)) != 0))
++            return false;
++        assert(data != nullptr);
++        assert(switchTextureReadbackBuffer != nullptr);
++        assert(switchTextureReadbackSize == G_IM_SIZ_16b);
++        assert(bytes <= switchTextureReadbackBufferSize);
++        RT64SwitchPerfScope profile("framebuffer_fused_commit");
++        RenderRange range(0, bytes);
++        const uint8_t *source = static_cast<const uint8_t*>(switchTextureReadbackBuffer->map(0, &range));
++        switchCopySwap32(source, data, bytes);
++        switchTextureReadbackBuffer->unmap();
++        RT64SwitchRecordBytes("framebuffer_cpu_read", bytes);
++        RT64SwitchRecordBytes("framebuffer_ram_write", bytes);
 +        return true;
 +    }
 +
@@ -3200,6 +3364,18 @@ diff --git a/src/render/rt64_native_target.cpp b/src/render/rt64_native_target.c
 +
 +        RenderRange readRange(0, sourceByteCount);
 +        const uint8_t *readback = reinterpret_cast<const uint8_t *>(switchTextureReadbackBuffer->map(0, &readRange));
++        if (switchTextureReadbackEncodedBytes && (sourcePixelSize == 2)) {
++            // RG8 already holds the exact big-endian RAM bytes. Copy only the
++            // active rows, directly from the fenced mapping, with no scratch.
++            RT64SwitchPerfScope copyProfile("framebuffer_packed_copy");
++            RT64SwitchRecordBytes("framebuffer_cpu_read", sourceByteCount);
++            RT64SwitchRecordBytes("framebuffer_ram_write", sourceByteCount);
++            std::memcpy(data, readback, sourceByteCount);
++            switchTextureReadbackBuffer->unmap();
++            return;
++        }
++        RT64SwitchRecordBytes("framebuffer_cpu_read", sourceByteCount);
++        RT64SwitchRecordBytes("framebuffer_ram_write", rowWidth * rowCount * 2);
 +        // GPU-visible readback mappings are uncached on Switch. Copy once into
 +        // reusable cached memory before the encoder's repeated byte accesses.
 +        // Keep the direct path for a controlled hardware comparison.
@@ -3222,6 +3398,7 @@ diff --git a/src/render/rt64_native_target.cpp b/src/render/rt64_native_target.c
 +        }
 +        if (cachedReadback) {
 +            RT64SwitchPerfScope cacheProfile("framebuffer_readback_cache");
++            RT64SwitchRecordBytes("framebuffer_scratch_copy", sourceByteCount);
 +            switchTextureReadbackCache.resize(sourceByteCount);
 +            std::memcpy(switchTextureReadbackCache.data(), readback, sourceByteCount);
 +            readback = switchTextureReadbackCache.data();
@@ -3287,12 +3464,17 @@ diff --git a/src/render/rt64_native_target.h b/src/render/rt64_native_target.h
  
          NativeTarget();
          ~NativeTarget();
-@@ -56,7 +70,11 @@
-         uint32_t copyFromRAM(RenderWorker *worker, FramebufferChange &emptyFbChange, uint32_t width, uint32_t height, uint32_t rowStart, uint8_t siz, uint8_t fmt, const uint8_t *data, bool invalidateTargets, const ShaderLibrary *shaderLibrary);
+@@ -53,10 +67,15 @@
+         RenderFormat getBufferFormat(uint8_t siz) const;
+ 
+         // Returns the amount of different pixels.
+-        uint32_t copyFromRAM(RenderWorker *worker, FramebufferChange &emptyFbChange, uint32_t width, uint32_t height, uint32_t rowStart, uint8_t siz, uint8_t fmt, const uint8_t *data, bool invalidateTargets, const ShaderLibrary *shaderLibrary);
++        uint32_t copyFromRAM(RenderWorker *worker, FramebufferChange &emptyFbChange, uint32_t width, uint32_t height, uint32_t rowStart, uint8_t siz, uint8_t fmt, const uint8_t *data, bool invalidateTargets, const ShaderLibrary *shaderLibrary, bool swapWords = false);
          void copyToNative(RenderWorker *worker, RenderTarget *srcTarget, uint32_t rowWidth, uint32_t rowStart, uint32_t rowEnd, uint8_t siz, uint8_t fmt, uint32_t ditherPattern, uint32_t ditherRandomSeed, const ShaderLibrary *shaderLibrary);
          void copyToRAM(uint32_t rowStart, uint32_t rowEnd, uint32_t width, uint8_t siz, uint8_t *data);
 +#if defined(__SWITCH__)
 +        bool copyToNativeCPU(RenderWorker *worker, RenderTarget *srcTarget, uint32_t rowWidth, uint32_t rowStart, uint32_t rowEnd, uint8_t siz, uint8_t fmt, uint32_t ditherPattern, uint32_t ditherRandomSeed, const ShaderLibrary *shaderLibrary, bool encodedBytes = false);
++        bool copyToRDRAMCPU(uint8_t *data);
 +        void copyToRAMCPU(uint8_t *data);
 +#endif
  
@@ -3893,7 +4075,12 @@ diff --git a/src/render/rt64_raster_shader_cache.h b/src/render/rt64_raster_shad
 diff --git a/src/render/rt64_render_target.cpp b/src/render/rt64_render_target.cpp
 --- a/src/render/rt64_render_target.cpp
 +++ b/src/render/rt64_render_target.cpp
-@@ -9,6 +9,7 @@
+@@ -5,10 +5,12 @@
+ #include "rt64_render_target.h"
+ 
+ #include <algorithm>
++#include <cstdlib>
+ 
  #include "gbi/rt64_f3d.h"
  #include "shared/rt64_fb_common.h"
  #include "shared/rt64_render_target_copy.h"
@@ -3901,19 +4088,40 @@ diff --git a/src/render/rt64_render_target.cpp b/src/render/rt64_render_target.c
  #include "shared/rt64_texture_copy.h"
  
  #include "rt64_raster_shader.h"
-@@ -213,6 +214,53 @@
+@@ -84,6 +86,9 @@
+ 
+         downsampledTextureMultiplier = 0;
+         format = colorBufferFormat(usesHDR);
++#if defined(__SWITCH__)
++        if (switchNativeBytes) format = RenderFormat::R8G8_UNORM;
++#endif
+         
+         RenderClearValue clearValue = RenderClearValue::Color(RenderColor(), format);
+         texture = worker->device->createTexture(RenderTextureDesc::ColorTarget(width, height, format, multisampling, &clearValue));
+@@ -213,6 +218,66 @@
  
          markForResolve();
      }
 +
 +#if defined(__SWITCH__)
++    bool RenderTarget::packedCopybackEnabled() {
++        static const bool enabled = [] {
++            const char *value = std::getenv("SK2_SWITCH_PACKED_COPYBACK");
++            return value && *value == '1';
++        }();
++        return enabled;
++    }
++
 +    bool RenderTarget::encodeColorToNativeBytes(RenderWorker *worker, RenderTarget *src, uint32_t rowWidth, uint32_t rowStart, uint32_t rowEnd,
 +        uint32_t ditherPattern, uint32_t ditherRandomSeed, const ShaderLibrary *shaderLibrary)
 +    {
 +        assert(worker != nullptr);
 +        assert(src != nullptr);
 +        assert(shaderLibrary != nullptr);
-+        if ((format != RenderFormat::R8G8B8A8_UNORM) || (src->multisampling.sampleCount != 1) ||
++        const bool packed = format == RenderFormat::R8G8_UNORM;
++        const bool depth = src->format == RenderFormat::D32_FLOAT;
++        if ((!packed && (format != RenderFormat::R8G8B8A8_UNORM)) ||
++            (depth && !packed) || (src->multisampling.sampleCount != 1) ||
 +            (rowWidth == 0) || (rowWidth > src->width) || (rowStart >= rowEnd) || (rowEnd > src->height))
 +        {
 +            return false;
@@ -3938,11 +4146,13 @@ diff --git a/src/render/rt64_render_target.cpp b/src/render/rt64_render_target.c
 +        copyCB.ditherPattern = ditherPattern;
 +        copyCB.ditherRandomSeed = ditherRandomSeed;
 +        copyCB.usesHDR = src->usesHDR ? 1U : 0U;
++        copyCB.depth = depth ? 1U : 0U;
 +
 +        const uint32_t rowCount = rowEnd - rowStart;
 +        worker->commandList->setViewports(RenderViewport(0.0f, float(rowStart), float(rowWidth), float(rowCount)));
 +        worker->commandList->setScissors(RenderRect(0, rowStart, rowWidth, rowEnd));
-+        worker->commandList->setPipeline(shaderLibrary->switchFramebufferColorCopy.pipeline.get());
++        const ShaderRecord &copyShader = packed ? shaderLibrary->switchFramebufferPackedCopy : shaderLibrary->switchFramebufferColorCopy;
++        worker->commandList->setPipeline(copyShader.pipeline.get());
 +        worker->commandList->setGraphicsPipelineLayout(shaderLibrary->switchFramebufferColorCopy.pipelineLayout.get());
 +        worker->commandList->setGraphicsDescriptorSet(src->targetCopyDescSet->get(), 0);
 +        worker->commandList->setGraphicsPushConstants(0, &copyCB);
@@ -3955,7 +4165,7 @@ diff --git a/src/render/rt64_render_target.cpp b/src/render/rt64_render_target.c
  
      void RenderTarget::resolveFromTarget(RenderWorker *worker, RenderTarget *src, const ShaderLibrary *shaderLibrary) {
          assert(!usesResolve() && "The target must not be an MSAA target to allow resolving from other targets.");
-@@ -512,4 +560,4 @@
+@@ -512,4 +577,4 @@
      RenderFormat RenderTarget::depthBufferFormat() {
          return RenderFormat::D32_FLOAT;
      }
@@ -3965,7 +4175,19 @@ diff --git a/src/render/rt64_render_target.cpp b/src/render/rt64_render_target.c
 diff --git a/src/render/rt64_render_target.h b/src/render/rt64_render_target.h
 --- a/src/render/rt64_render_target.h
 +++ b/src/render/rt64_render_target.h
-@@ -58,6 +58,10 @@
+@@ -46,6 +46,11 @@
+         int32_t invMisalignX = 0;
+         bool resolvedTextureDirty = false;
+         bool usesHDR = false;
++#if defined(__SWITCH__)
++        // Only dedicated copyback targets use this two-byte native layout.
++        bool switchNativeBytes = false;
++        static bool packedCopybackEnabled();
++#endif
+ 
+         RenderTarget(uint32_t addressForName, Framebuffer::Type type, const RenderMultisampling &multisampling, bool usesHDR);
+         ~RenderTarget();
+@@ -58,6 +63,10 @@
          void setupResolveFramebuffer(RenderWorker *worker);
          void setupDepthFramebuffer(RenderWorker *worker);
          void copyFromTarget(RenderWorker *worker, RenderTarget *src, uint32_t x, uint32_t y, uint32_t width, uint32_t height, const ShaderLibrary *shaderLibrary);
@@ -3976,7 +4198,7 @@ diff --git a/src/render/rt64_render_target.h b/src/render/rt64_render_target.h
          void resolveFromTarget(RenderWorker *worker, RenderTarget *src, const ShaderLibrary *shaderLibrary);
          void copyFromChanges(RenderWorker *worker, const FramebufferChange &fbChange, uint32_t fbWidth, uint32_t fbHeight, uint32_t rowStart, const ShaderLibrary *shaderLibrary);
          void clearColorTarget(RenderWorker *worker);
-@@ -75,4 +79,4 @@
+@@ -75,4 +84,4 @@
          static RenderFormat colorBufferFormat(bool usesHDR);
          static RenderFormat depthBufferFormat();
      };
@@ -4091,7 +4313,7 @@ diff --git a/src/render/rt64_shader_library.cpp b/src/render/rt64_shader_library
  #   include "shaders/TextureCopyPS.hlsl.metal.h"
  #   include "shaders/TextureDecodeCS.hlsl.metal.h"
  #   include "shaders/TextureResolveSamples2XPS.hlsl.metal.h"
-@@ -790,6 +794,25 @@
+@@ -790,6 +794,32 @@
              RenderTargetCopyDescriptorSet descriptorSet;
              layoutBuilder.begin();
              layoutBuilder.addDescriptorSet(descriptorSet);
@@ -4111,6 +4333,13 @@ diff --git a/src/render/rt64_shader_library.cpp b/src/render/rt64_shader_library
 +            switchColorPipelineDesc.pipelineLayout = switchFramebufferColorCopy.pipelineLayout.get();
 +            switchColorPipelineDesc.pixelShader = switchColorCopyShader.get();
 +            switchFramebufferColorCopy.pipeline = device->createGraphicsPipeline(switchColorPipelineDesc);
++#if defined(__SWITCH__)
++            if (RenderTarget::packedCopybackEnabled()) {
++                // Same byte-valued shader output; discard unused B/A channels.
++                switchColorPipelineDesc.renderTargetFormat[0] = RenderFormat::R8G8_UNORM;
++                switchFramebufferPackedCopy.pipeline = device->createGraphicsPipeline(switchColorPipelineDesc);
++            }
++#endif
 +
 +            layoutBuilder.begin();
 +            layoutBuilder.addDescriptorSet(descriptorSet);
@@ -4120,11 +4349,12 @@ diff --git a/src/render/rt64_shader_library.cpp b/src/render/rt64_shader_library
 diff --git a/src/render/rt64_shader_library.h b/src/render/rt64_shader_library.h
 --- a/src/render/rt64_shader_library.h
 +++ b/src/render/rt64_shader_library.h
-@@ -51,6 +51,7 @@
+@@ -51,6 +51,8 @@
          ShaderRecord rtCopyDepthToColor;
          ShaderRecord rtCopyColorToDepthMS;
          ShaderRecord rtCopyDepthToColorMS;
 +        ShaderRecord switchFramebufferColorCopy;
++        ShaderRecord switchFramebufferPackedCopy;
          ShaderRecord textureDecode;
          ShaderRecord textureCopy;
          ShaderRecord textureResolve;
@@ -4379,7 +4609,7 @@ diff --git a/src/render/rt64_texture_cache.cpp b/src/render/rt64_texture_cache.c
                  textureMapAdditions.clear();
  
                  for (size_t i = 0; i < queueSize; i++) {
-@@ -1070,38 +1263,87 @@
+@@ -1070,38 +1263,96 @@
                      newTexture->format = RenderFormat::R8_UINT;
                      newTexture->width = upload.width;
                      newTexture->height = upload.height;
@@ -4406,7 +4636,12 @@ diff --git a/src/render/rt64_texture_cache.cpp b/src/render/rt64_texture_cache.c
 +                        if (!upload.bytesTMEM.empty()) {
 +                            void *dstData = tmemUploadResources[i]->map();
 +                            memcpy(dstData, upload.bytesTMEM.data(), upload.bytesTMEM.size());
++#if defined(__SWITCH__)
++                            const RenderRange writtenRange(0, upload.bytesTMEM.size());
++                            tmemUploadResources[i]->unmap(0, &writtenRange);
++#else
 +                            tmemUploadResources[i]->unmap();
++#endif
 +                        }
 +                        beforeCopyBarriers.emplace_back(newTexture->tmem.get(), RenderTextureLayout::COPY_DEST);
 +                    }
@@ -4451,7 +4686,11 @@ diff --git a/src/render/rt64_texture_cache.cpp b/src/render/rt64_texture_cache.c
 +                    uint8_t *uploadData = reinterpret_cast<uint8_t *>(switchDecodedUploads[i]->map());
 +                    assert(decodedBytes.size() >= uploadSize);
 +                    std::memcpy(uploadData, decodedBytes.data(), uploadSize);
-+                    switchDecodedUploads[i]->unmap();
++                    // The pool retains its high-water capacity. Flush only the
++                    // newly decoded texels, including when a smaller texture reuses it.
++                    const RenderRange writtenRange(0, uploadSize);
++                    switchDecodedUploads[i]->unmap(0, &writtenRange);
++                    RT64SwitchRecordBytes("texture_cpu_write", uploadSize, upload.hash);
 +                    dstTexture->memorySize = uploadSize;
 +                }
 +#endif
@@ -4482,7 +4721,7 @@ diff --git a/src/render/rt64_texture_cache.cpp b/src/render/rt64_texture_cache.c
                          static uint32_t TextureGlobalCounter = 0;
                          TextureDecodeDescriptorSet *descSet = descriptorSets[i].get();
                          dstTexture->format = RenderFormat::R8G8B8A8_UNORM;
-@@ -1110,6 +1352,7 @@
+@@ -1110,6 +1361,7 @@
                          descSet->setTexture(descSet->TMEM, dstTexture->tmem.get(), RenderTextureLayout::SHADER_READ);
                          descSet->setTexture(descSet->RGBA32, dstTexture->texture.get(), RenderTextureLayout::GENERAL);
                          beforeDecodeBarriers.emplace_back(dstTexture->texture.get(), RenderTextureLayout::GENERAL);
@@ -4490,7 +4729,7 @@ diff --git a/src/render/rt64_texture_cache.cpp b/src/render/rt64_texture_cache.c
                      }
  
                      addResolvedPaths(upload.hash, upload.width, upload.height, upload.tlut, upload.loadTile, upload.bytesTMEM, upload.decodeTMEM, resolvedPathQueueCopy);
-@@ -1161,7 +1404,7 @@
+@@ -1161,7 +1413,7 @@
                          // Load the texture directly on this thread (operation was defined as Stall).
                          else if (textureMap.replacementMap.fileSystems[resolvedPath.fileSystemIndex]->load(resolvedPath.relativePath, replacementBytes)) {
                              replacementUploadResources.emplace_back();
@@ -4499,7 +4738,7 @@ diff --git a/src/render/rt64_texture_cache.cpp b/src/render/rt64_texture_cache.c
                              textureMapMutex.lock();
                              textureMap.replacementMap.addLoadedTexture(replacementTexture, resolvedPath.fileSystemIndex, resolvedPath.relativePath, true);
                              textureMapMutex.unlock();
-@@ -1177,6 +1420,7 @@
+@@ -1177,6 +1429,7 @@
                  }
                  
                  // Execute the copy worker and signal a semaphore so it synchronizes with the direct worker afterwards.
@@ -4507,7 +4746,7 @@ diff --git a/src/render/rt64_texture_cache.cpp b/src/render/rt64_texture_cache.c
                  const RenderCommandList *copyCommandList = copyWorker->commandList.get();
                  RenderCommandSemaphore *syncSemaphore = copyToDirectSemaphore.get();
                  copyWorker->commandList->end();
-@@ -1184,8 +1428,10 @@
+@@ -1184,8 +1437,10 @@
                  
                  // Decode all textures using the direct worker and transition all textures to their final layouts.
                  directWorker->commandList->begin();
@@ -4518,7 +4757,7 @@ diff --git a/src/render/rt64_texture_cache.cpp b/src/render/rt64_texture_cache.c
                  const ShaderRecord &textureDecode = shaderLibrary->textureDecode;
                  bool pipelineSet = false;
                  for (size_t i = 0; i < queueSize; i++) {
-@@ -1217,20 +1463,144 @@
+@@ -1217,20 +1472,150 @@
                          afterDecodeBarriers.emplace_back(RenderTextureBarrier(textureMapAdditions[i].texture->texture.get(), RenderTextureLayout::SHADER_READ));
                      }
                  }
@@ -4551,8 +4790,14 @@ diff --git a/src/render/rt64_texture_cache.cpp b/src/render/rt64_texture_cache.c
 +                    stageCommandList->begin();
 +                    stageCommandList->barriers(RenderBarrierStage::COPY,
 +                        RenderBufferBarrier(switchDecodedDeviceUploads[i].get(), RenderBufferAccess::WRITE));
++                    // Image footprints consume active texels, not retained pool
++                    // capacity. Keep both buffers and every staging/image fence.
++                    const uint32_t activeUploadSize = upload.width * upload.height * RenderFormatSize(dstTexture->format);
++                    assert(activeUploadSize <= switchDecodedUploadSizes[i]);
 +                    stageCommandList->copyBufferRegion(switchDecodedDeviceUploads[i].get(),
-+                        switchDecodedUploads[i].get(), switchDecodedUploadSizes[i]);
++                        switchDecodedUploads[i].get(), activeUploadSize);
++                    RT64SwitchRecordBytes("texture_gpu_staging", activeUploadSize, upload.hash);
++                    RT64SwitchRecordBytes("texture_staging_capacity", switchDecodedUploadSizes[i], upload.hash);
 +                    stageCommandList->barriers(RenderBarrierStage::COPY,
 +                        RenderBufferBarrier(switchDecodedDeviceUploads[i].get(), RenderBufferAccess::READ));
 +                    stageCommandList->end();
@@ -4705,12 +4950,13 @@ diff --git a/src/shaders/SwitchFramebufferColorCopyPS.hlsl b/src/shaders/SwitchF
 new file mode 100644
 --- /dev/null
 +++ b/src/shaders/SwitchFramebufferColorCopyPS.hlsl
-@@ -0,0 +1,26 @@
+@@ -0,0 +1,30 @@
 +//
 +// RT64
 +//
 +
 +#include "Formats.hlsli"
++#include "Depth.hlsli"
 +#include "Random.hlsli"
 +#include "shared/rt64_switch_framebuffer_copy.h"
 +
@@ -4722,13 +4968,16 @@ new file mode 100644
 +    const uint dstIndex = coord.y * gConstants.rowWidth + coord.x;
 +    // MAGICSQ, BAYER, and DISABLE never consume the random value. Avoid the
 +    // expensive 16-round TEA sequence for those overwhelmingly common modes.
-+    const uint randomSeed = (gConstants.ditherPattern == 2)
++    const uint randomSeed = ((gConstants.depth == 0) && (gConstants.ditherPattern == 2))
 +        ? initRand(gConstants.ditherRandomSeed, dstIndex, 16)
 +        : 0;
 +    const uint dither = DitherPatternValue(gConstants.ditherPattern, coord, randomSeed);
-+    const uint nativeValue = Float4ToRGBA16(gInput.Load(uint3(coord, 0)), dither, gConstants.usesHDR != 0);
++    const float4 input = gInput.Load(uint3(coord, 0));
++    const uint nativeValue = (gConstants.depth != 0)
++        ? FloatToDepth16(input.r, 0.0f)
++        : Float4ToRGBA16(input, dither, gConstants.usesHDR != 0);
 +
-+    // Preserve native bytes exactly through an RGBA8 render target.
++    // R/G carry big-endian N64 bytes in both RG8 and reference RGBA8 targets.
 +    return float4(((nativeValue >> 8) & 0xFF) / 255.0f,
 +        (nativeValue & 0xFF) / 255.0f, 0.0f, 1.0f);
 +}
@@ -4736,7 +4985,7 @@ diff --git a/src/shared/rt64_switch_framebuffer_copy.h b/src/shared/rt64_switch_
 new file mode 100644
 --- /dev/null
 +++ b/src/shared/rt64_switch_framebuffer_copy.h
-@@ -0,0 +1,20 @@
+@@ -0,0 +1,21 @@
 +//
 +// RT64
 +//
@@ -4753,6 +5002,7 @@ new file mode 100644
 +        uint ditherPattern;
 +        uint ditherRandomSeed;
 +        uint usesHDR;
++        uint depth;
 +    };
 +#ifdef HLSL_CPU
 +};

@@ -184,3 +184,23 @@ can reduce smoothness or restore choppy sound. See the
 Audio diagnostics include queue duration, production gaps, catch-up chunks,
 SDL/backend failures, and observed empty queues. These counters complement
 listening tests; an empty-queue observation alone is not an audible underrun.
+
+
+The stock-memory bandwidth candidate is available with
+`--packed-framebuffer-copyback`. It halves eligible color/depth readback payloads
+and commits native bytes directly to RAM. Build normally, then run
+`scripts/package-switch.sh --packed-copyback` for a separate SD-card archive
+that enables it. `--rgba-framebuffer-copyback` restores reference mode for a
+NetLoader comparison. See the [candidate validation and controls](docs/SWITCH_PERFORMANCE_RESULTS.md#2026-10-06--stock-memory-bandwidth-candidate).
+
+The subsequent single-pass RAM transfer candidate adds
+`--fused-framebuffer-transfers` to packed copyback. Package it with
+`scripts/package-switch.sh --fused-transfers`; compare against
+`--staged-framebuffer-transfers` while retaining packed copyback.
+
+The Switch texture uploader copies and flushes active texture bytes when reusing
+larger pooled buffers. Profile windows include the worst sample's workload ID
+and approximate completion time. The analyzer's `--profiles-csv <path>` option
+exports these alongside the timing histograms. Texture traffic counters
+compare the active staging payload with retained capacity in the same run.
+See `docs/SWITCH_PERFORMANCE_RESULTS.md` for candidate results and their limits.

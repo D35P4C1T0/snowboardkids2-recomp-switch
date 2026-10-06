@@ -786,6 +786,14 @@ int main(int argc, char** argv) {
     (void) argv;
 #if defined(__SWITCH__)
     for (int i = 1; i < argc; i++) {
+        if (std::strcmp(argv[i], "--fused-framebuffer-transfers") == 0)
+            SDL_setenv("SK2_SWITCH_FUSED_RAM_TRANSFERS", "1", 1);
+        if (std::strcmp(argv[i], "--staged-framebuffer-transfers") == 0)
+            SDL_setenv("SK2_SWITCH_FUSED_RAM_TRANSFERS", "0", 1);
+        if (std::strcmp(argv[i], "--packed-framebuffer-copyback") == 0)
+            SDL_setenv("SK2_SWITCH_PACKED_COPYBACK", "1", 1);
+        if (std::strcmp(argv[i], "--rgba-framebuffer-copyback") == 0)
+            SDL_setenv("SK2_SWITCH_PACKED_COPYBACK", "0", 1);
         if (std::strcmp(argv[i], "--batch-upload-prefix") == 0)
             SDL_setenv("SK2_SWITCH_BATCH_UPLOAD_PREFIX", "1", 1);
         if (std::strcmp(argv[i], "--prioritize-present") == 0)
@@ -871,6 +879,20 @@ int main(int argc, char** argv) {
     switch_log_checkpoint(!cached_readbacks || *cached_readbacks != '0'
         ? "startup: cached CPU framebuffer readback selected"
         : "startup: direct CPU framebuffer readback selected");
+    if (!SDL_getenv("SK2_SWITCH_PACKED_COPYBACK") &&
+        std::filesystem::exists(switch_root / "config" / "packed-framebuffer-copyback", switch_path_error))
+        SDL_setenv("SK2_SWITCH_PACKED_COPYBACK", "1", 1);
+    if (!SDL_getenv("SK2_SWITCH_FUSED_RAM_TRANSFERS") &&
+        std::filesystem::exists(switch_root / "config" / "fused-framebuffer-transfers", switch_path_error))
+        SDL_setenv("SK2_SWITCH_FUSED_RAM_TRANSFERS", "1", 1);
+    const char* fused_transfers = SDL_getenv("SK2_SWITCH_FUSED_RAM_TRANSFERS");
+    switch_log_checkpoint(fused_transfers && *fused_transfers == '1'
+        ? "startup: fused framebuffer RAM transfers selected"
+        : "startup: staged framebuffer RAM transfers selected");
+    const char* packed_copyback = SDL_getenv("SK2_SWITCH_PACKED_COPYBACK");
+    switch_log_checkpoint(packed_copyback && *packed_copyback == '1'
+        ? "startup: packed RG8 framebuffer copyback selected"
+        : "startup: reference RGBA8 framebuffer copyback selected");
     const char* direct_encoded = SDL_getenv("SK2_SWITCH_DIRECT_ENCODED_READBACKS");
     switch_log_checkpoint(!direct_encoded || *direct_encoded != '0'
         ? "startup: direct encoded framebuffer packing selected"

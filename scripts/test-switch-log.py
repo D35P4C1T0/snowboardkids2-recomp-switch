@@ -26,6 +26,47 @@ class LogTests(unittest.TestCase):
                 analyzer.print_summary(path, data)
             return data, output.getvalue()
 
+    def test_traffic_totals_and_interval(self):
+        data, output = self.parse("""[ 2000 ms] traffic: stage=readback count=2 bytes=2097152 interval_ns=2000000000 id=0
+[ 4000 ms] traffic: stage=readback count=1 bytes=1048576 interval_ns=1000000000 id=0
+[ 4000 ms] traffic: stage=empty count=0 bytes=0 interval_ns=1000000000 id=0
+[ 4000 ms] traffic: stage=bad count=1 bytes=10 interval_ns=0 id=0
+""")
+        self.assertEqual(len(data['traffic']), 2)
+        self.assertIn('transfers=3 bytes=3145728 mean=1048576 bytes/transfer rate=1.00 MiB/s', output)
+        analyzer.select_metrics(data, 3, 5)
+        self.assertEqual(len(data['traffic']), 1)
+        self.assertEqual(data['traffic'][0]['bytes'], 1048576)
+
+    def test_peak_context_csv_and_texture_savings(self):
+        data, output = self.parse("""[ 4000 ms] profile: stage=present_render count=2 mean_us=8000 p50_us=500 p95_us=16000 p99_us=16000 max_us=16000 late=0 id=99 max_id=42 max_age_us=1250000 interval_ns=2000000000
+[ 4000 ms] traffic: stage=texture_gpu_staging count=2 bytes=1024 interval_ns=2000000000 id=42
+[ 4000 ms] traffic: stage=texture_staging_capacity count=2 bytes=8192 interval_ns=2000000000 id=42
+""")
+        peak = data['profiles'][0]
+        self.assertEqual(peak['max_id'], 42)
+        self.assertEqual(peak['max_end_ms'], 2750)
+        self.assertIn('peak≈t=2.750s id=42', output)
+        self.assertIn('7168 bytes (87.5% of retained capacity)', output)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'profiles.csv'
+            analyzer.write_profiles_csv(path, data['profiles'])
+            import csv
+            with path.open() as stream:
+                row = next(csv.DictReader(stream))
+            self.assertEqual(row['max_id'], '42')
+            self.assertEqual(float(row['max_end_ms']), 2750)
+        # Legacy fields remain readable if optional context is truncated/bad.
+        data, _ = self.parse("profile: stage=x count=1 mean_us=1 p50_us=1 p95_us=1 p99_us=1 max_us=1 late=0 id=1 max_id=bad max_age_us=-1\n")
+        self.assertEqual(len(data['profiles']), 1)
+        self.assertNotIn('max_end_ms', data['profiles'][0])
+
+    def test_missing_texture_counter_does_not_invent_savings(self):
+        _, output = self.parse("""[ 2000 ms] traffic: stage=texture_gpu_staging count=2 bytes=10000 interval_ns=2000000000 id=0
+[ 4000 ms] traffic: stage=texture_staging_capacity count=2 bytes=8192 interval_ns=2000000000 id=0
+""")
+        self.assertNotIn('Texture staging avoided:', output)
+
     def test_crash_after_pass_is_incomplete(self):
         data, output = self.parse('''transfer probe: testing image readback
 transfer probe: buffer 4x2 PASS mismatches=0

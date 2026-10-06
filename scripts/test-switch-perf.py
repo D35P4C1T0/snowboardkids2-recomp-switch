@@ -67,7 +67,10 @@ int main() {
     }
     std::vector<std::future<void>> producers;
     for (int i=0; i<8; i++) producers.emplace_back(std::async(std::launch::async, [] {
-        for (int j=0; j<100; j++) switch_perf_record("concurrent", 2000, 3);
+        for (int j=0; j<100; j++) {
+            switch_perf_record("concurrent", 2000, 3);
+            switch_perf_record_bytes("readback", 320*240*2, 3);
+        }
     }));
     for (auto& producer : producers) {
         assert(producer.wait_for(1s)==std::future_status::ready);
@@ -89,14 +92,37 @@ int main() {
     reporter.get();
     assert(messages.size()==1);
     assert(messages[0].find("stage=first count=2 mean_us=2")!=std::string::npos);
+    assert(messages[0].find("max_id=2 max_age_us=")!=std::string::npos);
+    assert(messages[0].find("interval_ns=")!=std::string::npos);
     // Disabled samples must not enter the next window.
     switch_set_profile_enabled(false);
     switch_perf_record("concurrent", 1000000, 4);
+    switch_perf_record_bytes("readback", 1, 4);
     switch_set_profile_enabled(true);
     switch_perf_record("trigger", 0, 5);
-    assert(messages.size()==3);
+    assert(messages.size()==4);
     assert(messages[1].find("stage=concurrent count=801 mean_us=2")!=std::string::npos);
+    // Equal peaks keep the first maximum, not the last workload in the window.
+    assert(messages[1].find("id=6 max_id=3 max_age_us=")!=std::string::npos);
     assert(messages[2].find("stage=trigger count=1")!=std::string::npos);
+    assert(messages[3].find("traffic: stage=readback count=800 bytes=122880000 interval_ns=")!=std::string::npos);
+    // Both collections reset after snapshotting.
+    std::this_thread::sleep_for(2100ms);
+    switch_perf_record_bytes("readback", 2, 7);
+    assert(messages.size()==5);
+    assert(messages[4].find("stage=readback count=1 bytes=2")!=std::string::npos);
+    // All framebuffer + texture categories fit without dropped counters.
+    static const char* names[]={"a","b","c","d","e","f","g","h","i","j","k","l"};
+    for(auto name:names) switch_perf_record_bytes(name,17,8);
+    std::this_thread::sleep_for(2100ms);
+    switch_perf_record("trigger",0,9);
+    assert(messages.size()==18);
+    for(auto name:names) {
+        std::string expected=std::string("traffic: stage=")+name+" count=1 bytes=17";
+        bool found=false;
+        for(const auto& message:messages) found|=message.find(expected)!=std::string::npos;
+        assert(found);
+    }
 }
 '''
 with tempfile.TemporaryDirectory(prefix='sk2-perf-collector-') as temp:
@@ -105,5 +131,5 @@ with tempfile.TemporaryDirectory(prefix='sk2-perf-collector-') as temp:
     subprocess.run([os.environ.get('CXX','c++'),'-std=c++17','-Wall','-Wextra','-Werror',
                     '-pthread','-I',str(root),str(src),str(root/'switch/profiling.cpp'),
                     '-o',str(exe)],check=True)
-    subprocess.run([str(exe)],check=True,timeout=15)
+    subprocess.run([str(exe)],check=True,timeout=20)
 print('PASS: stalled reporting does not block producers, concurrent counts, window reset, disabled samples')

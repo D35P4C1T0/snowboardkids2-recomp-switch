@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <vector>
 #include <switch.h>
@@ -8,6 +9,7 @@
 #include "plume_render_interface_builders.h"
 #include "shaders/FullScreenVS.hlsl.spirv.h"
 #include "shaders/TextureCopyPS.hlsl.spirv.h"
+#include "shaders/SwitchFramebufferColorCopyPS.hlsl.spirv.h"
 
 void switch_log_checkpoint(const char*, bool);
 
@@ -106,10 +108,16 @@ bool test_batch(RenderDevice* device, uint32_t count) {
     return passed;
 }
 
-bool test_sampling(RenderDevice* device, uint32_t width, uint32_t height) {
+bool test_sampling(RenderDevice* device, uint32_t width, uint32_t height, bool packed = false) {
     const auto format = RenderFormat::R8G8B8A8_UNORM;
     const uint32_t row_pitch = (width * 4 + 255U) & ~255U;
     const uint32_t bytes = row_pitch * height;
+    const auto output_format = packed ? RenderFormat::R8G8_UNORM : format;
+    const uint32_t output_pixel_size = packed ? 2 : 4;
+    const uint32_t output_pitch = packed ? width * 2 : row_pitch;
+    const uint32_t row_start = packed && height > 1 ? 1 : 0;
+    const uint32_t row_count = height - row_start;
+    const uint32_t output_bytes = output_pitch * row_count;
     std::vector<uint8_t> expected(bytes, 0xCD);
     for (uint32_t y = 0; y < height; y++) {
         for (uint32_t x = 0; x < width * 4; x++) {
@@ -121,13 +129,15 @@ bool test_sampling(RenderDevice* device, uint32_t width, uint32_t height) {
     auto list = queue->createCommandList();
     auto fence = device->createCommandFence();
     auto upload = device->createBuffer(RenderBufferDesc::UploadBuffer(bytes));
-    auto readback = device->createBuffer(RenderBufferDesc::ReadbackBuffer(bytes));
+    auto readback = device->createBuffer(RenderBufferDesc::ReadbackBuffer(output_bytes));
     auto input = device->createTexture(RenderTextureDesc::Texture2D(width, height, 1, format));
-    auto target = device->createTexture(RenderTextureDesc::ColorTarget(width, height, format));
+    auto target = device->createTexture(RenderTextureDesc::ColorTarget(width, height, output_format));
     const RenderTexture* attachment = target.get();
     auto framebuffer = device->createFramebuffer(RenderFramebufferDesc(&attachment, 1));
     auto vertex = device->createShader(FullScreenVSBlobSPIRV, sizeof(FullScreenVSBlobSPIRV), "VSMain", RenderShaderFormat::SPIRV);
-    auto pixel = device->createShader(TextureCopyPSBlobSPIRV, sizeof(TextureCopyPSBlobSPIRV), "PSMain", RenderShaderFormat::SPIRV);
+    auto pixel = packed
+        ? device->createShader(SwitchFramebufferColorCopyPSBlobSPIRV, sizeof(SwitchFramebufferColorCopyPSBlobSPIRV), "PSMain", RenderShaderFormat::SPIRV)
+        : device->createShader(TextureCopyPSBlobSPIRV, sizeof(TextureCopyPSBlobSPIRV), "PSMain", RenderShaderFormat::SPIRV);
     RenderDescriptorSetBuilder descriptors;
     descriptors.begin();
     const uint32_t input_index = descriptors.addTexture(1);
@@ -135,7 +145,7 @@ bool test_sampling(RenderDevice* device, uint32_t width, uint32_t height) {
     auto descriptor_set = descriptors.create(device);
     RenderPipelineLayoutBuilder layout_builder;
     layout_builder.begin();
-    layout_builder.addPushConstant(0, 0, sizeof(float) * 4, RenderShaderStageFlag::PIXEL);
+    layout_builder.addPushConstant(0, 0, packed ? sizeof(uint32_t) * 5 : sizeof(float) * 4, RenderShaderStageFlag::PIXEL);
     layout_builder.addDescriptorSet(descriptors);
     layout_builder.end();
     auto layout = layout_builder.create(device);
@@ -144,7 +154,7 @@ bool test_sampling(RenderDevice* device, uint32_t width, uint32_t height) {
     pipeline_desc.vertexShader = vertex.get();
     pipeline_desc.pixelShader = pixel.get();
     pipeline_desc.renderTargetCount = 1;
-    pipeline_desc.renderTargetFormat[0] = format;
+    pipeline_desc.renderTargetFormat[0] = output_format;
     pipeline_desc.renderTargetBlend[0] = RenderBlendDesc::Copy();
     auto pipeline = device->createGraphicsPipeline(pipeline_desc);
     if (!list || !fence || !upload || !readback || !input || !target || !framebuffer || !descriptor_set || !layout || !pipeline) {
@@ -157,8 +167,8 @@ bool test_sampling(RenderDevice* device, uint32_t width, uint32_t height) {
     upload->unmap();
     data = readback->map();
     if (!data) return false;
-    std::memset(data, 0xA5, bytes);
-    armDCacheFlush(data, bytes);
+    std::memset(data, 0xA5, output_bytes);
+    armDCacheFlush(data, output_bytes);
     const RenderRange no_writes(0, 0);
     readback->unmap(0, &no_writes);
     auto submit = [&](const char* phase) {
@@ -185,33 +195,49 @@ bool test_sampling(RenderDevice* device, uint32_t width, uint32_t height) {
     list->setScissors(RenderRect(0, 0, width, height));
     list->setGraphicsDescriptorSet(descriptor_set.get(), 0);
     const float constants[] = {0, 0, float(width), float(height)};
-    list->setGraphicsPushConstants(0, constants);
+    const uint32_t native_constants[] = {width, 3, 0, 0, 0};
+    list->setGraphicsPushConstants(0, packed ? static_cast<const void*>(native_constants) : static_cast<const void*>(constants));
     list->drawInstanced(3, 1, 0, 0);
     submit("texture draw");
     list->begin();
     list->barriers(RenderBarrierStage::COPY, RenderTextureBarrier(target.get(), RenderTextureLayout::COPY_SOURCE));
     list->barriers(RenderBarrierStage::COPY, RenderBufferBarrier(readback.get(), RenderBufferAccess::WRITE));
-    list->copyTextureRegion(RenderTextureCopyLocation::PlacedFootprint(readback.get(), format, width, height, 1, row_pitch / 4),
-        RenderTextureCopyLocation::Subresource(target.get()));
+    const RenderBox source_box(0, row_start, width, height);
+    list->copyTextureRegion(RenderTextureCopyLocation::PlacedFootprint(readback.get(), output_format, width, row_count, 1, output_pitch / output_pixel_size),
+        RenderTextureCopyLocation::Subresource(target.get()), 0, 0, 0, &source_box);
     list->barriers(RenderBarrierStage::COPY, RenderBufferBarrier(readback.get(), RenderBufferAccess::READ));
     submit("rendered readback");
-    const RenderRange range(0, bytes);
+    const RenderRange range(0, output_bytes);
     auto* actual = static_cast<uint8_t*>(readback->map(0, &range));
     if (!actual) return false;
-    armDCacheFlush(actual, bytes);
+    armDCacheFlush(actual, output_bytes);
+    std::vector<uint8_t> native_expected(output_bytes, 0xCD);
+    for (uint32_t y = 0; y < row_count; y++) {
+        for (uint32_t x = 0; x < width; x++) {
+            const uint8_t* source = expected.data() + size_t(y + row_start) * row_pitch + x * 4;
+            uint8_t* dest = native_expected.data() + size_t(y) * output_pitch + x * output_pixel_size;
+            if (packed) {
+                const uint16_t value = uint16_t(((source[0] >> 3) << 11) | ((source[1] >> 3) << 6) |
+                    ((source[2] >> 3) << 1) | ((source[3] & 4) ? 1 : 0));
+                dest[0] = uint8_t(value >> 8); dest[1] = uint8_t(value);
+            }
+            else std::memcpy(dest, source, 4);
+        }
+    }
     size_t mismatches = 0, first = 0;
-    for (uint32_t y = 0; y < height; y++) {
-        for (uint32_t x = 0; x < width * 4; x++) {
-            const size_t offset = size_t(y) * row_pitch + x;
-            if (actual[offset] != expected[offset]) {
+    for (uint32_t y = 0; y < row_count; y++) {
+        for (uint32_t x = 0; x < width * output_pixel_size; x++) {
+            const size_t offset = size_t(y) * output_pitch + x;
+            if (actual[offset] != native_expected[offset]) {
                 if (!mismatches) first = offset;
                 mismatches++;
             }
         }
     }
     char message[256];
-    std::snprintf(message, sizeof(message), "sampling probe: rendered %ux%u %s mismatches=%zu first=%zu expected=%02x actual=%02x",
-        width, height, mismatches ? "FAIL" : "PASS", mismatches, first, expected[first], actual[first]);
+    std::snprintf(message, sizeof(message), "sampling probe: rendered %s %ux%u rowStart=%u %s mismatches=%zu first=%zu expected=%02x actual=%02x",
+        packed ? "packed-RG8" : "RGBA8", width, height, row_start, mismatches ? "FAIL" : "PASS",
+        mismatches, first, native_expected[first], actual[first]);
     switch_log_checkpoint(message, false);
     readback->unmap(0, &no_writes);
     return mismatches == 0;
@@ -367,6 +393,11 @@ bool switch_run_texture_probe(plume::RenderDevice* device, bool include_inline) 
     bool sampling_passed = true;
     for (const auto& dimensions : {std::pair{4U, 2U}, std::pair{285U, 52U}, std::pair{128U, 256U}}) {
         sampling_passed = test_sampling(device, dimensions.first, dimensions.second) && sampling_passed;
+    }
+    const char* packed_probe = std::getenv("SK2_SWITCH_PACKED_COPYBACK");
+    if (packed_probe && *packed_probe == '1') {
+        for (const auto& dimensions : {std::pair{1U, 1U}, std::pair{3U, 3U}, std::pair{285U, 52U}, std::pair{320U, 240U}})
+            sampling_passed = test_sampling(device, dimensions.first, dimensions.second, true) && sampling_passed;
     }
     switch_log_checkpoint(sampling_passed ? "sampling probe: ALL PASS" : "sampling probe: FAILED", false);
     bool batch_passed = true;

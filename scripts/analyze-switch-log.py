@@ -84,6 +84,7 @@ def parse_log(path: Path) -> dict[str, object]:
     audio_first: dict[str, int] | None = None
     audio_health: list[dict[str, int]] = []
     profiles: list[dict[str, object]] = []
+    traffic: list[dict[str, object]] = []
     audio_timing: list[dict[str, int]] = []
     batch_results: list[str] = []
     batch_status: str | None = None
@@ -103,8 +104,22 @@ def parse_log(path: Path) -> dict[str, object]:
             values = dict(re.findall(r"(\w+)=([\w.-]+)", message))
             required = {'stage', 'count', 'mean_us', 'p50_us', 'p95_us', 'p99_us', 'max_us', 'late', 'id'}
             if required <= values.keys() and all(values[key].isdigit() for key in required - {'stage'}):
-                profiles.append({**{key: values[key] if key == 'stage' else int(values[key]) for key in required},
-                                 'timestamp_ms': timestamp_ms})
+                sample = {**{key: values[key] if key == 'stage' else int(values[key]) for key in required},
+                          'timestamp_ms': timestamp_ms}
+                for key in ('max_id', 'max_age_us', 'interval_ns'):
+                    if key in values and values[key].isdigit():
+                        sample[key] = int(values[key])
+                # The logger timestamp follows the snapshot. This reconstructs
+                # a peak's approximate completion time, not a GPU timestamp.
+                if 'max_age_us' in sample:
+                    sample['max_end_ms'] = timestamp_ms - sample['max_age_us'] / 1000
+                profiles.append(sample)
+        if message.startswith("traffic: stage="):
+            values = dict(re.findall(r"(\w+)=([\w.-]+)", message))
+            required = {'stage', 'count', 'bytes', 'interval_ns', 'id'}
+            if required <= values.keys() and all(values[key].isdigit() for key in required - {'stage'}) and int(values['interval_ns']) > 0 and int(values['count']) > 0:
+                traffic.append({**{key: values[key] if key == 'stage' else int(values[key]) for key in required},
+                                'timestamp_ms': timestamp_ms})
         if message.startswith("audio: timing "):
             values = {key: int(value) for key, value in re.findall(r"(\w+)=(\d+)", message)}
             if {"min_us", "max_us", "gap_us", "input_frames", "output_frames", "corrections"} <= values.keys():
@@ -204,6 +219,7 @@ def parse_log(path: Path) -> dict[str, object]:
         "duration_ms": duration_ms,
         "perf": perf,
         "profiles": profiles,
+        "traffic": traffic,
         "audio_timing": audio_timing,
         "batch_results": batch_results,
         "batch_status": batch_status or ("incomplete" if batch_started else None),
@@ -236,7 +252,7 @@ def select_metrics(data: dict[str, object], start_seconds: float, end_seconds: f
     start_ms = start_seconds * 1000
     end_ms = end_seconds * 1000 if end_seconds is not None else float('inf')
     data['perf'] = [sample for sample in data['perf'] if start_ms <= sample.timestamp_ms <= end_ms]
-    for key in ('profiles', 'audio_timing'):
+    for key in ('profiles', 'audio_timing', 'traffic'):
         data[key] = [sample for sample in data[key] if start_ms <= sample['timestamp_ms'] <= end_ms]
     data['metrics_interval'] = (start_seconds, end_seconds)
 
@@ -293,11 +309,39 @@ def print_summary(path: Path, data: dict[str, object]) -> None:
         windows = [sample for sample in data['profiles'] if sample['stage'] == stage]
         count = sum(s['count'] for s in windows)
         mean = sum(s['mean_us'] * s['count'] for s in windows) / count
+        peak = max(windows, key=lambda s: s['max_us'])
+        peak_context = (f" peak≈t={peak['max_end_ms']/1000:.3f}s id={peak['max_id']}"
+                        if 'max_end_ms' in peak and 'max_id' in peak else "")
         print(f"Profile {stage}: samples={count} mean={mean/1000:.2f} ms "
               f"worst-window p95={max(s['p95_us'] for s in windows)/1000:.2f} ms "
               f"p99={max(s['p99_us'] for s in windows)/1000:.2f} ms "
               f"max={max(s['max_us'] for s in windows)/1000:.2f} ms "
-              f"late={sum(s['late'] for s in windows)}")
+              f"late={sum(s['late'] for s in windows)}{peak_context}")
+    for stage in sorted({sample['stage'] for sample in data['traffic']}):
+        windows = [sample for sample in data['traffic'] if sample['stage'] == stage]
+        byte_count = sum(s['bytes'] for s in windows)
+        seconds = sum(s['interval_ns'] for s in windows) / 1e9
+        count = sum(s['count'] for s in windows)
+        print(f"Traffic {stage}: transfers={count} bytes={byte_count} "
+              f"mean={byte_count/count:.0f} bytes/transfer rate={byte_count/seconds/1048576:.2f} MiB/s")
+    # Nonblocking logs may drop a line. Compare paired snapshots only, so
+    # missing counters cannot manufacture a saving or a negative percentage.
+    active = [s for s in data['traffic'] if s['stage'] == 'texture_gpu_staging']
+    staged = capacity = matched = 0
+    for retained in (s for s in data['traffic'] if s['stage'] == 'texture_staging_capacity'):
+        candidates = [s for s in active if s['interval_ns'] == retained['interval_ns']
+                      and s['count'] == retained['count']
+                      and abs(s['timestamp_ms'] - retained['timestamp_ms']) <= 250]
+        if not candidates:
+            continue
+        sample = min(candidates, key=lambda s: abs(s['timestamp_ms'] - retained['timestamp_ms']))
+        active.remove(sample)
+        if sample['bytes'] > retained['bytes']:
+            continue
+        staged += sample['bytes']; capacity += retained['bytes']; matched += 1
+    if capacity:
+        print(f"Texture staging avoided: {capacity-staged} bytes ({100*(capacity-staged)/capacity:.1f}% of retained capacity); "
+              f"matched windows={matched}; logical copy payload, excludes GPU read/write multiplicity")
     if data['batch_status'] is not None:
         passes = sum(bool(re.search(r'\bPASS\b', s)) for s in data['batch_results'])
         print(f"Batched transfers: {passes} passed, {len(data['batch_results'])-passes} failed; suite {data['batch_status']}")
@@ -439,10 +483,20 @@ def write_csv(path: Path, samples: list[PerfSample]) -> None:
             writer.writerow(sample.__dict__)
 
 
+def write_profiles_csv(path: Path, samples: list[dict[str, object]]) -> None:
+    fields = ['timestamp_ms', 'stage', 'count', 'mean_us', 'p50_us', 'p95_us', 'p99_us',
+              'max_us', 'late', 'id', 'max_id', 'max_age_us', 'max_end_ms', 'interval_ns']
+    with path.open("w", newline="") as output:
+        writer = csv.DictWriter(output, fieldnames=fields)
+        writer.writeheader()
+        writer.writerows(samples)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("log", type=Path, help="nxlink log produced by scripts/switch-run.sh")
     parser.add_argument("--csv", type=Path, help="write parsed performance windows as CSV")
+    parser.add_argument("--profiles-csv", type=Path, help="write stage windows and approximate peak times as CSV")
     parser.add_argument("--start-seconds", type=float, help="include sampled metrics reported at/after this log time")
     parser.add_argument("--end-seconds", type=float, help="include sampled metrics reported at/before this log time")
     args = parser.parse_args()
@@ -457,6 +511,9 @@ def main() -> None:
     if args.csv is not None:
         write_csv(args.csv, data["perf"])  # type: ignore[arg-type]
         print(f"CSV: {args.csv}")
+    if args.profiles_csv is not None:
+        write_profiles_csv(args.profiles_csv, data['profiles'])
+        print(f"Profile CSV: {args.profiles_csv}")
 
 
 if __name__ == "__main__":

@@ -104,6 +104,8 @@ extern "C" void dusk_switch_log(const char* message) {
 int main(int argc, char** argv) {
     bool include_inline = false;
     for (int i = 1; i < argc; i++) {
+        if (std::strcmp(argv[i], "--packed-framebuffer-copyback") == 0)
+            setenv("SK2_SWITCH_PACKED_COPYBACK", "1", 1);
         include_inline |= std::strcmp(argv[i], "--inline-transfers") == 0;
         if (std::strcmp(argv[i], "--async-submissions") == 0)
             setenv("NVK_SWITCH_ASYNC", "1", 1);
