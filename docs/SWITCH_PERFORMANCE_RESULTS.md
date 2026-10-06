@@ -1,19 +1,25 @@
-# Switch performance implementation — 2026-10-03
+# Switch performance implementation — updated 2026-10-06
 
-Branch: `codex/switch-performance`. Texture-correct baseline: `4d03da9`.
-Latest implementation checkpoint: `41ee648` (vector pixel packing).
-Hardware: user's Switch at `192.168.222.235`, launched through title takeover
+Current branch: `codex/switch-port`, based on `074ae38`. Historical performance
+branch: `codex/switch-performance`; texture-correct baseline: `4d03da9`;
+vector pixel packing checkpoint: `41ee648`.
+Hardware: user's Switch at `10.0.0.56`, launched through title takeover
 and NetLoader. This page accompanies [the roadmap](SWITCH_PERFORMANCE_PLAN.md).
 
 ## Current checkpoint
 
 The latest default includes repaired audio, corrected GPU cache coherency,
-fenced texture-upload batching, cached/vectorized CPU framebuffer readback,
-and the presentation FPS counter. The tester reported approximately **45 FPS**
-with correct audio and textures. Synchronous GPU submissions remain the
+fenced texture-upload batching, direct encoded framebuffer packing, cached
+raw/depth readback, optimized integer audio RSP, and the presentation FPS
+counter. The original memory configuration measured about **45–48 FPS**
+in warm race intervals. The user subsequently reported a stable **60 FPS**
+after setting memory to **1600 MHz** with manually overridden timings.
+This is a user-observed configuration result; the actual clocks/timings were
+not captured in the logs. Synchronous GPU submissions remain the
 default; asynchronous execution and combined draw/color copyback are opt-in.
-The full build and relevant host tests pass. Sustained 60 FPS, controlled
-performance comparisons, and the 30-minute hardware stress gate are unfinished.
+The full build and relevant host tests pass. Controlled comparisons isolating
+memory frequency from timings, stable 60 FPS at the original configuration,
+and the 30-minute hardware stress gate remain unfinished.
 
 ## Implemented behavior
 
@@ -272,3 +278,167 @@ permanent implementation.
    the current implementation deliberately uses conservative drains.
 
 Stable 60 FPS and the full release stress gate are still unverified.
+
+
+## 2026-10-06 — Spike investigation on `codex/switch-port`
+
+Fetched `origin` and verified `074ae38` matches `origin/codex/switch-port`.
+The existing `full-20261006-190812.log` is a synchronous, zero-copy baseline:
+gameplay window median 45.73 FPS, p10 41.93, minimum 34.80. Display-list
+processing averages 23.79 ms and peaks at 49.24 ms; shader compilation averages
+192.33 ms. Presentation composition includes acquisition, interpolation waits,
+rendering, deliberate pacing and scanout, so its 14.93 ms mean does not identify
+a rendering bottleneck on its own.
+
+The candidate snapshots profiling histograms under the collection mutex and
+formats/sends reports after releasing it. A separate nonblocking report lock
+protects the fixed snapshot; producers continue collecting if a prior report
+is still in progress. No additional thread or per-sample allocation is needed.
+The enabled flag uses atomic reads/writes. A production collector host test
+stalls the log sink and verifies eight concurrent producers finish before the
+sink is released, preserving all 801 samples in the following report, including a producer
+that crosses a second reporting deadline while the first report is stalled.
+
+New presentation histograms separate `present_interpolation_wait`,
+`present_acquire`, `present_render` (including command submission),
+`present_pacing`, `present_fifo_wait`, and `present_scanout`. Existing aggregate
+metrics remain available; nested scopes must not be summed. This candidate
+removes collector contention and prepares attribution of the remaining stalls;
+it does not establish a speedup or stable 60 FPS without hardware measurement.
+
+
+Hardware comparisons used the user's ready Switch at `10.0.0.56` with the same
+candidate NRO and native internal resolution / 720p zero-copy output:
+
+| 60–96 s report interval | Synchronous | Bounded asynchronous |
+| --- | --- | --- |
+| Log | `full-20261006-192315.log` | `full-20261006-192531.log` |
+| Presentation-window FPS median | 45.05 | 46.08 |
+| p10 FPS | 43.19 | 42.91 |
+| Minimum window FPS | 42.71 | 40.58 |
+
+The user was asked to repeat the same course section; inputs and scene positions
+were not recorded/replayed. These results do not establish a controlled speedup.
+The asynchronous run reduces NVK CPU submission cost, but warm display-list
+processing still takes roughly 28 ms and completion waits move into other
+stages. The lowest-window FPS and p10 do not improve in this comparison.
+The user confirmed good audio and correct rendering in asynchronous mode,
+with FPS appearing unchanged. Neither mode reaches stable 60 FPS. Both logs
+report no audio-backend failure
+or native GPU fault in the captured interval. This is a short check, not the
+30-minute stress gate; asynchronous submissions remain opt-in.
+
+The NRO and SD-card archive were rebuilt successfully with the configured
+`build-switch-full` target and `scripts/package-switch.sh`. The top-level
+build wrapper first stopped because the Docker daemon was unavailable for
+MIPS patch compilation; the unchanged, previously built MIPS payload was
+reused for this C++ runtime/renderer change. Collector, log analyzer,
+readback equivalence, patch round-trip, submit, sync, asynchronous history,
+and resource retirement host tests pass.
+
+
+### Combined color/depth copyback experiment
+
+`--batch-color-depth-copyback` preserves the separate depth-active draw and
+appends depth conversion/readback and end operations to the color-only
+copyback list. One completion fence protects both CPU commits. The existing
+isolated mode shares the same depth recording helper, with its original
+separate submission. A production schedule host harness checks one depth
+recording, no CPU read before completion, color-before-depth RAM commits,
+CPU/native encoder fallbacks, and isolated/combined submit counts. The log
+analyzer retains the selected copyback/readback modes in its summary.
+
+The first upload (`full-20261006-193120.log`) still issued a duplicate depth
+submission. That candidate was corrected and its measurements are excluded.
+The corrected run is `full-20261006-193430.log`. The experiment remains opt-in
+until measured and visually checked on hardware.
+
+### Direct encoded packing and audio RSP
+
+`--direct-encoded-readbacks` packs the already encoded GPU bytes directly from
+the completed mapped readback buffer. It skips the intermediate CPU scratch
+copy for that format; raw RGBA and float depth retain the cached path. GPU
+completion and unmap behavior are unchanged. The production encoder harness
+checks identical output, odd widths and tails, row offsets, dithering, float
+depth, bounds, and that the encoded fast path leaves the scratch cache untouched.
+
+The user reported smoother racing and correct audio/textures with this option.
+The 120–180 s race interval in `full-20261006-193731.log` measured median 47.67
+FPS, p10 43.78, minimum 42.48. CPU encoding averaged about 0.63 ms, compared
+with about 0.90 ms in the earlier cached run. Scenes were manually driven;
+these are observations, not a controlled overall speedup measurement.
+
+`--optimized-audio-rsp` selects a separately compiled integer audio microcode
+translation with `-O3`. Only this translation enables aligned element-zero
+LQV/SQV vector loads/stores. Partial, unaligned, and other element accesses
+keep the original implementation. Distinct RSP/context type names prevent
+linker folding from mixing reference and optimized inline implementations.
+No floating-point relaxation is used. The generated microcode harness checks
+54 audio tasks across buffer lengths, mix repetitions, and signed gains against
+the reference translation, including full RDRAM and DMEM equality. A separate
+memory harness checks every vector element, 8192 addresses, signed offsets,
+wrapping, and untouched bytes.
+
+The user confirmed correct audio and textures in both audio candidates.
+The O3-only run (`full-20261006-194149.log`) observed about 3.93 ms per audio
+task; the aligned-vector run (`full-20261006-194625.log`, 80–120 s) observed
+about 3.60 ms. The latter interval had median 47.55 FPS, p10 45.27, minimum
+44.47. Neither candidate establishes stable 60 FPS or satisfies the release
+stress gate.
+
+### Queue contention investigation
+
+The CPU affinity probe (`full-20261006-194930.log`) found the runtime and
+renderer threads already allowed on all three application cores (`mask=0x7`).
+It changed no affinity. The probe and its startup option were removed.
+
+The next candidate separates queue-lock wait from `vkQueuePresentKHR` time.
+`--prioritize-present` gives a presentation already waiting on the shared
+Vulkan queue priority over the next ordinary submission. Disabled mode uses
+the original native mutex. Both modes preserve exclusive queue access and
+GPU completion fences. A production mutex harness checks exclusivity under
+eight contending threads, presentation ordering, and subsequent submit progress.
+The warm 80–120 s interval in `full-20261006-195846.log` measured median
+46.17 FPS, p10 43.24, minimum 42.26. Queue presentation lock wait was about
+0.85 ms and the driver call about 3.71 ms; display lists still took roughly
+31 ms. The user confirmed correct audio and textures. This does not show a
+clear scheduling gain; ordinary queue scheduling remains the default.
+
+Direct encoded packing and optimized audio RSP are now enabled by default.
+`--cached-encoded-readbacks` and `--reference-audio-rsp` restore their reference
+paths independently. A subsequent default-build run separates texture upload
+waits (`framebuffer_texture_wait`) from setup (`framebuffer_prepare_setup`)
+inside the existing framebuffer preparation scope. These nested timings must
+not be summed with their parent.
+
+The ordinary scheduling default run (`full-20261006-200141.log`, 80–120 s)
+had median 47.79 FPS, p10 43.82, minimum 42.86. Preparation setup averaged
+0.05 ms; texture upload wait averaged 1.24 ms and peaked at 17.34 ms.
+Presentation's driver call averaged 3.63 ms and queue-lock wait 1.28 ms.
+This points to upload completion waits as the source of preparation spikes,
+not expensive CPU setup. The manually driven comparison does not establish a
+controlled scheduling speedup.
+
+`--batch-upload-prefix` is a subsequent experimental upload schedule. It places
+the pre-copy transition list before the first staging lists in one submission,
+including the prefix in the existing eight-list limit. A completion fence still
+precedes every image-copy batch, and another protects resource publication and
+reuse after image copies. For 1–7 decoded textures this removes one submission;
+at some larger batch boundaries the smaller first batch can increase submission
+count. It is opt-in pending hardware evaluation. The production schedule harness
+checks 0–33 textures, exact submission counts, the eight-list bound, prefix
+ordering, both completion boundaries, and existing batching/legacy fallbacks.
+
+### User memory configuration finding
+
+The user reported that setting memory to 1600 MHz with manually overridden
+memory timings effectively locked the game to 60 FPS. This is strong evidence
+that the memory subsystem constrains this workload, and is consistent with the
+observed benefit from removing the encoded readback scratch copy. Frequency
+and timings changed together, so bandwidth, latency, and contention effects
+have not been isolated. No software-only stable-60 claim follows from this
+result. The next asynchronous hardware comparison and upload-prefix experiment
+were held following this report; the prefix candidate has host checks but no
+hardware validation and remains disabled by default. Future performance work
+should prioritize measured memory traffic and upload/readback costs, comparing
+the same build and race route at recorded memory settings.

@@ -174,7 +174,7 @@ def parse_log(path: Path) -> dict[str, object]:
             warnings.append(message)
 
         if (
-            message.startswith("startup: NVK")
+            message.startswith("startup:") and message.endswith("selected")
             or "ubershaders only" in message
             or message.startswith("rt64 texture cache:")
         ):

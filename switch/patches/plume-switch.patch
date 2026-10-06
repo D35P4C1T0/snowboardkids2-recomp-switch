@@ -29,6 +29,50 @@ diff --git a/CMakeLists.txt b/CMakeLists.txt
  # Include directories
  target_include_directories(plume PUBLIC
      ${CMAKE_CURRENT_SOURCE_DIR}
+diff --git a/plume_queue_mutex.h b/plume_queue_mutex.h
+new file mode 100644
+--- /dev/null
++++ b/plume_queue_mutex.h
+@@ -0,0 +1,39 @@
++#pragma once
++
++#include <atomic>
++#include <condition_variable>
++#include <mutex>
++
++namespace plume {
++// VkQueue access remains exclusive. When enabled, a presentation already
++// waiting for this queue gets the next turn before another ordinary submit.
++class SwitchQueueMutex {
++    const bool priority;
++    std::mutex native, gate;
++    std::condition_variable available;
++    bool owned = false;
++    std::atomic<unsigned> pendingPresents{0};
++public:
++    explicit SwitchQueueMutex(bool enabled) : priority(enabled) {}
++    void lock() {
++        if (!priority) { native.lock(); return; }
++        std::unique_lock lock(gate);
++        available.wait(lock, [&] { return !owned && pendingPresents.load() == 0; });
++        owned = true;
++    }
++    void lockPresent() {
++        if (!priority) { native.lock(); return; }
++        std::unique_lock lock(gate);
++        pendingPresents.fetch_add(1);
++        available.wait(lock, [&] { return !owned; });
++        pendingPresents.fetch_sub(1);
++        owned = true;
++    }
++    void unlock() {
++        if (!priority) { native.unlock(); return; }
++        { std::lock_guard lock(gate); owned = false; }
++        available.notify_all();
++    }
++    unsigned waitingPresents() const { return pendingPresents.load(); }
++};
++}
 diff --git a/plume_render_interface.h b/plume_render_interface.h
 --- a/plume_render_interface.h
 +++ b/plume_render_interface.h
@@ -305,8 +349,21 @@ diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
  #   elif defined(PLUME_SDL_VULKAN_ENABLED)
          VulkanInterface *renderInterface = commandQueue->device->renderInterface;
          SDL_bool sdlRes = SDL_Vulkan_CreateSurface(desc.renderWindow, renderInterface->instance, &surface);
-@@ -2285,6 +2474,19 @@
+@@ -2282,9 +2471,32 @@
+         
+         VkResult res;
+         {
++#if defined(__SWITCH__)
++            std::unique_lock queueLock(*commandQueue->queue->mutex, std::defer_lock);
++            {
++                RT64SwitchPerfScope lockProfile("queue_present_lock");
++                commandQueue->queue->mutex->lockPresent();
++            }
++            queueLock = std::unique_lock(*commandQueue->queue->mutex, std::adopt_lock);
++            RT64SwitchPerfScope callProfile("queue_present_call");
++#else
              const std::scoped_lock queueLock(*commandQueue->queue->mutex);
++#endif
              res = vkQueuePresentKHR(commandQueue->queue->vk, &presentInfo);
          }
 +#if defined(__SWITCH__)
@@ -325,7 +382,7 @@ diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
  
  #if defined(__APPLE__)
          // Under MoltenVK, VK_SUBOPTIMAL_KHR does not result in a valid state for rendering. We intentionally
-@@ -2324,6 +2526,20 @@
+@@ -2324,6 +2536,20 @@
          VkSurfaceCapabilitiesKHR surfaceCapabilities = {};
          vkGetPhysicalDeviceSurfaceCapabilitiesKHR(commandQueue->device->physicalDevice, surface, &surfaceCapabilities);
  
@@ -346,7 +403,7 @@ diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
          // Clamp the extent to the surface capabilities' min/max bounds.
          // This is required because the window size may differ from the valid surface extent
          // (e.g., due to window decorations, compositor behavior, or timing issues).
-@@ -2338,7 +2554,8 @@
+@@ -2338,7 +2564,8 @@
          createInfo.imageExtent.width = width;
          createInfo.imageExtent.height = height;
          createInfo.imageArrayLayers = 1;
@@ -356,7 +413,7 @@ diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
          createInfo.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
          createInfo.preTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
          createInfo.compositeAlpha = pickedAlphaFlag;
-@@ -2397,13 +2614,32 @@
+@@ -2397,13 +2624,32 @@
              textures[i].createImageView(pickedSurfaceFormat.format);
          }
  
@@ -389,7 +446,7 @@ diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
      }
  
      void VulkanSwapChain::setVsyncEnabled(bool vsyncEnabled) {
-@@ -2463,6 +2699,13 @@
+@@ -2463,6 +2709,13 @@
          GetClientRect(desc.renderWindow, &rect);
          dstWidth = rect.right - rect.left;
          dstHeight = rect.bottom - rect.top;
@@ -403,7 +460,7 @@ diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
  #   elif defined(PLUME_SDL_VULKAN_ENABLED)
          SDL_GetWindowSizeInPixels(desc.renderWindow, (int *)(&dstWidth), (int *)(&dstHeight));
  #   elif defined(__ANDROID__)
-@@ -2630,7 +2873,7 @@
+@@ -2630,7 +2883,7 @@
              fprintf(stderr, "vkCreateRenderPass failed with error code 0x%X.\n", res);
              return;
          }
@@ -412,7 +469,7 @@ diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
          VkFramebufferCreateInfo fbInfo = {};
          fbInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
          fbInfo.renderPass = renderPass;
-@@ -3117,11 +3360,34 @@
+@@ -3117,11 +3370,34 @@
  
          if (clearRectsCount > 0) {
              for (uint32_t i = 0; i < clearRectsCount; i++) {
@@ -451,7 +508,7 @@ diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
                  clearRect.baseArrayLayer = 0;
                  clearRect.layerCount = 1;
                  rectVector.emplace_back(clearRect);
-@@ -3144,10 +3410,13 @@
+@@ -3144,10 +3420,13 @@
          assert(attachmentIndex < targetFramebuffer->colorAttachments.size());
          assert((clearRectsCount == 0) || (clearRects != nullptr));
  
@@ -467,7 +524,7 @@ diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
  
          VkClearAttachment attachment = {};
          auto &rgba = attachment.clearValue.color.float32;
-@@ -3168,6 +3437,9 @@
+@@ -3168,6 +3447,9 @@
  
          thread_local std::vector<VkClearRect> rectVector;
          clearCommonRectVector(targetFramebuffer->getWidth(), targetFramebuffer->getHeight(), clearRects, clearRectsCount, rectVector);
@@ -477,7 +534,7 @@ diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
  
          VkClearAttachment attachment = {};
          attachment.clearValue.depthStencil.depth = depthValue;
-@@ -3229,6 +3501,51 @@
+@@ -3229,6 +3511,51 @@
              imageCopy.imageExtent.depth = srcLocation.placedFootprint.depth;
              vkCmdCopyBufferToImage(vk, srcBuffer->vk, dstTexture->vk, toImageLayout(dstTexture->textureLayout), 1, &imageCopy);
          }
@@ -529,7 +586,7 @@ diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
          else {
              VkImageCopy imageCopy = {};
              imageCopy.srcSubresource.aspectMask = toAspectFlags(srcTexture->desc.format, srcTexture->desc.flags);
-@@ -3571,13 +3888,18 @@
+@@ -3571,13 +3898,18 @@
      void VulkanCommandQueue::executeCommandLists(const RenderCommandList **commandLists, uint32_t commandListCount, RenderCommandSemaphore **waitSemaphores, uint32_t waitSemaphoreCount, RenderCommandSemaphore **signalSemaphores, uint32_t signalSemaphoreCount, RenderCommandFence *signalFence) {
          assert(commandLists != nullptr);
          assert(commandListCount > 0);
@@ -548,7 +605,7 @@ diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
  
          for (uint32_t i = 0; i < waitSemaphoreCount; i++) {
              VulkanCommandSemaphore *interfaceSemaphore = static_cast<VulkanCommandSemaphore *>(waitSemaphores[i]);
-@@ -3601,11 +3923,22 @@
+@@ -3601,11 +3933,22 @@
          submitInfo.pCommandBuffers = commandBuffers.data();
          submitInfo.commandBufferCount = uint32_t(commandBuffers.size());
  
@@ -573,7 +630,7 @@ diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
          }
  
          if (!signalSemaphoreVector.empty()) {
-@@ -3620,12 +3953,76 @@
+@@ -3620,12 +3963,81 @@
          }
  
          VkResult res;
@@ -582,7 +639,12 @@ diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
 +            SwitchSubmitSequence.fetch_add(1, std::memory_order_relaxed) + 1;
 +#endif
          {
++#if defined(__SWITCH__)
++            std::unique_lock queueLock(*queue->mutex, std::defer_lock);
++            { RT64SwitchPerfScope lockProfile("queue_submit_lock"); queueLock.lock(); }
++#else
              const std::scoped_lock queueLock(*queue->mutex);
++#endif
              res = vkQueueSubmit(queue->vk, 1, &submitInfo, submitFence);
 -        }
 +#if defined(__SWITCH__)
@@ -651,7 +713,7 @@ diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
              fprintf(stderr, "vkQueueSubmit failed with error code 0x%X.\n", res);
              return;
          }
-@@ -3635,12 +4032,40 @@
+@@ -3635,12 +4047,40 @@
          assert(fence != nullptr);
  
          VulkanCommandFence *interfaceFence = static_cast<VulkanCommandFence *>(fence);
@@ -692,7 +754,23 @@ diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
          vkResetFences(device->vk, 1, &interfaceFence->vk);
      }
  
-@@ -3944,7 +4369,14 @@
+@@ -3718,7 +4158,15 @@
+         }
+ 
+         if (queues[queueIndex].mutex == nullptr) {
++#if defined(__SWITCH__)
++            static const bool prioritizePresent = [] {
++                const char* setting = std::getenv("SK2_SWITCH_PRESENT_PRIORITY");
++                return setting && *setting == '1';
++            }();
++            queues[queueIndex].mutex = std::make_unique<SwitchQueueMutex>(prioritizePresent);
++#else
+             queues[queueIndex].mutex = std::make_unique<std::mutex>();
++#endif
+         }
+ 
+         virtualQueue->queue = &queues[queueIndex];
+@@ -3944,7 +4392,14 @@
              createDeviceChain = &layoutFeatures;
          }
  
@@ -707,7 +785,7 @@ diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
          if (presentWaitSupported) {
              presentIdFeatures.pNext = createDeviceChain;
              createDeviceChain = &presentIdFeatures;
-@@ -4054,6 +4486,37 @@
+@@ -4054,6 +4509,37 @@
              fprintf(stderr, "vkCreateDevice failed with error code 0x%X.\n", res);
              return;
          }
@@ -745,7 +823,7 @@ diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
  
          for (uint32_t i = 0; i < queueFamilyCount; i++) {
              for (uint32_t j = 0; j < queueFamilies[i].queues.size(); j++) {
-@@ -4173,14 +4636,53 @@
+@@ -4173,14 +4659,53 @@
      }
  
      std::unique_ptr<RenderPipeline> VulkanDevice::createComputePipeline(const RenderComputePipelineDesc &desc) {
@@ -799,7 +877,7 @@ diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
          return std::make_unique<VulkanRaytracingPipeline>(this, desc, previousPipeline);
      }
  
-@@ -4438,6 +4940,12 @@
+@@ -4438,6 +4963,12 @@
          }
  
          if (vk != VK_NULL_HANDLE) {
@@ -812,7 +890,7 @@ diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
              vkDestroyDevice(vk, nullptr);
              vk = VK_NULL_HANDLE;
          }
-@@ -4464,7 +4972,12 @@
+@@ -4464,7 +4995,12 @@
  #else
      VulkanInterface::VulkanInterface() {
  #endif
@@ -825,7 +903,7 @@ diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
          if (res != VK_SUCCESS) {
              fprintf(stderr, "volkInitialize failed with error code 0x%X.\n", res);
              return;
-@@ -4500,7 +5013,7 @@
+@@ -4500,7 +5036,7 @@
          const std::unordered_set<std::string> dlssExtensions = DLSS::getRequiredInstanceExtensionsVulkan();
  #   endif
  
@@ -846,7 +924,18 @@ diff --git a/plume_vulkan.h b/plume_vulkan.h
  #include <mutex>
  #include <set>
  #include <unordered_map>
-@@ -54,6 +56,9 @@
+@@ -41,6 +43,10 @@
+ #pragma clang diagnostic pop
+ #endif
+ 
++#if defined(__SWITCH__)
++#include "plume_queue_mutex.h"
++#endif
++
+ namespace plume {
+     struct VulkanCommandQueue;
+     struct VulkanDevice;
+@@ -54,6 +60,9 @@
          VulkanPool *pool = nullptr;
          VmaAllocation allocation = VK_NULL_HANDLE;
          VmaAllocationInfo allocationInfo = {};
@@ -856,7 +945,7 @@ diff --git a/plume_vulkan.h b/plume_vulkan.h
          RenderBufferDesc desc;
          RenderBarrierStages barrierStages = RenderBarrierStage::NONE;
  
-@@ -350,6 +355,10 @@
+@@ -350,6 +359,10 @@
      struct VulkanCommandFence : RenderCommandFence {
          VkFence vk = VK_NULL_HANDLE;
          VulkanDevice *device = nullptr;
@@ -867,9 +956,15 @@ diff --git a/plume_vulkan.h b/plume_vulkan.h
  
          VulkanCommandFence(VulkanDevice *device);
          ~VulkanCommandFence() override;
-@@ -393,6 +402,17 @@
+@@ -391,8 +404,23 @@
+     
+     struct VulkanQueue {
          VkQueue vk;
++#if defined(__SWITCH__)
++        std::unique_ptr<SwitchQueueMutex> mutex;
++#else
          std::unique_ptr<std::mutex> mutex;
++#endif
          std::unordered_set<const VulkanCommandQueue *> virtualQueues;
 +#if defined(__SWITCH__)
 +        struct SubmitRecord {
@@ -885,7 +980,7 @@ diff --git a/plume_vulkan.h b/plume_vulkan.h
      };
  
      struct VulkanQueueFamily {
-@@ -417,6 +437,11 @@
+@@ -417,6 +445,11 @@
          std::unique_ptr<RenderBuffer> nullBuffer;
          bool loadStoreOpNoneSupported = false;
          bool nullDescriptorSupported = false;

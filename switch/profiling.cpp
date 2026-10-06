@@ -9,7 +9,7 @@
 #include <cstring>
 #include <mutex>
 
-static bool switch_profile_enabled = true;
+static std::atomic<bool> switch_profile_enabled{true};
 static std::atomic<float> switch_display_fps{0.0f};
 
 extern "C" float switch_fps_value() {
@@ -38,21 +38,34 @@ extern "C" void switch_fps_presented() {
 }
 
 extern "C" void switch_perf_record(const char* stage, uint64_t elapsed_ns, uint64_t id) {
-    if (!switch_profile_enabled) return;
+    if (!switch_profile_enabled.load(std::memory_order_relaxed)) return;
     struct Entry { const char* name = nullptr; sk2::perf::Histogram stats; uint64_t id = 0; };
     static std::array<Entry, 48> entries;
     static std::mutex mutex;
     static auto last_report = std::chrono::steady_clock::now();
-    std::lock_guard lock(mutex);
-    for (auto& entry : entries) {
-        if (!entry.name) entry.name = stage;
-        if (std::strcmp(entry.name, stage) == 0) {
-            entry.stats.add(elapsed_ns); entry.id = id; break;
+    // Snapshot a completed window under the collection lock. Formatting and
+    // socket writes must not hold up audio, display-list or GPU timing callers.
+    static std::array<Entry, 48> report;
+    static std::mutex report_mutex;
+    std::unique_lock report_lock(report_mutex, std::defer_lock);
+    {
+        std::lock_guard lock(mutex);
+        for (auto& entry : entries) {
+            if (!entry.name) entry.name = stage;
+            if (std::strcmp(entry.name, stage) == 0) {
+                entry.stats.add(elapsed_ns); entry.id = id; break;
+            }
         }
+        const auto now = std::chrono::steady_clock::now();
+        if (now - last_report < std::chrono::seconds(2)) return;
+        // A slow previous report may still own the snapshot. Keep collecting
+        // rather than waiting for it or allocating another report buffer.
+        if (!report_lock.try_lock()) return;
+        report = entries;
+        for (auto& entry : entries) entry.stats = {};
+        last_report = now;
     }
-    const auto now = std::chrono::steady_clock::now();
-    if (now - last_report < std::chrono::seconds(2)) return;
-    for (auto& entry : entries) {
+    for (const auto& entry : report) {
         const auto& h = entry.stats;
         if (!h.count) continue;
         char message[320];
@@ -63,11 +76,9 @@ extern "C" void switch_perf_record(const char* stage, uint64_t elapsed_ns, uint6
             (unsigned long long)(h.percentile_ns(99) / 1000), (unsigned long long)(h.max_ns / 1000),
             (unsigned long long)h.late, (unsigned long long)entry.id);
         switch_log_checkpoint(message, false);
-        entry.stats = {};
     }
-    last_report = now;
 }
 
 void switch_set_profile_enabled(bool enabled) {
-    switch_profile_enabled = enabled;
+    switch_profile_enabled.store(enabled, std::memory_order_relaxed);
 }

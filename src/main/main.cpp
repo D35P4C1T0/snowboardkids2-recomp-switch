@@ -507,10 +507,22 @@ bool reset_audio(uint32_t output_freq) {
 }
 
 extern RspUcodeFunc aspMain;
+#if defined(__SWITCH__)
+extern RspUcodeFunc switchAspMainOptimized;
+#endif
 
 RspUcodeFunc* get_rsp_microcode(const OSTask* task) {
     switch (task->t.type) {
         case M_AUDTASK:
+#if defined(__SWITCH__)
+            {
+                static const bool optimized = [] {
+                    const char* setting = SDL_getenv("SK2_SWITCH_OPTIMIZED_AUDIO_RSP");
+                    return !setting || *setting != '0';
+                }();
+                if (optimized) return switchAspMainOptimized;
+            }
+#endif
             return aspMain;
 
         default:
@@ -774,6 +786,18 @@ int main(int argc, char** argv) {
     (void) argv;
 #if defined(__SWITCH__)
     for (int i = 1; i < argc; i++) {
+        if (std::strcmp(argv[i], "--batch-upload-prefix") == 0)
+            SDL_setenv("SK2_SWITCH_BATCH_UPLOAD_PREFIX", "1", 1);
+        if (std::strcmp(argv[i], "--prioritize-present") == 0)
+            SDL_setenv("SK2_SWITCH_PRESENT_PRIORITY", "1", 1);
+        if (std::strcmp(argv[i], "--reference-audio-rsp") == 0)
+            SDL_setenv("SK2_SWITCH_OPTIMIZED_AUDIO_RSP", "0", 1);
+        if (std::strcmp(argv[i], "--cached-encoded-readbacks") == 0)
+            SDL_setenv("SK2_SWITCH_DIRECT_ENCODED_READBACKS", "0", 1);
+        if (std::strcmp(argv[i], "--optimized-audio-rsp") == 0)
+            SDL_setenv("SK2_SWITCH_OPTIMIZED_AUDIO_RSP", "1", 1);
+        if (std::strcmp(argv[i], "--direct-encoded-readbacks") == 0)
+            SDL_setenv("SK2_SWITCH_DIRECT_ENCODED_READBACKS", "1", 1);
         if (std::strcmp(argv[i], "--direct-readbacks") == 0)
             SDL_setenv("SK2_SWITCH_CACHE_READBACKS", "0", 1);
         if (std::strcmp(argv[i], "--cache-readbacks") == 0)
@@ -788,6 +812,8 @@ int main(int argc, char** argv) {
             SDL_setenv("SK2_SWITCH_BATCH_UPLOADS", "0", 1);
         if (std::strcmp(argv[i], "--async-submissions") == 0)
             SDL_setenv("NVK_SWITCH_ASYNC", "1", 1);
+        if (std::strcmp(argv[i], "--batch-color-depth-copyback") == 0)
+            SDL_setenv("SK2_SWITCH_BATCH_COLOR_DEPTH_COPYBACK", "1", 1);
         if (std::strcmp(argv[i], "--batch-framebuffer-copyback") == 0)
             SDL_setenv("SK2_SWITCH_BATCH_FRAMEBUFFER_COPYBACK", "1", 1);
         if (std::strcmp(argv[i], "--legacy-audio-backend") == 0)
@@ -825,6 +851,18 @@ int main(int argc, char** argv) {
     switch_initialize_logging();
     switch_log_checkpoint("startup: entered main", true);
     switch_log_checkpoint("startup: nonblocking nxlink checkpoints enabled");
+    const char* upload_prefix = SDL_getenv("SK2_SWITCH_BATCH_UPLOAD_PREFIX");
+    switch_log_checkpoint(upload_prefix && *upload_prefix == '1'
+        ? "startup: batched texture upload prefix selected"
+        : "startup: separate texture upload prefix selected");
+    const char* present_priority = SDL_getenv("SK2_SWITCH_PRESENT_PRIORITY");
+    switch_log_checkpoint(present_priority && *present_priority == '1'
+        ? "startup: presentation queue priority selected"
+        : "startup: native queue scheduling selected");
+    const char* optimized_audio = SDL_getenv("SK2_SWITCH_OPTIMIZED_AUDIO_RSP");
+    switch_log_checkpoint(!optimized_audio || *optimized_audio != '0'
+        ? "startup: optimized audio RSP selected"
+        : "startup: reference audio RSP selected");
     const char* asynchronous = SDL_getenv("NVK_SWITCH_ASYNC");
     switch_log_checkpoint(asynchronous && *asynchronous == '1'
         ? "startup: NVK bounded asynchronous submissions selected"
@@ -833,10 +871,18 @@ int main(int argc, char** argv) {
     switch_log_checkpoint(!cached_readbacks || *cached_readbacks != '0'
         ? "startup: cached CPU framebuffer readback selected"
         : "startup: direct CPU framebuffer readback selected");
+    const char* direct_encoded = SDL_getenv("SK2_SWITCH_DIRECT_ENCODED_READBACKS");
+    switch_log_checkpoint(!direct_encoded || *direct_encoded != '0'
+        ? "startup: direct encoded framebuffer packing selected"
+        : "startup: cached encoded framebuffer packing selected");
     const char* batched_copyback = SDL_getenv("SK2_SWITCH_BATCH_FRAMEBUFFER_COPYBACK");
     switch_log_checkpoint(batched_copyback && *batched_copyback == '1'
         ? "startup: combined depth-active draw/color copyback selected"
         : "startup: isolated depth-active draw/color copyback selected");
+    const char* batched_color_depth = SDL_getenv("SK2_SWITCH_BATCH_COLOR_DEPTH_COPYBACK");
+    switch_log_checkpoint(batched_color_depth && *batched_color_depth == '1'
+        ? "startup: combined color/depth copyback selected"
+        : "startup: isolated color/depth copyback selected");
     switch_install_driver_log_sink();
 
     // NVK does not advertise the non-conformant GM20B device unless the

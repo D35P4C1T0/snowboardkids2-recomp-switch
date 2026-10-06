@@ -953,7 +953,7 @@ diff --git a/src/hle/rt64_present_queue.cpp b/src/hle/rt64_present_queue.cpp
              Framebuffer *viFb = nullptr;
              if (!viewRDRAM) {
                  viFb = fbManager.find(present.screenVI.fbAddress());
-@@ -254,19 +323,36 @@
+@@ -254,23 +323,41 @@
                      viHistory.pushVI(present.screenVI, fbSize.x);
                  }
              }
@@ -990,12 +990,21 @@ diff --git a/src/hle/rt64_present_queue.cpp b/src/hle/rt64_present_queue.cpp
              uint32_t frameCountersNextPresented = 0;
              if ((framesToPresent > 1) && (usingMSAA || (i > 0))) {
                  // Stall until the interpolated color target is available.
-@@ -300,10 +386,17 @@
+                 const uint32_t targetIndex = usingMSAA ? i : (i - 1);
++                RT64SwitchPerfScope interpolationProfile("present_interpolation_wait", present.workloadId);
+                 std::unique_lock<std::mutex> interpolatedLock(ext.sharedResources->interpolatedMutex);
+                 ext.sharedResources->interpolatedCondition.wait(interpolatedLock, [&]() {
+                     return (frameCounters.available > targetIndex) || ((frameCounters.available == targetIndex) && frameCounters.skipped);
+@@ -300,10 +387,21 @@
              uint32_t swapChainIndex = 0;
              const bool presentFrame = (i < framesToPresent) && swapChainValid;
              if (presentFrame) {
+-                swapChainValid = ext.swapChain->acquireTexture(acquiredSemaphore.get(), &swapChainIndex);
 +                if (tracePresent) RT64_PRESENT_SWITCH_CHECKPOINT("rt64 present: swapchain acquire entered");
-                 swapChainValid = ext.swapChain->acquireTexture(acquiredSemaphore.get(), &swapChainIndex);
++                {
++                    RT64SwitchPerfScope acquireProfile("present_acquire", present.workloadId);
++                    swapChainValid = ext.swapChain->acquireTexture(acquiredSemaphore.get(), &swapChainIndex);
++                }
 +#if defined(__SWITCH__)
 +                perfAcquireUs = std::chrono::duration_cast<std::chrono::microseconds>(
 +                    Timer::current() - perfStageStart).count();
@@ -1005,10 +1014,11 @@ diff --git a/src/hle/rt64_present_queue.cpp b/src/hle/rt64_present_queue.cpp
  
              if (presentFrame && swapChainValid) {
 +                if (tracePresent) RT64_PRESENT_SWITCH_CHECKPOINT("rt64 present: command recording entered");
++                RT64SwitchPerfScope renderProfile("present_render", present.workloadId);
                  // Draw the framebuffer with the VI renderer.
                  RenderTexture *swapChainTexture = ext.swapChain->getTexture(swapChainIndex);
                  RenderFramebuffer *swapChainFramebuffer = swapChainFramebuffers[swapChainIndex].get();
-@@ -339,18 +432,36 @@
+@@ -339,18 +437,36 @@
                          renderParams.textureHeight = colorTarget->height;
                      }
                  }
@@ -1048,7 +1058,7 @@ diff --git a/src/hle/rt64_present_queue.cpp b/src/hle/rt64_present_queue.cpp
                  }
  
                  {
-@@ -358,14 +469,48 @@
+@@ -358,14 +474,48 @@
                      if (inspector != nullptr) {
                          inspector->draw(commandList);
                      }
@@ -1099,7 +1109,7 @@ diff --git a/src/hle/rt64_present_queue.cpp b/src/hle/rt64_present_queue.cpp
                  }
              }
  
-@@ -386,13 +531,32 @@
+@@ -386,24 +536,135 @@
              // As soon as we're done with the first render target, we notify the workload queue it can proceed.
              if (i == 0) {
                  notifyPresentId(present);
@@ -1120,6 +1130,7 @@ diff --git a/src/hle/rt64_present_queue.cpp b/src/hle/rt64_present_queue.cpp
 +                        std::chrono::duration_cast<std::chrono::nanoseconds>(nextPresent - Timer::current()).count();
 +                    if (remainingNanoseconds > 0) {
 +                        if (tracePresent) RT64_PRESENT_SWITCH_CHECKPOINT("rt64 present: Horizon pacing sleep entered");
++                        RT64SwitchPerfScope pacingProfile("present_pacing", present.workloadId);
 +                        svcSleepThread(remainingNanoseconds);
 +                        if (tracePresent) RT64_PRESENT_SWITCH_CHECKPOINT("rt64 present: Horizon pacing sleep returned");
 +                    }
@@ -1131,16 +1142,21 @@ diff --git a/src/hle/rt64_present_queue.cpp b/src/hle/rt64_present_queue.cpp
 +#endif
  
                  if (presentWaitEnabled) {
++                    RT64SwitchPerfScope fifoProfile("present_fifo_wait", present.workloadId);
                      ext.swapChain->wait();
-@@ -400,10 +564,97 @@
+                 }
  
                  RenderCommandSemaphore *waitSemaphore = drawSemaphores[swapChainIndex].get();
                  presentTimestamp = Timer::current();
+-                swapChainValid = ext.swapChain->present(swapChainIndex, &waitSemaphore, 1);
 +                if (tracePresent) RT64_PRESENT_SWITCH_CHECKPOINT("rt64 present: queue present entered");
 +#if defined(__SWITCH__)
 +                perfStageStart = Timer::current();
 +#endif
-                 swapChainValid = ext.swapChain->present(swapChainIndex, &waitSemaphore, 1);
++                {
++                    RT64SwitchPerfScope scanoutProfile("present_scanout", present.workloadId);
++                    swapChainValid = ext.swapChain->present(swapChainIndex, &waitSemaphore, 1);
++                }
 +#if defined(__SWITCH__)
 +                if (RT64SwitchPerfScope::enabled()) {
 +                    static auto previousPresent = Timer::current();
@@ -1230,7 +1246,7 @@ diff --git a/src/hle/rt64_present_queue.cpp b/src/hle/rt64_present_queue.cpp
      }
  
      void PresentQueue::skipInterpolation() {
-@@ -426,11 +677,16 @@
+@@ -426,11 +687,16 @@
      }
      
      void PresentQueue::threadAdvanceBarrier() {
@@ -1249,7 +1265,7 @@ diff --git a/src/hle/rt64_present_queue.cpp b/src/hle/rt64_present_queue.cpp
          Thread::setCurrentThreadName("RT64 Present");
  
          // Create the semaphore the acquire method will use.
-@@ -449,6 +705,10 @@
+@@ -449,6 +715,10 @@
          uint32_t displayTimingRate = UINT32_MAX;
          const bool displayTiming = ext.device->getCapabilities().displayTiming;
          bool swapChainValid = !ext.swapChain->needsResize();
@@ -1260,7 +1276,7 @@ diff --git a/src/hle/rt64_present_queue.cpp b/src/hle/rt64_present_queue.cpp
          while (presentThreadRunning) {
              {
                  std::unique_lock<std::mutex> cursorLock(cursorMutex);
-@@ -464,6 +724,7 @@
+@@ -464,6 +734,7 @@
              }
  
              if (processCursor >= 0) {
@@ -1268,7 +1284,7 @@ diff --git a/src/hle/rt64_present_queue.cpp b/src/hle/rt64_present_queue.cpp
                  std::unique_lock<std::mutex> threadLock(threadMutex);
                  const bool needsResize = ext.swapChain->needsResize() || !swapChainValid;
                  if (needsResize) {
-@@ -504,7 +765,8 @@
+@@ -504,7 +775,8 @@
                  skipPresent = skipPresent || ext.swapChain->isEmpty();
  
                  Present &present = presents[processCursor];
@@ -1278,7 +1294,7 @@ diff --git a/src/hle/rt64_present_queue.cpp b/src/hle/rt64_present_queue.cpp
  
                  if (!presentThreadRunning) {
                      continue;
-@@ -515,20 +777,43 @@
+@@ -515,20 +787,43 @@
                      notifyPresentId(present);
                  }
                  else {
@@ -1326,7 +1342,7 @@ diff --git a/src/hle/rt64_present_queue.cpp b/src/hle/rt64_present_queue.cpp
              }
          }
  
-@@ -542,6 +827,9 @@
+@@ -542,6 +837,9 @@
  
              const RenderCommandList *commandList = ext.presentGraphicsWorker->commandList.get();
              RenderCommandSemaphore *waitSemaphore = acquiredSemaphore.get();
@@ -1598,7 +1614,7 @@ diff --git a/src/hle/rt64_state.cpp b/src/hle/rt64_state.cpp
              uint32_t framebufferPairCursor = 0;
              bool firstSynchronizationPerformed = false;
              auto checkRenderTargetSafety = [&](bool checkPairs) {
-@@ -1236,107 +1287,128 @@
+@@ -1236,107 +1287,134 @@
                  resizedTargets.clear();
              };
  
@@ -1745,8 +1761,11 @@ diff --git a/src/hle/rt64_state.cpp b/src/hle/rt64_state.cpp
 +                    }
 +
 +                    // Synchronize all texture uploads before filling out the GPU tiles and update the texture cache on the framebuffer renderer.
-+                    ext.textureCache->waitForGPUUploads();
-+                    framebufferRenderer->updateTextureCache(ext.textureCache);
++                    {
++                        RT64SwitchPerfScope uploadWaitProfile("framebuffer_texture_wait", workload.submissionFrame);
++                        ext.textureCache->waitForGPUUploads();
++                        framebufferRenderer->updateTextureCache(ext.textureCache);
++                    }
 +
 +                    thread_local std::vector<BufferUploader *> bufferUploaders;
 +                    bufferUploaders.clear();
@@ -1781,8 +1800,11 @@ diff --git a/src/hle/rt64_state.cpp b/src/hle/rt64_state.cpp
 +                    }
 +
 +                    // Record all setup previous to drawing any of the recorded framebuffers.
-+                    framebufferRenderer->endFramebuffers(ext.framebufferGraphicsWorker, &workload.drawBuffers, &workload.outputBuffers, false);
-+                    framebufferRenderer->recordSetup(ext.framebufferGraphicsWorker, bufferUploaders, queuedProcessor, nullptr, &workload.outputBuffers, false);
++                    {
++                        RT64SwitchPerfScope setupProfile("framebuffer_prepare_setup", workload.submissionFrame);
++                        framebufferRenderer->endFramebuffers(ext.framebufferGraphicsWorker, &workload.drawBuffers, &workload.outputBuffers, false);
++                        framebufferRenderer->recordSetup(ext.framebufferGraphicsWorker, bufferUploaders, queuedProcessor, nullptr, &workload.outputBuffers, false);
++                    }
 +                }
                  // Record the command list for the framebuffer pairs.
                  pairCursor = framebufferPairCursor;
@@ -1808,7 +1830,7 @@ diff --git a/src/hle/rt64_state.cpp b/src/hle/rt64_state.cpp
                              RenderTargetKey otherColorTargetKey(colorFb->addressStart, colorFb->width, colorFb->siz, colorFb->lastWriteType);
                              RenderTarget &otherColorTarget = renderTargetManager.get(otherColorTargetKey);
                              if (!otherColorTarget.isEmpty()) {
-@@ -1348,12 +1420,12 @@
+@@ -1348,12 +1426,12 @@
                          }
  
                          // Determine if it needs to read the entire target from RAM or just a portion of it.
@@ -1823,7 +1845,7 @@ diff --git a/src/hle/rt64_state.cpp b/src/hle/rt64_state.cpp
                              uint32_t readRowBytes = colorFb->imageRowBytes(colorImg.width);
                              uint32_t readRowCount = colorFb->height - colorFb->readHeight;
                              uint32_t readFbBytes = readRowBytes * readRowCount;
-@@ -1376,11 +1448,11 @@
+@@ -1376,11 +1454,11 @@
                          if (depthFb != nullptr) {
                              depthFbTypeChanged = (depthFb->lastWriteType == Framebuffer::Type::Color);
  
@@ -1837,7 +1859,7 @@ diff --git a/src/hle/rt64_state.cpp b/src/hle/rt64_state.cpp
                                  RenderTargetKey otherDepthTargetKey(depthFb->addressStart, depthFb->width, depthFb->siz, depthFb->lastWriteType);
                                  RenderTarget &otherDepthTarget = renderTargetManager.get(otherDepthTargetKey);
                                  if (!otherDepthTarget.isEmpty()) {
-@@ -1392,12 +1464,12 @@
+@@ -1392,12 +1470,12 @@
                              }
  
                              // Determine if it needs to read the entire target from RAM or just a portion of it.
@@ -1852,7 +1874,7 @@ diff --git a/src/hle/rt64_state.cpp b/src/hle/rt64_state.cpp
                                  uint32_t readRowBytes = depthFb->imageRowBytes(colorImg.width);
                                  uint32_t readRowCount = depthFb->height - depthFb->readHeight;
                                  uint32_t readFbBytes = readRowBytes * readRowCount;
-@@ -1409,57 +1481,311 @@
+@@ -1409,57 +1487,330 @@
                                  if (depthFbChange != nullptr) {
                                      depthTarget->copyFromChanges(ext.framebufferGraphicsWorker, *depthFbChange, depthFb->width, readRowCount, depthFb->readHeight, ext.shaderLibrary);
                                      depthFbChanged = true;
@@ -1973,6 +1995,60 @@ diff --git a/src/hle/rt64_state.cpp b/src/hle/rt64_state.cpp
  
                      pairCursor++;
                  }
++
++#if defined(__SWITCH__)
++                auto recordSwitchDepthCopyback = [&]() {
++                    pairCursor = framebufferPairCursor;
++                    size_t depthCopybackIndex = 0;
++                    while (pairCursor < maxFramebufferPair) {
++                        if (getTargetsFromPair(pairCursor) && (depthWriteWidth > 0)) {
++                            assert(depthCopybackIndex < switchDepthCopybackSeeds.size());
++                            assert(switchDepthCopybackSeeds[depthCopybackIndex].first == pairCursor);
++
++                            if (switchDepthCopyTarget == nullptr) {
++                                switchDepthCopyTarget = std::make_unique<RenderTarget>(0, Framebuffer::Type::Color,
++                                    RenderMultisampling(), false);
++                                switchDepthCopyTarget->setupColor(ext.framebufferGraphicsWorker, rtWidth, rtHeight);
++                            }
++                            else {
++                                switchDepthCopyTarget->resize(ext.framebufferGraphicsWorker, rtWidth, rtHeight);
++                            }
++
++                            // Avoid both NVK failure paths observed on
++                            // hardware: D32 image readback and the depth
++                            // framebuffer compute encoder. Existing graphics
++                            // shader encodes exact depth16 into RGBA8 first.
++                            switchDepthCopyTarget->copyFromTarget(ext.framebufferGraphicsWorker, depthTarget,
++                                0, depthRowStart, depthWriteWidth, depthRowEnd - depthRowStart, ext.shaderLibrary);
++                            switchDepthCPUReadback = depthFb->nativeTarget.copyToNativeCPU(ext.framebufferGraphicsWorker,
++                                switchDepthCopyTarget.get(), depthWriteWidth, depthRowStart, depthRowEnd,
++                                depthFb->siz, G_IM_FMT_RGBA, 3,
++                                switchDepthCopybackSeeds[depthCopybackIndex].second, ext.shaderLibrary);
++                            if (!switchDepthCPUReadback) {
++                                depthFb->copyRenderTargetToNative(ext.framebufferGraphicsWorker, depthTarget,
++                                    depthWriteWidth, depthRowStart, depthRowEnd, G_IM_FMT_DEPTH,
++                                    switchDepthCopybackSeeds[depthCopybackIndex].second, ext.shaderLibrary);
++                            }
++                            depthCopybackIndex++;
++                        }
++
++                        framebufferManager.recordOperations(ext.framebufferGraphicsWorker, &workload.fbChangePool, &workload.fbStorage, ext.shaderLibrary, ext.textureCache,
++                            workload.fbPairs[pairCursor].endFbOperations, renderTargetManager, resolutionScale, pairCursor, workload.submissionFrame);
++                        pairCursor++;
++                    }
++                    assert(depthCopybackIndex == switchDepthCopybackSeeds.size());
++                };
++                static const bool batchColorDepthCopyback = [] {
++                    const char *setting = std::getenv("SK2_SWITCH_BATCH_COLOR_DEPTH_COPYBACK");
++                    return setting && *setting == '1';
++                }();
++                // The draw remains in its own completed submission. Append the
++                // depth conversion/readback to the color-only list, then fence
++                // both before either result is consumed by the CPU.
++                const bool combinedColorDepthCopyback = batchColorDepthCopyback &&
++                    switchCopybackOnly && switchDepthCopybackPending;
++                if (combinedColorDepthCopyback) recordSwitchDepthCopyback();
++#endif
  
                  ext.framebufferGraphicsWorker->commandList->end();
                  framebufferRenderer->waitForUploaders();
@@ -2048,6 +2124,7 @@ diff --git a/src/hle/rt64_state.cpp b/src/hle/rt64_state.cpp
 +                    RT64SwitchPerfScope framebufferProfile(std::strstr(switchSubmitPhase, "copyback")
 +                        ? "framebuffer_copyback" : "framebuffer_draw", workload.submissionFrame);
 +                    RT64SwitchPerfScope phaseProfile(
++                        std::strcmp(switchSubmitPhase, "color+depth copyback") == 0 ? "framebuffer_color_depth_copyback" :
 +                        std::strcmp(switchSubmitPhase, "depth copyback") == 0 ? "framebuffer_depth_copyback" :
 +                        std::strcmp(switchSubmitPhase, "color copyback") == 0 ? "framebuffer_color_copyback" :
 +                        std::strcmp(switchSubmitPhase, "draw+color copyback") == 0 ? "framebuffer_draw_color" :
@@ -2089,9 +2166,10 @@ diff --git a/src/hle/rt64_state.cpp b/src/hle/rt64_state.cpp
 +                        switch_log_checkpoint(switchSlowMessage, false);
 +                    }
 +                };
-+                submitSwitchFramebuffer(switchCopybackOnly ? "color copyback" :
++                submitSwitchFramebuffer(combinedColorDepthCopyback ? "color+depth copyback" :
++                    switchCopybackOnly ? "color copyback" :
 +                    (switchDrawAndColorCopyback ? "draw+color copyback" : "draw"), switchStartOperations,
-+                    switchDepthCopybackPending ? 0U : switchEndOperations);
++                    (switchDepthCopybackPending && !combinedColorDepthCopyback) ? 0U : switchEndOperations);
 +#else
                  ext.framebufferGraphicsWorker->execute();
                  ext.framebufferGraphicsWorker->wait();
@@ -2136,49 +2214,12 @@ diff --git a/src/hle/rt64_state.cpp b/src/hle/rt64_state.cpp
 +
 +#if defined(__SWITCH__)
 +                    if (switchDepthCopybackPending) {
-+                        ext.framebufferGraphicsWorker->commandList->begin();
-+                        pairCursor = framebufferPairCursor;
-+                        size_t depthCopybackIndex = 0;
-+                        while (pairCursor < maxFramebufferPair) {
-+                            if (getTargetsFromPair(pairCursor) && (depthWriteWidth > 0)) {
-+                                assert(depthCopybackIndex < switchDepthCopybackSeeds.size());
-+                                assert(switchDepthCopybackSeeds[depthCopybackIndex].first == pairCursor);
-+
-+                                if (switchDepthCopyTarget == nullptr) {
-+                                    switchDepthCopyTarget = std::make_unique<RenderTarget>(0, Framebuffer::Type::Color,
-+                                        RenderMultisampling(), false);
-+                                    switchDepthCopyTarget->setupColor(ext.framebufferGraphicsWorker, rtWidth, rtHeight);
-+                                }
-+                                else {
-+                                    switchDepthCopyTarget->resize(ext.framebufferGraphicsWorker, rtWidth, rtHeight);
-+                                }
-+
-+                                // Avoid both NVK failure paths observed on
-+                                // hardware: D32 image readback and the depth
-+                                // framebuffer compute encoder. Existing graphics
-+                                // shader encodes exact depth16 into RGBA8 first.
-+                                switchDepthCopyTarget->copyFromTarget(ext.framebufferGraphicsWorker, depthTarget,
-+                                    0, depthRowStart, depthWriteWidth, depthRowEnd - depthRowStart, ext.shaderLibrary);
-+                                switchDepthCPUReadback = depthFb->nativeTarget.copyToNativeCPU(ext.framebufferGraphicsWorker,
-+                                    switchDepthCopyTarget.get(), depthWriteWidth, depthRowStart, depthRowEnd,
-+                                    depthFb->siz, G_IM_FMT_RGBA, 3,
-+                                    switchDepthCopybackSeeds[depthCopybackIndex].second, ext.shaderLibrary);
-+                                if (!switchDepthCPUReadback) {
-+                                    depthFb->copyRenderTargetToNative(ext.framebufferGraphicsWorker, depthTarget,
-+                                        depthWriteWidth, depthRowStart, depthRowEnd, G_IM_FMT_DEPTH,
-+                                        switchDepthCopybackSeeds[depthCopybackIndex].second, ext.shaderLibrary);
-+                                }
-+                                depthCopybackIndex++;
-+                            }
-+
-+                            framebufferManager.recordOperations(ext.framebufferGraphicsWorker, &workload.fbChangePool, &workload.fbStorage, ext.shaderLibrary, ext.textureCache,
-+                                workload.fbPairs[pairCursor].endFbOperations, renderTargetManager, resolutionScale, pairCursor, workload.submissionFrame);
-+                            pairCursor++;
++                        if (!combinedColorDepthCopyback) {
++                            ext.framebufferGraphicsWorker->commandList->begin();
++                            recordSwitchDepthCopyback();
++                            ext.framebufferGraphicsWorker->commandList->end();
++                            submitSwitchFramebuffer("depth copyback", 0, switchEndOperations);
 +                        }
-+                        assert(depthCopybackIndex == switchDepthCopybackSeeds.size());
-+
-+                        ext.framebufferGraphicsWorker->commandList->end();
-+                        submitSwitchFramebuffer("depth copyback", 0, switchEndOperations);
 +
 +                        pairCursor = framebufferPairCursor;
 +                        while (pairCursor < maxFramebufferPair) {
@@ -2201,7 +2242,7 @@ diff --git a/src/hle/rt64_state.cpp b/src/hle/rt64_state.cpp
              };
  
              // Before performing any rendering, render targets must be resized to their maximum possible size during the workload.
-@@ -1515,6 +1841,59 @@
+@@ -1515,6 +1866,59 @@
              renderSetup();
  
              // Start loading tiles, sampling tiles and drawing the framebuffer pairs as required.
@@ -2261,7 +2302,7 @@ diff --git a/src/hle/rt64_state.cpp b/src/hle/rt64_state.cpp
              for (uint32_t f = 0; f < workload.fbPairCount; f++) {
                  FramebufferPair &fbPair = workload.fbPairs[f];
                  const bool gpuCopiesEnabled = ext.emulatorConfig->framebuffer.copyWithGPU;
-@@ -1535,6 +1914,7 @@
+@@ -1535,6 +1939,7 @@
  
              // Render any remaining batches of framebuffers.
              renderAndSynchronize(workload.fbPairCount);
@@ -2269,7 +2310,7 @@ diff --git a/src/hle/rt64_state.cpp b/src/hle/rt64_state.cpp
          }
          else {
              // Process all tiles.
-@@ -1553,7 +1933,16 @@
+@@ -1553,7 +1958,16 @@
              ext.framebufferGraphicsWorker->commandList->end();
              ext.drawDataUploader->wait();
              ext.transformsUploader->wait();
@@ -2286,7 +2327,7 @@ diff --git a/src/hle/rt64_state.cpp b/src/hle/rt64_state.cpp
              ext.framebufferGraphicsWorker->wait();
              ext.textureCache->waitForGPUUploads();
          }
-@@ -1748,8 +2137,11 @@
+@@ -1748,8 +2162,11 @@
          }
          
          // Advance the workload queue at the end of a full synchronization.
@@ -2298,7 +2339,7 @@ diff --git a/src/hle/rt64_state.cpp b/src/hle/rt64_state.cpp
  
          // Make sure the profiler starts after the workload is advanced to ignore any waiting time.
          dlCpuProfiler.reset();
-@@ -1806,6 +2198,11 @@
+@@ -1806,6 +2223,11 @@
          // Extended GBI must be enabled again when the display list starts.
          disableExtendedGBI();
          clearExtended();
@@ -2310,7 +2351,7 @@ diff --git a/src/hle/rt64_state.cpp b/src/hle/rt64_state.cpp
      }
      
      void State::updateScreen(const VI &newVI, bool fromEarlyPresent) {
-@@ -1944,6 +2341,10 @@
+@@ -1944,6 +2366,10 @@
          renderTargetManager.destroyAll();
          renderTargetManager.setMultisampling(multisampling);
          dummyDepthTarget.reset();
@@ -2321,7 +2362,7 @@ diff --git a/src/hle/rt64_state.cpp b/src/hle/rt64_state.cpp
          framebufferRenderer->updateMultisampling();
          updateRenderFlagSampleCount();
      }
-@@ -2774,4 +3175,4 @@
+@@ -2774,4 +3200,4 @@
              break;
          }
      }
@@ -3081,7 +3122,7 @@ diff --git a/src/render/rt64_native_target.cpp b/src/render/rt64_native_target.c
  
  namespace RT64 {
      // NativeTarget
-@@ -369,4 +471,125 @@
+@@ -369,4 +471,138 @@
          writeBuffer.nativeReadbackBuffer->unmap();
          writeBufferHistoryIndex++;
      }
@@ -3166,6 +3207,19 @@ diff --git a/src/render/rt64_native_target.cpp b/src/render/rt64_native_target.c
 +            const char* setting = std::getenv("SK2_SWITCH_CACHE_READBACKS");
 +            return !setting || *setting != '0';
 +        }();
++        static const bool directEncodedReadback = [] {
++            const char* setting = std::getenv("SK2_SWITCH_DIRECT_ENCODED_READBACKS");
++            return !setting || *setting != '0';
++        }();
++        if (directEncodedReadback && switchTextureReadbackEncodedBytes) {
++            // The vector packer reads each source group once. Unlike the scalar
++            // format converters, it does not need a full cached scratch copy.
++            assert(sourcePixelSize == 4);
++            RT64SwitchPerfScope packProfile("framebuffer_direct_pack");
++            switchPackEncodedBytes(readback, data, rowWidth * rowCount);
++            switchTextureReadbackBuffer->unmap();
++            return;
++        }
 +        if (cachedReadback) {
 +            RT64SwitchPerfScope cacheProfile("framebuffer_readback_cache");
 +            switchTextureReadbackCache.resize(sourceByteCount);
@@ -4464,7 +4518,7 @@ diff --git a/src/render/rt64_texture_cache.cpp b/src/render/rt64_texture_cache.c
                  const ShaderRecord &textureDecode = shaderLibrary->textureDecode;
                  bool pipelineSet = false;
                  for (size_t i = 0; i < queueSize; i++) {
-@@ -1217,20 +1463,134 @@
+@@ -1217,20 +1463,144 @@
                          afterDecodeBarriers.emplace_back(RenderTextureBarrier(textureMapAdditions[i].texture->texture.get(), RenderTextureLayout::SHADER_READ));
                      }
                  }
@@ -4537,21 +4591,30 @@ diff --git a/src/render/rt64_texture_cache.cpp b/src/render/rt64_texture_cache.c
 +                    const size_t decodedCount = switchDecodedCommandIndices.size();
 +                    const char* batching = std::getenv("SK2_SWITCH_BATCH_UPLOADS");
 +                    const bool batchUploads = !batching || *batching != '0';
-+                    plume_switch_set_submit_context("Texture Cache pre-copy transitions");
-+                    directWorker->commandQueue->executeCommandLists(
-+                        directCommandList, directWorker->commandFence.get());
-+                    directWorker->wait();
++                    const char* prefixSetting = std::getenv("SK2_SWITCH_BATCH_UPLOAD_PREFIX");
++                    const bool batchPrefix = batchUploads && decodedCount != 0 &&
++                        prefixSetting && *prefixSetting == '1';
++                    if (!batchPrefix) {
++                        plume_switch_set_submit_context("Texture Cache pre-copy transitions");
++                        directWorker->commandQueue->executeCommandLists(
++                            directCommandList, directWorker->commandFence.get());
++                        directWorker->wait();
++                    }
 +
 +                    if (batchUploads) {
 +                        // Separate command buffers retain each image's state. Bound
 +                        // each submit and fence staging before any image consumes it.
 +                        constexpr size_t BatchSize = 8;
 +                        const RenderCommandList* lists[BatchSize];
-+                        for (size_t first = 0; first < decodedCount; first += BatchSize) {
-+                            const uint32_t count = uint32_t(std::min(BatchSize, decodedCount - first));
-+                            for (uint32_t j = 0; j < count; j++) lists[j] = switchDecodedStageCommandLists[first + j].get();
++                        for (size_t first = 0; first < decodedCount;) {
++                            // Keep the existing eight-list bound, including the
++                            // prefix. Staging still completes before image reads.
++                            const uint32_t prefixCount = (batchPrefix && first == 0) ? 1 : 0;
++                            const uint32_t count = uint32_t(std::min(BatchSize - prefixCount, decodedCount - first));
++                            if (prefixCount) lists[0] = directCommandList;
++                            for (uint32_t j = 0; j < count; j++) lists[prefixCount + j] = switchDecodedStageCommandLists[first + j].get();
 +                            plume_switch_set_submit_context("Texture Cache batched staging copies");
-+                            directWorker->commandQueue->executeCommandLists(lists, count, nullptr, 0, nullptr, 0,
++                            directWorker->commandQueue->executeCommandLists(lists, count + prefixCount, nullptr, 0, nullptr, 0,
 +                                directWorker->commandFence.get());
 +                            directWorker->wait();
 +                            for (uint32_t j = 0; j < count; j++) lists[j] = switchDecodedCommandLists[first + j].get();
@@ -4559,6 +4622,7 @@ diff --git a/src/render/rt64_texture_cache.cpp b/src/render/rt64_texture_cache.c
 +                            directWorker->commandQueue->executeCommandLists(lists, count, nullptr, 0, nullptr, 0,
 +                                directWorker->commandFence.get());
 +                            directWorker->wait();
++                            first += count;
 +                        }
 +                    }
 +                    else for (size_t decodedIndex = 0; decodedIndex < decodedCount; decodedIndex++) {

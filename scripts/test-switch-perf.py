@@ -28,3 +28,82 @@ with tempfile.TemporaryDirectory(prefix='sk2-perf-') as temp:
                     '-I',str(root),str(src),'-o',str(exe)],check=True)
     subprocess.run([str(exe)],check=True)
 print('PASS: percentile buckets, frame deadline, zero events, overflow, reset')
+
+# Exercise the production collector with a stalled log sink. Other timing
+# producers must complete before the sink is released, with no lost samples.
+collector_test = r'''
+#include "switch/profiling.h"
+#include <atomic>
+#include <cassert>
+#include <chrono>
+#include <condition_variable>
+#include <future>
+#include <mutex>
+#include <string>
+#include <thread>
+#include <vector>
+using namespace std::chrono_literals;
+std::mutex sinkMutex;
+std::condition_variable sinkChanged;
+bool sinkEntered=false, releaseSink=false;
+std::vector<std::string> messages;
+void switch_log_checkpoint(const char* message, bool) {
+    std::unique_lock lock(sinkMutex);
+    sinkEntered=true;
+    sinkChanged.notify_all();
+    sinkChanged.wait(lock, [] { return releaseSink; });
+    messages.emplace_back(message);
+}
+int main() {
+    switch_set_profile_enabled(true);
+    switch_perf_record("first", 1000, 1);
+    std::this_thread::sleep_for(2100ms);
+    auto reporter=std::async(std::launch::async, [] {
+        switch_perf_record("first", 3000, 2);
+    });
+    {
+        std::unique_lock lock(sinkMutex);
+        assert(sinkChanged.wait_for(lock, 1s, [] { return sinkEntered; }));
+    }
+    std::vector<std::future<void>> producers;
+    for (int i=0; i<8; i++) producers.emplace_back(std::async(std::launch::async, [] {
+        for (int j=0; j<100; j++) switch_perf_record("concurrent", 2000, 3);
+    }));
+    for (auto& producer : producers) {
+        assert(producer.wait_for(1s)==std::future_status::ready);
+        producer.get();
+    }
+    // Cross another report deadline while the first sink is still stalled.
+    // The snapshot lock must be attempted without blocking or losing samples.
+    std::this_thread::sleep_for(2100ms);
+    auto overlapping=std::async(std::launch::async, [] {
+        switch_perf_record("concurrent", 2000, 6);
+    });
+    assert(overlapping.wait_for(1s)==std::future_status::ready);
+    overlapping.get();
+    {
+        std::lock_guard lock(sinkMutex);
+        releaseSink=true;
+    }
+    sinkChanged.notify_all();
+    reporter.get();
+    assert(messages.size()==1);
+    assert(messages[0].find("stage=first count=2 mean_us=2")!=std::string::npos);
+    // Disabled samples must not enter the next window.
+    switch_set_profile_enabled(false);
+    switch_perf_record("concurrent", 1000000, 4);
+    switch_set_profile_enabled(true);
+    switch_perf_record("trigger", 0, 5);
+    assert(messages.size()==3);
+    assert(messages[1].find("stage=concurrent count=801 mean_us=2")!=std::string::npos);
+    assert(messages[2].find("stage=trigger count=1")!=std::string::npos);
+}
+'''
+with tempfile.TemporaryDirectory(prefix='sk2-perf-collector-') as temp:
+    src=Path(temp)/'test.cpp'; exe=Path(temp)/'test'
+    src.write_text(collector_test)
+    subprocess.run([os.environ.get('CXX','c++'),'-std=c++17','-Wall','-Wextra','-Werror',
+                    '-pthread','-I',str(root),str(src),str(root/'switch/profiling.cpp'),
+                    '-o',str(exe)],check=True)
+    subprocess.run([str(exe)],check=True,timeout=15)
+print('PASS: stalled reporting does not block producers, concurrent counts, window reset, disabled samples')

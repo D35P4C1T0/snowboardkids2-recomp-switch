@@ -486,7 +486,12 @@ if (CMAKE_SYSTEM_NAME STREQUAL "NintendoSwitch")
         ${CMAKE_SOURCE_DIR}/switch/logging.cpp
         ${CMAKE_SOURCE_DIR}/switch/screenshots.cpp
         ${CMAKE_SOURCE_DIR}/switch/profiling.cpp
+        ${CMAKE_SOURCE_DIR}/switch/asp_optimized.cpp
     )
+    # Restrict stronger optimization to the integer audio microcode. Keep the
+    # original O2 translation as a selectable reference; no fast-math flags.
+    set_source_files_properties(${CMAKE_SOURCE_DIR}/switch/asp_optimized.cpp
+        PROPERTIES COMPILE_OPTIONS "-O3")
     # Resolve SDL's Switch bootstrap here so its unmodified archive backend
     # is not pulled in. The private interface is pinned to SDL 2.28.5.
     list(APPEND SOURCES ${CMAKE_SOURCE_DIR}/switch/sdl2/SDL_switchaudio.c)

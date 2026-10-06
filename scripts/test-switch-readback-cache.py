@@ -51,6 +51,9 @@ int main(int argc,char**argv) {
     if(std::strcmp(argv[1],"default")==0) unsetenv("SK2_SWITCH_CACHE_READBACKS");
     else setenv("SK2_SWITCH_CACHE_READBACKS",argv[1],1);
     const bool cached=std::strcmp(argv[1],"0")!=0;
+    const bool directEncoded=std::strcmp(argv[1],"encoded")==0 || std::strcmp(argv[1],"default")==0;
+    if(std::strcmp(argv[1],"default")==0) unsetenv("SK2_SWITCH_DIRECT_ENCODED_READBACKS");
+    else setenv("SK2_SWITCH_DIRECT_ENCODED_READBACKS",directEncoded?"1":"0",1);
     NativeTarget target;
     const unsigned widths[]={320,1,3,13,15,16,17,31,32,33,285};
     for(unsigned width:widths) for(unsigned height:{1U,3U,52U})
@@ -72,6 +75,7 @@ int main(int argc,char**argv) {
         target.switchTextureReadbackDitherPattern=pattern;
         target.switchTextureReadbackDitherSeed=0x01234567;
         std::vector<uint8_t> output(width*height*2+16,0xad);
+        if(directEncoded && kind==1) target.switchTextureReadbackCache.assign(11,0xed);
         target.copyToRAMCPU(output.data()+8);
         assert(!target.switchTextureReadbackBuffer->mapped);
         for(unsigned i=0;i<8;i++) assert(output[i]==0xad && output[output.size()-1-i]==0xad);
@@ -79,7 +83,8 @@ int main(int argc,char**argv) {
             assert(output[8+i*2]==input[i*4]);
             assert(output[8+i*2+1]==input[i*4+1]);
         }
-        if(cached) assert(target.switchTextureReadbackCache==input);
+        if(directEncoded && kind==1) assert(target.switchTextureReadbackCache==std::vector<uint8_t>(11,0xed));
+        else if(cached) assert(target.switchTextureReadbackCache==input);
         else assert(target.switchTextureReadbackCache.empty());
         assert(std::fwrite(output.data(),1,output.size(),stdout)==output.size());
     }
@@ -93,5 +98,6 @@ with tempfile.TemporaryDirectory(prefix='sk2-readback-') as temp:
     direct=subprocess.check_output([str(exe),'0'])
     cached=subprocess.check_output([str(exe),'1'])
     default=subprocess.check_output([str(exe),'default'])
-    assert direct==cached==default, 'Cached framebuffer encoding changed output'
+    encoded=subprocess.check_output([str(exe),'encoded'])
+    assert direct==cached==default==encoded, 'Framebuffer encoding changed output'
 print('PASS: cached/direct RGBA16 dithering, encoded depth bytes, float depth, odd widths, row offsets, resize reuse, bounds and unmap')

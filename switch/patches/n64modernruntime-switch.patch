@@ -1,3 +1,42 @@
+diff --git a/librecomp/include/librecomp/rsp_vu_impl.hpp b/librecomp/include/librecomp/rsp_vu_impl.hpp
+--- a/librecomp/include/librecomp/rsp_vu_impl.hpp
++++ b/librecomp/include/librecomp/rsp_vu_impl.hpp
+@@ -231,6 +231,17 @@
+ template<u8 e>
+ auto RSP::LQV(r128& vt, cr32& rs, s8 imm) -> void {
+     auto address = rs + imm * 16;
++#if defined(SK2_SWITCH_RSP_VECTOR_MEMORY) && ARCHITECTURE_SUPPORTS_SSE4_1
++    // DMEM swaps bytes within words; vector storage reverses element order.
++    // For an aligned complete vector this is just reversal of four words.
++    // The final aligned DMEM block ends at 0x1000 and cannot cross the wrap.
++    if constexpr (e == 0) {
++        if ((address & 15) == 0) {
++            vt.v128 = _mm_shuffle_epi32(_mm_loadu_si128(reinterpret_cast<const __m128i*>(dmem + (address & 0xfff))), _MM_SHUFFLE(0, 1, 2, 3));
++            return;
++        }
++    }
++#endif
+     auto start = e;
+     auto end = std::min((u32)(16 + e - (address & 15)), (u32)16);
+     for (u32 offset = start; offset < end; offset++) {
+@@ -421,6 +432,17 @@
+ template<u8 e>
+ auto RSP::SQV(cr128& vt, cr32& rs, s8 imm) -> void {
+     auto address = rs + imm * 16;
++#if defined(SK2_SWITCH_RSP_VECTOR_MEMORY) && ARCHITECTURE_SUPPORTS_SSE4_1
++    // DMEM swaps bytes within words; vector storage reverses element order.
++    // For an aligned complete vector this is just reversal of four words.
++    // The final aligned DMEM block ends at 0x1000 and cannot cross the wrap.
++    if constexpr (e == 0) {
++        if ((address & 15) == 0) {
++            _mm_storeu_si128(reinterpret_cast<__m128i*>(dmem + (address & 0xfff)), _mm_shuffle_epi32(vt.v128, _MM_SHUFFLE(0, 1, 2, 3)));
++            return;
++        }
++    }
++#endif
+     auto start = e;
+     auto end = start + (16 - (address & 15));
+     for (u32 offset = start; offset < end; offset++) {
 diff --git a/librecomp/src/mods.cpp b/librecomp/src/mods.cpp
 --- a/librecomp/src/mods.cpp
 +++ b/librecomp/src/mods.cpp

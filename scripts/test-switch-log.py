@@ -100,6 +100,15 @@ batch probe: ALL PASS
         self.assertEqual([item[0] for item in data['slow_framebuffers']], [23.0, 26.5])
         self.assertIn('max=26.50 ms', output)
 
+    def test_experiment_modes_are_retained(self):
+        data, output = self.parse("""[ 0 ms] startup: NVK synchronous submissions selected
+[ 1 ms] startup: combined color/depth copyback selected
+[ 2 ms] startup: cached CPU framebuffer readback selected
+[ 3 ms] startup: entered main
+""")
+        self.assertEqual(len(data['modes']), 3)
+        self.assertIn('Mode: startup: combined color/depth copyback selected', output)
+
     def test_truncated_profiles_are_ignored(self):
         data, output = self.parse("profile: stage=nvk_submit count=10 mean_us=200\naudio: timing min_us=1 max_us=2\n")
         self.assertEqual(data['profiles'], [])
