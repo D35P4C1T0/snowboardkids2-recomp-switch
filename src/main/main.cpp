@@ -9,13 +9,13 @@
 #include <exception>
 #include <cinttypes>
 #include <atomic>
-#include <cerrno>
 #include <mutex>
-#include <thread>
-#include <condition_variable>
 #include <chrono>
 #include "audio_queue.h"
-#include "../../switch/perf_stats.h"
+#include "../../switch/logging.h"
+#if defined(__SWITCH__)
+#include "../../switch/profiling.h"
+#endif
 
 #if !defined(__SWITCH__)
 #include "nfd.h"
@@ -38,11 +38,7 @@
 #undef Always
 #else
 #include <SDL2/SDL.h>
-#include <arpa/inet.h>
-#include <fcntl.h>
-#include <sys/socket.h>
 #include <switch.h>
-#include <unistd.h>
 #endif
 
 #include "zelda_config.h"
@@ -77,434 +73,12 @@
 #endif
 
 #include "../../lib/rt64/src/contrib/stb/stb_image.h"
-#if defined(__SWITCH__)
-#include "../../lib/RecompFrontend/recompui/lib/lunasvg/plutovg/include/plutovg.h"
-#endif
 
 const std::string version_string = sk2_game_version;
 constexpr int sk2_max_players = 4;
 
-#if defined(__SWITCH__)
-void switch_log_checkpoint(const char* message, bool reset);
-static bool switch_profile_enabled = true;
-static std::atomic<float> switch_display_fps{0.0f};
-
-extern "C" float switch_fps_value() {
-    return switch_display_fps.load(std::memory_order_relaxed);
-}
-
-extern "C" void switch_fps_presented() {
-    // Count completed presentations, including interpolation, independently
-    // of detailed profiling. UI rendering reads the previous half-second window.
-    using Clock = std::chrono::steady_clock;
-    static auto window_start = Clock::time_point{};
-    static uint32_t frames = 0;
-    const auto now = Clock::now();
-    if (window_start == Clock::time_point{}) {
-        window_start = now;
-        return;
-    }
-    frames++;
-    const auto elapsed = now - window_start;
-    if (elapsed >= std::chrono::milliseconds(500)) {
-        switch_display_fps.store(float(frames / std::chrono::duration<double>(elapsed).count()),
-            std::memory_order_relaxed);
-        frames = 0;
-        window_start = now;
-    }
-}
-
-extern "C" void switch_perf_record(const char* stage, uint64_t elapsed_ns, uint64_t id) {
-    if (!switch_profile_enabled) return;
-    struct Entry { const char* name = nullptr; sk2::perf::Histogram stats; uint64_t id = 0; };
-    static std::array<Entry, 48> entries;
-    static std::mutex mutex;
-    static auto last_report = std::chrono::steady_clock::now();
-    std::lock_guard lock(mutex);
-    for (auto& entry : entries) {
-        if (!entry.name) entry.name = stage;
-        if (std::strcmp(entry.name, stage) == 0) {
-            entry.stats.add(elapsed_ns); entry.id = id; break;
-        }
-    }
-    const auto now = std::chrono::steady_clock::now();
-    if (now - last_report < std::chrono::seconds(2)) return;
-    for (auto& entry : entries) {
-        const auto& h = entry.stats;
-        if (!h.count) continue;
-        char message[320];
-        std::snprintf(message, sizeof(message),
-            "profile: stage=%s count=%llu mean_us=%llu p50_us=%llu p95_us=%llu p99_us=%llu max_us=%llu late=%llu id=%llu",
-            entry.name, (unsigned long long)h.count, (unsigned long long)(h.total_ns / h.count / 1000),
-            (unsigned long long)(h.percentile_ns(50) / 1000), (unsigned long long)(h.percentile_ns(95) / 1000),
-            (unsigned long long)(h.percentile_ns(99) / 1000), (unsigned long long)(h.max_ns / 1000),
-            (unsigned long long)h.late, (unsigned long long)entry.id);
-        switch_log_checkpoint(message, false);
-        entry.stats = {};
-    }
-    last_report = now;
-}
-
-namespace {
-std::mutex switch_log_mutex;
-u64 switch_log_start_tick = 0;
-int switch_nxlink_socket = -1;
-bool switch_socket_initialized = false;
-constexpr uint16_t switch_screenshot_port = 47474;
-std::atomic<bool> switch_screenshot_running{false};
-std::thread switch_screenshot_thread;
-std::atomic<bool> switch_screenshot_requested{false};
-std::mutex switch_screenshot_mutex;
-std::condition_variable switch_screenshot_condition;
-std::vector<uint8_t> switch_screenshot_pixels;
-uint32_t switch_screenshot_width = 0;
-uint32_t switch_screenshot_height = 0;
-bool switch_screenshot_ready = false;
-std::atomic<bool> switch_manual_screenshot_pending{false};
-uint64_t switch_manual_screenshot_sequence = 0;
-uint64_t switch_manual_screenshot_served = 0;
-
-bool switch_send_all(int socket_fd, const void *data, size_t size) {
-    const uint8_t *bytes = static_cast<const uint8_t *>(data);
-    size_t sent_total = 0;
-    while (sent_total < size) {
-        const ssize_t sent = send(socket_fd, bytes + sent_total, size - sent_total, MSG_NOSIGNAL);
-        if (sent > 0) {
-            sent_total += size_t(sent);
-        }
-        else if ((sent < 0) && (errno == EINTR)) {
-            continue;
-        }
-        else {
-            return false;
-        }
-    }
-
-    return true;
-}
-
-bool switch_encode_screenshot_jpeg(const std::vector<uint8_t> &pixels,
-    uint32_t width, uint32_t height, std::vector<uint8_t> &jpeg_buffer)
-{
-    if (pixels.empty() || (width == 0) || (height == 0)) {
-        return false;
-    }
-
-    plutovg_surface_t *surface = plutovg_surface_create_for_data(
-        const_cast<uint8_t *>(pixels.data()), int(width), int(height), int(width * 4));
-    if (surface == nullptr) {
-        return false;
-    }
-
-    auto write_jpeg = [](void *closure, void *data, int size) {
-        auto *bytes = static_cast<std::vector<uint8_t> *>(closure);
-        const uint8_t *source = static_cast<const uint8_t *>(data);
-        bytes->insert(bytes->end(), source, source + size);
-    };
-    const bool encoded = plutovg_surface_write_to_jpg_stream(surface, write_jpeg,
-        &jpeg_buffer, 90);
-    plutovg_surface_destroy(surface);
-    return encoded && !jpeg_buffer.empty();
-}
-
-void switch_screenshot_server() {
-    const int listener = socket(AF_INET, SOCK_STREAM, 0);
-    if (listener < 0) {
-        switch_log_checkpoint("screenshot: socket creation failed", false);
-        return;
-    }
-
-    int reuse_address = 1;
-    setsockopt(listener, SOL_SOCKET, SO_REUSEADDR, &reuse_address, sizeof(reuse_address));
-    sockaddr_in address{};
-    address.sin_family = AF_INET;
-    address.sin_addr.s_addr = htonl(INADDR_ANY);
-    address.sin_port = htons(switch_screenshot_port);
-    if ((bind(listener, reinterpret_cast<const sockaddr *>(&address), sizeof(address)) < 0) ||
-        (listen(listener, 1) < 0))
-    {
-        close(listener);
-        switch_log_checkpoint("screenshot: HTTP listener setup failed", false);
-        return;
-    }
-
-    switch_log_checkpoint("screenshot: HTTP capture ready on port 47474", false);
-    while (switch_screenshot_running.load(std::memory_order_relaxed)) {
-        fd_set read_fds;
-        FD_ZERO(&read_fds);
-        FD_SET(listener, &read_fds);
-        timeval timeout{ 0, 250'000 };
-        const int selected = select(listener + 1, &read_fds, nullptr, nullptr, &timeout);
-        if ((selected <= 0) || !FD_ISSET(listener, &read_fds)) {
-            continue;
-        }
-
-        const int client = accept(listener, nullptr, nullptr);
-        if (client < 0) {
-            continue;
-        }
-
-        timeval io_timeout{ 2, 0 };
-        setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, &io_timeout, sizeof(io_timeout));
-        setsockopt(client, SOL_SOCKET, SO_SNDTIMEO, &io_timeout, sizeof(io_timeout));
-        char request[1024]{};
-        const ssize_t request_size = recv(client, request, sizeof(request) - 1, 0);
-        const bool screenshot_request = (request_size > 0) &&
-            (std::strncmp(request, "GET /screenshot.jpg ", 20) == 0);
-        const bool manual_screenshot_request = (request_size > 0) &&
-            (std::strncmp(request, "GET /manual.jpg ", 16) == 0);
-        if (!screenshot_request && !manual_screenshot_request) {
-            static constexpr char response[] =
-                "HTTP/1.1 404 Not Found\r\nConnection: close\r\nContent-Length: 0\r\n\r\n";
-            switch_send_all(client, response, sizeof(response) - 1);
-            close(client);
-            continue;
-        }
-
-        std::vector<uint8_t> pixels;
-        uint32_t width = 0;
-        uint32_t height = 0;
-        uint64_t manual_sequence = 0;
-        if (screenshot_request) {
-            std::unique_lock screenshot_lock(switch_screenshot_mutex);
-            switch_screenshot_ready = false;
-            switch_screenshot_requested.store(true, std::memory_order_release);
-            const bool captured = switch_screenshot_condition.wait_for(screenshot_lock,
-                std::chrono::seconds(2), []() { return switch_screenshot_ready; });
-            switch_screenshot_requested.store(false, std::memory_order_release);
-            if (captured) {
-                pixels = switch_screenshot_pixels;
-                width = switch_screenshot_width;
-                height = switch_screenshot_height;
-            }
-        }
-        else {
-            const std::lock_guard screenshot_lock(switch_screenshot_mutex);
-            if (switch_screenshot_ready &&
-                (switch_manual_screenshot_sequence > switch_manual_screenshot_served))
-            {
-                pixels = switch_screenshot_pixels;
-                width = switch_screenshot_width;
-                height = switch_screenshot_height;
-                manual_sequence = switch_manual_screenshot_sequence;
-            }
-            else {
-                static constexpr char response[] =
-                    "HTTP/1.1 204 No Content\r\nConnection: close\r\nContent-Length: 0\r\n\r\n";
-                switch_send_all(client, response, sizeof(response) - 1);
-                close(client);
-                continue;
-            }
-        }
-
-        std::vector<uint8_t> jpeg_buffer;
-        const bool encoded = switch_encode_screenshot_jpeg(pixels, width, height,
-            jpeg_buffer);
-
-        if (encoded && !jpeg_buffer.empty()) {
-            char header[256]{};
-            const int header_size = std::snprintf(header, sizeof(header),
-                "HTTP/1.1 200 OK\r\nContent-Type: image/jpeg\r\nContent-Length: %zu\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
-                jpeg_buffer.size());
-            const bool sent = switch_send_all(client, header, size_t(header_size)) &&
-                switch_send_all(client, jpeg_buffer.data(), jpeg_buffer.size());
-            if (sent && manual_screenshot_request) {
-                const std::lock_guard screenshot_lock(switch_screenshot_mutex);
-                switch_manual_screenshot_served = std::max(
-                    switch_manual_screenshot_served, manual_sequence);
-            }
-            char message[128]{};
-            if (manual_screenshot_request) {
-                std::snprintf(message, sizeof(message),
-                    "screenshot: R3 JPEG #%" PRIu64 " served %ux%u bytes=%zu",
-                    manual_sequence, width, height, jpeg_buffer.size());
-            }
-            else {
-                std::snprintf(message, sizeof(message),
-                    "screenshot: served JPEG %ux%u bytes=%zu",
-                    width, height, jpeg_buffer.size());
-            }
-            switch_log_checkpoint(message, false);
-        }
-        else {
-            static constexpr char body[] = "renderer capture timed out\n";
-            char header[192]{};
-            const int header_size = std::snprintf(header, sizeof(header),
-                "HTTP/1.1 503 Service Unavailable\r\nContent-Type: text/plain\r\nContent-Length: %d\r\nConnection: close\r\n\r\n",
-                int(sizeof(body) - 1));
-            switch_send_all(client, header, size_t(header_size));
-            switch_send_all(client, body, sizeof(body) - 1);
-        }
-
-        close(client);
-    }
-
-    close(listener);
-}
-
-void switch_initialize_logging() {
-    const std::lock_guard<std::mutex> lock(switch_log_mutex);
-    switch_log_start_tick = armGetSystemTick();
-
-    // hbloader provides this address only when nxlink uploaded the NRO. Normal
-    // SD-card launches avoid all socket setup and its timeout path.
-    if (__nxlink_host.s_addr != 0 && R_SUCCEEDED(socketInitializeDefault())) {
-        switch_socket_initialized = true;
-        // Keep stdout/stderr untouched. nxlink's stdio redirection performs
-        // blocking writes; when its receiver disappears or backpressures, a
-        // render-thread checkpoint can freeze the whole process. Checkpoints
-        // use explicit nonblocking sends below and may be dropped safely.
-        switch_nxlink_socket = nxlinkConnectToHost(false, false);
-        if (switch_nxlink_socket < 0) {
-            socketExit();
-            switch_socket_initialized = false;
-        }
-        else {
-            const int socket_flags = fcntl(switch_nxlink_socket, F_GETFL, 0);
-            if (socket_flags >= 0) {
-                fcntl(switch_nxlink_socket, F_SETFL, socket_flags | O_NONBLOCK);
-            }
-
-            switch_screenshot_running.store(true, std::memory_order_relaxed);
-            switch_screenshot_thread = std::thread(switch_screenshot_server);
-        }
-    }
-}
-
-void switch_shutdown_logging() {
-    switch_screenshot_running.store(false, std::memory_order_relaxed);
-    if (switch_screenshot_thread.joinable()) {
-        switch_screenshot_thread.join();
-    }
-
-    {
-        const std::lock_guard<std::mutex> lock(switch_log_mutex);
-        if (switch_nxlink_socket >= 0) {
-            close(switch_nxlink_socket);
-            switch_nxlink_socket = -1;
-        }
-    }
-
-    if (switch_socket_initialized) {
-        socketExit();
-        switch_socket_initialized = false;
-    }
-}
-}
-
-extern "C" bool switch_screenshot_capture_requested() {
-    return switch_screenshot_requested.load(std::memory_order_acquire);
-}
-
-extern "C" bool switch_manual_screenshot_enabled() {
-    return switch_screenshot_running.load(std::memory_order_relaxed);
-}
-
-extern "C" bool switch_request_manual_screenshot() {
-    if (!switch_manual_screenshot_enabled()) {
-        return false;
-    }
-
-    bool expected = false;
-    if (switch_manual_screenshot_pending.compare_exchange_strong(expected, true)) {
-        switch_screenshot_requested.store(true, std::memory_order_release);
-        switch_log_checkpoint("screenshot: R3 capture requested", false);
-    }
-
-    return true;
-}
-
-extern "C" void switch_screenshot_capture_complete(const void *pixels, size_t size,
-    uint32_t width, uint32_t height)
-{
-    if ((pixels == nullptr) || (size != size_t(width) * height * 4)) {
-        return;
-    }
-
-    uint64_t manual_sequence = 0;
-    const bool manual_capture = switch_manual_screenshot_pending.exchange(false,
-        std::memory_order_acq_rel);
-    {
-        const std::lock_guard screenshot_lock(switch_screenshot_mutex);
-        const uint8_t *source = static_cast<const uint8_t *>(pixels);
-        switch_screenshot_pixels.assign(source, source + size);
-        switch_screenshot_width = width;
-        switch_screenshot_height = height;
-        switch_screenshot_ready = true;
-        if (manual_capture) {
-            manual_sequence = ++switch_manual_screenshot_sequence;
-        }
-        switch_screenshot_requested.store(false, std::memory_order_release);
-    }
-
-    switch_screenshot_condition.notify_all();
-    if (manual_capture) {
-        char message[96]{};
-        std::snprintf(message, sizeof(message),
-            "screenshot: R3 capture #%" PRIu64 " ready", manual_sequence);
-        switch_log_checkpoint(message, false);
-    }
-}
-
-void switch_log_checkpoint(const char* message, bool reset = false) {
-    if (message == nullptr) {
-        return;
-    }
-
-    const std::lock_guard<std::mutex> lock(switch_log_mutex);
-    if (reset) {
-        switch_log_start_tick = armGetSystemTick();
-    }
-
-    const u64 now = armGetSystemTick();
-    const u64 elapsed_ms = armTicksToNs(now - switch_log_start_tick) / 1'000'000ULL;
-    const size_t message_length = std::strlen(message);
-    const bool has_newline = message_length > 0 && message[message_length - 1] == '\n';
-
-    if (switch_nxlink_socket >= 0) {
-        char live_line[1024]{};
-        const int formatted_length = std::snprintf(
-            live_line, sizeof(live_line), "[%8" PRIu64 " ms] %s%s",
-            elapsed_ms, message, has_newline ? "" : "\n");
-        if (formatted_length > 0) {
-            const size_t live_length = std::min(
-                size_t(formatted_length), sizeof(live_line) - 1);
-            const ssize_t sent = send(switch_nxlink_socket, live_line,
-                live_length, MSG_DONTWAIT | MSG_NOSIGNAL);
-            if (sent < 0 && errno != EAGAIN && errno != EWOULDBLOCK &&
-                errno != EINTR) {
-                close(switch_nxlink_socket);
-                switch_nxlink_socket = -1;
-            }
-        }
-    }
-}
-
-extern "C" {
-extern void (*g_drm_shim_log_sink)(const char* message);
-
-void dusk_switch_log(const char* message) {
-    if (message != nullptr) {
-        switch_log_checkpoint(message);
-    }
-}
-}
-
-void switch_driver_log_sink(const char* message) {
-    if (message != nullptr && std::strncmp(message, "NVK ", 4) == 0) {
-        switch_log_checkpoint(message);
-        return;
-    }
-    // NVK emits many messages per GPU submission. Retain only Mesa WSI's
-    // bounded first-present trace so network logging stays low-volume.
-    static std::atomic<uint32_t> retained_messages{0};
-    if ((message != nullptr) && (std::strncmp(message, "[wsi] qp:", 9) == 0) &&
-        (retained_messages.fetch_add(1, std::memory_order_relaxed) < 8)) {
-        switch_log_checkpoint(message);
-    }
-}
-#else
-void switch_log_checkpoint(const char*, bool = false) {
+#if !defined(__SWITCH__)
+void switch_log_checkpoint(const char*, bool) {
 }
 #endif
 
@@ -1207,7 +781,7 @@ int main(int argc, char** argv) {
         if (std::strcmp(argv[i], "--no-fps") == 0)
             SDL_setenv("SK2_SWITCH_FPS", "0", 1);
         if (std::strcmp(argv[i], "--no-profile") == 0) {
-            switch_profile_enabled = false;
+            switch_set_profile_enabled(false);
             SDL_setenv("SK2_SWITCH_PROFILE", "0", 1);
         }
         if (std::strcmp(argv[i], "--legacy-texture-uploads") == 0)
@@ -1263,7 +837,7 @@ int main(int argc, char** argv) {
     switch_log_checkpoint(batched_copyback && *batched_copyback == '1'
         ? "startup: combined depth-active draw/color copyback selected"
         : "startup: isolated depth-active draw/color copyback selected");
-    g_drm_shim_log_sink = switch_driver_log_sink;
+    switch_install_driver_log_sink();
 
     // NVK does not advertise the non-conformant GM20B device unless the
     // application opts in explicitly.
