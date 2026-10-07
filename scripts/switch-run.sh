@@ -100,7 +100,7 @@ if [[ -x /usr/bin/script ]]; then
     # buffer until the TCP connection finally closes.
     /usr/bin/script -q /dev/null \
         nxlink "${NXLINK_OPTIONS[@]}" "${NRO}" 2>&1 \
-        | tr -d '\r' | tee "${LOG_PATH}"
+        | awk '{ gsub(/\r/, ""); print; fflush(); }' | tee "${LOG_PATH}"
 else
     nxlink "${NXLINK_OPTIONS[@]}" "${NRO}" 2>&1 \
         | tee "${LOG_PATH}"

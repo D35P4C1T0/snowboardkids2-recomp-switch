@@ -50,8 +50,21 @@ struct Cache {
     std::unique_ptr<Uber> shaderUber=std::make_unique<Uber>();
     void waitForAll() { excluded(); drained=true; }
     void destroyAll() { excluded(); assert(drained); destroyed=true; }
-    void setup(Device*,int,Library* l,RenderMultisampling m) { excluded(); assert(destroyed && l->replaced && m.sampleCount==2); installed=true; }
+    void setup(Device*,int,Library* l,RenderMultisampling m) { excluded(); assert(drained && !destroyed && l->replaced && m.sampleCount==2); installed=true; }
 };
+struct SwitchLoadingScreen {
+    template<class... T> SwitchLoadingScreen(T...) { excluded(); }
+    void draw(float progress) { excluded(); assert(progress==0); }
+};
+bool fastLoadActive=false;
+struct SwitchFastLoad {
+    SwitchFastLoad() { excluded(); assert(!fastLoadActive); fastLoadActive=true; }
+    void finish() { excluded(); fastLoadActive=false; }
+    ~SwitchFastLoad() { assert(!fastLoadActive); }
+};
+void waitForSwitchShaderWarmup(Cache* cache,SwitchLoadingScreen&) {
+    excluded(); assert(cache->installed); cache->shaderUber->waitForPipelineCreation();
+}
 struct State {
     unsigned workloadId=4,presentId=7,updated=0;
     void updateMultisampling() { excluded(); updated++; }
@@ -61,6 +74,7 @@ struct Shared {
     unsigned samples=1,targets=1,publications=0;
     void updateMultisampling(RenderMultisampling m) { excluded(); assert(samples==1); targets=m.sampleCount; }
     void setUserConfig(UserConfig config,bool discard) {
+        assert(!fastLoadActive);
         excluded(); assert(discard && cache->installed && cache->shaderUber->ready);
         assert(work->updated==1 && state->updated==1 && targets==2 && samples==1);
         samples=config.samples; publications++;
@@ -76,6 +90,7 @@ struct Application {
     std::unique_ptr<Cache> rasterShaderCache=std::make_unique<Cache>();
     std::unique_ptr<State> state=std::make_unique<State>();
     std::unique_ptr<Shared> sharedQueueResources=std::make_unique<Shared>();
+    std::unique_ptr<int> presentGraphicsWorker=std::make_unique<int>(),swapChain=std::make_unique<int>();
     UserConfig userConfig;
     void destroyShaderCache() { assert(false); }
 '''+method+r'''

@@ -37,6 +37,55 @@ diff --git a/librecomp/include/librecomp/rsp_vu_impl.hpp b/librecomp/include/lib
      auto start = e;
      auto end = start + (16 - (address & 15));
      for (u32 offset = start; offset < end; offset++) {
+diff --git a/librecomp/src/config.cpp b/librecomp/src/config.cpp
+--- a/librecomp/src/config.cpp
++++ b/librecomp/src/config.cpp
+@@ -41,6 +41,8 @@
+         }
+ 
+         output_file << std::setw(4) << json_data;
++        output_file.close();
++        if (!output_file.good()) return false;
+     }
+     return recomp::finalize_output_file_with_backup(path);
+ }
+diff --git a/librecomp/src/files.cpp b/librecomp/src/files.cpp
+--- a/librecomp/src/files.cpp
++++ b/librecomp/src/files.cpp
+@@ -36,6 +36,27 @@
+     temp_path += temp_suffix;
+ 
+     std::error_code ec;
++#if defined(__SWITCH__)
++    // Horizon does not consistently support replacement through the host
++    // filesystem copy/rename overwrite paths. Keep either the current file
++    // or its backup valid throughout an explicit destination replacement.
++    const bool has_current = std::filesystem::exists(filepath, ec);
++    if (ec) return false;
++    if (has_current) {
++        std::filesystem::remove(backup_path, ec);
++        if (ec) return false;
++        std::filesystem::rename(filepath, backup_path, ec);
++        if (ec) return false;
++    }
++    std::filesystem::rename(temp_path, filepath, ec);
++    if (ec) {
++        std::error_code restore_ec;
++        if (!std::filesystem::exists(filepath, restore_ec) && !restore_ec && std::filesystem::exists(backup_path, restore_ec) && !restore_ec)
++            std::filesystem::rename(backup_path, filepath, restore_ec);
++        return false;
++    }
++    return true;
++#else
+     if (std::filesystem::exists(filepath, ec)) {
+         std::filesystem::copy_file(filepath, backup_path, std::filesystem::copy_options::overwrite_existing, ec);
+         if (ec) {
+@@ -48,4 +69,5 @@
+     }
+     std::filesystem::remove(temp_path, ec);
+     return true;
++#endif
+ }
 diff --git a/librecomp/src/mods.cpp b/librecomp/src/mods.cpp
 --- a/librecomp/src/mods.cpp
 +++ b/librecomp/src/mods.cpp

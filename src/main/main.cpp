@@ -15,6 +15,7 @@
 #include "../../switch/logging.h"
 #if defined(__SWITCH__)
 #include "../../switch/profiling.h"
+#include "../../switch/clock_control.h"
 #endif
 
 #if !defined(__SWITCH__)
@@ -228,11 +229,27 @@ ultramodern::renderer::WindowHandle create_window(ultramodern::gfx_callbacks_t::
 }
 
 void update_gfx(void*) {
+#if defined(__SWITCH__)
+    // SDL input polling does not guarantee libnx applet messages are drained.
+    // Deliver focus/resume/power hooks even when no controller event arrives.
+    u32 message;
+    while (R_SUCCEEDED(appletGetMessage(&message))) {
+        if (!appletProcessMessage(message)) {
+            SDL_Event quit{};
+            quit.type = SDL_QUIT;
+            SDL_PushEvent(&quit);
+            break;
+        }
+    }
+#endif
     static bool first_update = true;
     if (first_update) {
         switch_log_checkpoint("runtime: first input event pass entered");
     }
     recompinput::handle_events();
+#if defined(__SWITCH__)
+    sk2::clocks::tick();
+#endif
     if (first_update) {
         switch_log_checkpoint("runtime: first input event pass returned");
         first_update = false;
@@ -1134,6 +1151,7 @@ int main(int argc, char** argv) {
     }
 
 #if defined(__SWITCH__)
+    sk2::clocks::shutdown();
     switch_shutdown_logging();
 #endif
 

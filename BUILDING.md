@@ -153,13 +153,22 @@ keep the configured game binding.
 The full Switch build presents at 1280x720. Graphics settings control the game
 render targets: Original uses native resolution, Original 2x doubles it, and
 Auto scales for the 720p screen. Downsampling and 2X/4X MSAA selections now reach
-the game renderer. Original 2x is confirmed on hardware; the corrected MSAA
-candidate still needs a hardware retest after a reported crash. Apply changes
+the game renderer. Original 2x and live 2X MSAA are confirmed on hardware;
+full-game 4X and saved-MSAA startup still need validation. Apply changes
 in the graphics menu; MSAA changes recreate
 rendering pipelines and can pause while shaders compile. Fresh configurations
 default to Original with MSAA None; existing saved selections are honored.
 The former `config/force-480p` marker is superseded by Original 2x in the menu.
 See [graphics-setting validation](docs/SWITCH_GRAPHICS_SETTINGS.md).
+
+Select/minus → Performance provides supported CPU/GPU/memory requests and
+temporary loading boost, with enabled sys-clk taking priority. See
+[Performance settings and validation](docs/SWITCH_PERFORMANCE_SETTINGS.md).
+
+Startup and MSAA shader warmup display a centered red loading bar with a white
+border. Compiled shaders are cached on SD, and ready pipelines are retained for
+each MSAA sample count during a run. First use of an uncached mode can take
+longer; known shaders finish warming before gameplay resumes.
 
 After a run, generate a compact performance and failure summary with:
 

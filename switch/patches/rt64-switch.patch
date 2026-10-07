@@ -171,6 +171,115 @@ diff --git a/src/common/rt64_mapped_file.h b/src/common/rt64_mapped_file.h
 -};
 \ No newline at end of file
 +};
+diff --git a/src/common/rt64_switch_fast_load.h b/src/common/rt64_switch_fast_load.h
+new file mode 100644
+--- /dev/null
++++ b/src/common/rt64_switch_fast_load.h
+@@ -0,0 +1,78 @@
++// Temporary system-managed CPU boost for loading work, never gameplay.
++#pragma once
++
++#include <switch.h>
++#include <cstdio>
++#include <mutex>
++
++void switch_log_checkpoint(const char*, bool);
++
++namespace RT64 {
++    class SwitchFastLoad {
++        inline static std::mutex ownershipMutex;
++        inline static bool (*beginCallback)() = nullptr;
++        inline static bool (*endCallback)() = nullptr;
++        std::unique_lock<std::mutex> ownership{ownershipMutex, std::try_to_lock};
++        bool active = false;
++        bool delegated = false;
++
++        static void logResult(const char *operation, Result result) {
++            char message[128];
++            std::snprintf(message, sizeof(message), "renderer FastLoad: %s rc=0x%08X", operation, unsigned(result));
++            ::switch_log_checkpoint(message, false);
++        }
++
++    public:
++        // Register before renderer threads start; probes retain the fallback.
++        static void setCallbacks(bool (*begin)(), bool (*end)()) {
++            beginCallback = begin;
++            endCallback = end;
++        }
++        SwitchFastLoad() {
++            if (!ownership.owns_lock() || hosversionBefore(7, 0, 0)) return;
++            if (beginCallback && endCallback) {
++                delegated = true;
++                active = beginCallback();
++                return;
++            }
++            // Like the upstream sys-clk presence probe, test registration
++            // instead of GetService, which can wait indefinitely if absent.
++            // Any failure means existing ownership or uncertain permissions:
++            // leave clocks alone. Never connect to or reconfigure sys-clk.
++            const auto name = smEncodeName("sys:clk");
++            Handle probe = INVALID_HANDLE;
++            Result rc = smRegisterService(&probe, name, false, 1);
++            if (R_FAILED(rc)) {
++                logResult("skipped (sys-clk present or probe unavailable)", rc);
++                return;
++            }
++            rc = smUnregisterService(name);
++            svcCloseHandle(probe);
++            if (R_FAILED(rc)) {
++                logResult("skipped (probe cleanup failed)", rc);
++                return;
++            }
++            rc = appletSetCpuBoostMode(ApmCpuBoostMode_FastLoad);
++            active = R_SUCCEEDED(rc);
++            logResult(active ? "enabled" : "unavailable; continuing normally", rc);
++        }
++
++        SwitchFastLoad(const SwitchFastLoad&) = delete;
++        SwitchFastLoad& operator=(const SwitchFastLoad&) = delete;
++
++        void finish() {
++            if (!active) return;
++            if (delegated) { active = !endCallback(); return; }
++            // Normal updates libnx's tracked boost mode as well as Horizon.
++            Result rc = appletSetCpuBoostMode(ApmCpuBoostMode_Normal);
++            if (R_FAILED(rc) && hosversionAtLeast(10, 0, 0)) {
++                logResult("normal reset failed; cancelling boost", rc);
++                rc = appletCancelCpuBoostMode();
++            }
++            active = R_FAILED(rc); // Retry on destruction if restoration failed.
++            logResult(active ? "reset failed" : "disabled", rc);
++        }
++
++        ~SwitchFastLoad() { finish(); }
++    };
++}
+diff --git a/src/common/rt64_switch_loading_bar.h b/src/common/rt64_switch_loading_bar.h
+new file mode 100644
+--- /dev/null
++++ b/src/common/rt64_switch_loading_bar.h
+@@ -0,0 +1,21 @@
++#pragma once
++
++#include <algorithm>
++#include <cmath>
++#include <cstdint>
++
++namespace RT64 {
++    struct SwitchLoadingBar {
++        int32_t left, top, right, bottom, fillRight;
++        static SwitchLoadingBar layout(uint32_t width, uint32_t height, float progress) {
++            const int32_t barWidth = int32_t(width / 2);
++            const int32_t barHeight = std::min(int32_t(height), 30);
++            const int32_t left = (int32_t(width) - barWidth) / 2;
++            const int32_t top = (int32_t(height) - barHeight) / 2;
++            const int32_t innerWidth = std::max(barWidth - 4, 0);
++            const float fraction = std::isfinite(progress) ? std::clamp(progress, 0.0f, 1.0f) : 0.0f;
++            return {left, top, left + barWidth, top + barHeight,
++                left + 2 + int32_t(float(innerWidth) * fraction)};
++        }
++    };
++}
 diff --git a/src/common/rt64_switch_memory.h b/src/common/rt64_switch_memory.h
 new file mode 100644
 --- /dev/null
@@ -373,12 +482,19 @@ diff --git a/src/gui/rt64_file_dialog.cpp b/src/gui/rt64_file_dialog.cpp
 diff --git a/src/hle/rt64_application.cpp b/src/hle/rt64_application.cpp
 --- a/src/hle/rt64_application.cpp
 +++ b/src/hle/rt64_application.cpp
-@@ -11,6 +11,13 @@
+@@ -7,10 +7,20 @@
+ 
+ #include <cinttypes>
+ #include <filesystem>
++#include <chrono>
+ 
  #include "common/rt64_dynamic_libraries.h"
  #include "common/rt64_elapsed_timer.h"
  #include "common/rt64_math.h"
 +
 +#if defined(__SWITCH__)
++#include "common/rt64_switch_loading_bar.h"
++#include "common/rt64_switch_fast_load.h"
 +void switch_log_checkpoint(const char*, bool);
 +#define RT64_SWITCH_CHECKPOINT(message) ::switch_log_checkpoint(message, false)
 +#else
@@ -387,7 +503,82 @@ diff --git a/src/hle/rt64_application.cpp b/src/hle/rt64_application.cpp
  
  #if RT_ENABLED
  #   include "res/bluenoise/LDR_64_64_64_RGB1.h"
-@@ -87,6 +94,7 @@
+@@ -30,6 +40,74 @@
+ }
+ 
+ namespace RT64 {
++#if defined(__SWITCH__)
++    // Clear rectangles require no shader pipeline, so the loading screen can
++    // present while the compiler owns the pipeline-creation mutex. The caller
++    // owns both rendering queues during a live settings change.
++    class SwitchLoadingScreen {
++        RenderWorker *worker;
++        RenderSwapChain *swapChain;
++        std::unique_ptr<RenderCommandSemaphore> acquired, finished;
++        std::vector<std::unique_ptr<RenderFramebuffer>> framebuffers;
++        int32_t previousFill = -1;
++    public:
++        SwitchLoadingScreen(RenderDevice *device, RenderWorker *worker, RenderSwapChain *swapChain)
++            : worker(worker), swapChain(swapChain) {
++            acquired = device->createCommandSemaphore();
++            finished = device->createCommandSemaphore();
++            for (uint32_t i = 0; i < swapChain->getTextureCount(); i++) {
++                const RenderTexture *texture = swapChain->getTexture(i);
++                framebuffers.emplace_back(device->createFramebuffer(RenderFramebufferDesc(&texture, 1)));
++            }
++        }
++
++        void draw(float progress) {
++            const auto bar = SwitchLoadingBar::layout(swapChain->getWidth(), swapChain->getHeight(), progress);
++            if (previousFill == bar.fillRight) return;
++            uint32_t index = 0;
++            if (!swapChain->acquireTexture(acquired.get(), &index)) return;
++            auto *list = worker->commandList.get();
++            auto *texture = swapChain->getTexture(index);
++            list->begin();
++            list->barriers(RenderBarrierStage::GRAPHICS, RenderTextureBarrier(texture, RenderTextureLayout::COLOR_WRITE));
++            list->setFramebuffer(framebuffers[index].get());
++            list->setViewports(RenderViewport(0, 0, float(swapChain->getWidth()), float(swapChain->getHeight())));
++            list->setScissors(RenderRect(0, 0, swapChain->getWidth(), swapChain->getHeight()));
++            list->clearColor(0, RenderColor(0, 0, 0, 1));
++            const RenderRect border(bar.left, bar.top, bar.right, bar.bottom);
++            const RenderRect inside(bar.left + 2, bar.top + 2, bar.right - 2, bar.bottom - 2);
++            const RenderRect fill(bar.left + 2, bar.top + 2, bar.fillRight, bar.bottom - 2);
++            list->clearColor(0, RenderColor(1, 1, 1, 1), &border, 1);
++            list->clearColor(0, RenderColor(0, 0, 0, 1), &inside, 1);
++            if (bar.fillRight > bar.left + 2) list->clearColor(0, RenderColor(1, 0, 0, 1), &fill, 1);
++            list->barriers(RenderBarrierStage::NONE, RenderTextureBarrier(texture, RenderTextureLayout::PRESENT));
++            list->end();
++            const RenderCommandList *submitted = list;
++            RenderCommandSemaphore *wait = acquired.get(), *signal = finished.get();
++            worker->commandQueue->executeCommandLists(&submitted, 1, &wait, 1, &signal, 1, worker->commandFence.get());
++            swapChain->present(index, &signal, 1);
++            worker->wait();
++            previousFill = bar.fillRight;
++        }
++    };
++
++    static void waitForSwitchShaderWarmup(RasterShaderCache *cache, SwitchLoadingScreen &loading) {
++        RT64_SWITCH_CHECKPOINT("renderer loading: warming shader pipelines");
++        for (;;) {
++            const auto shaders = cache->warmupProgress();
++            const uint32_t uber = cache->shaderUber->completedPipelines.load(std::memory_order_acquire);
++            loading.draw(0.1f + 0.85f * float(uber + shaders.first) / float(8 + shaders.second));
++            if (uber == 8 && shaders.first == shaders.second) break;
++            std::this_thread::sleep_for(std::chrono::milliseconds(50));
++        }
++        cache->shaderUber->waitForPipelineCreation();
++        // Persist specialized shaders too; saving only after the ubershader
++        // omits pipelines compiled later by the warm-cache worker.
++        cache->device->savePipelineCache();
++        loading.draw(1.0f);
++        RT64_SWITCH_CHECKPOINT("renderer loading: shader warmup complete");
++    }
++#endif
+     // Constants
+ 
+     static std::unique_ptr<RenderInterface> CreateVulkanInterfaceWrapper(RenderWindow renderWindow) {
+@@ -87,6 +165,7 @@
      }
  
      Application::SetupResult Application::setup(uint32_t threadId) {
@@ -395,7 +586,7 @@ diff --git a/src/hle/rt64_application.cpp b/src/hle/rt64_application.cpp
  #   ifdef _WIN64
          if (!DynamicLibraries::load()) {
              fprintf(stderr, "Failed to load dynamic libraries. Make sure the dependencies are next to the Plugin's DLL.\n");
-@@ -98,11 +106,13 @@
+@@ -98,11 +177,13 @@
          if (!loadConfiguration()) {
              saveConfiguration();
          }
@@ -409,7 +600,7 @@ diff --git a/src/hle/rt64_application.cpp b/src/hle/rt64_application.cpp
  
  #   if SCRIPT_ENABLED
          // Create the script API and library and check if there's a compatible game script with the current ROM.
-@@ -125,12 +135,15 @@
+@@ -125,12 +206,15 @@
          else {
              appWindow->setup(windowTitle, this);
          }
@@ -425,7 +616,7 @@ diff --git a/src/hle/rt64_application.cpp b/src/hle/rt64_application.cpp
  
  #   ifdef _WIN64
          // Windows can try falling back to the other API option in case of failure.
-@@ -174,7 +187,9 @@
+@@ -174,7 +258,9 @@
                  return SetupResult::InvalidGraphicsAPI;
  #       endif
              case UserConfiguration::GraphicsAPI::Vulkan:
@@ -435,7 +626,7 @@ diff --git a/src/hle/rt64_application.cpp b/src/hle/rt64_application.cpp
                  break;
              default:
                  fprintf(stderr, "Unknown Graphics API specified in configuration.\n");
-@@ -183,7 +198,9 @@
+@@ -183,7 +269,9 @@
  
              if (renderInterface != nullptr) {
                  // Create the render device.
@@ -445,7 +636,7 @@ diff --git a/src/hle/rt64_application.cpp b/src/hle/rt64_application.cpp
              }
          }
  
-@@ -199,6 +216,7 @@
+@@ -199,6 +287,7 @@
  
          // Print device information to console.
          RenderDeviceDescription deviceDescription = device->getDescription();
@@ -453,7 +644,7 @@ diff --git a/src/hle/rt64_application.cpp b/src/hle/rt64_application.cpp
          fprintf(stdout, "Device Name: %s\n", deviceDescription.name.c_str());
          fprintf(stdout, "Device Vendor: 0x%X\n", deviceDescription.vendor);
          fprintf(stdout, "Driver Version: 0x%" PRIx64 "\n", deviceDescription.driverVersion);
-@@ -297,7 +315,9 @@
+@@ -297,7 +386,9 @@
          // Call the init hook if one was attached.
          RenderHookInit *initHook = GetRenderHookInit();
          if (initHook != nullptr) {
@@ -463,7 +654,7 @@ diff --git a/src/hle/rt64_application.cpp b/src/hle/rt64_application.cpp
          }
  
          // Create all the render workers.
-@@ -312,6 +332,7 @@
+@@ -312,6 +403,7 @@
          textureCopyWorker = std::make_unique<RenderWorker>(device.get(), "Texture Copy", RenderCommandListType::COPY);
          workloadGraphicsWorker = std::make_unique<RenderWorker>(device.get(), "Workload Graphics", RenderCommandListType::DIRECT);
          presentGraphicsWorker = std::make_unique<RenderWorker>(device.get(), "Present Graphics", RenderCommandListType::DIRECT);
@@ -471,7 +662,7 @@ diff --git a/src/hle/rt64_application.cpp b/src/hle/rt64_application.cpp
  
          // Create the swap chain with the texture count specified from the configuration.
          RenderSwapChainDesc swapChainDesc;
-@@ -326,12 +347,28 @@
+@@ -326,12 +418,31 @@
          // updating to using plume, this was corrected, but it exposed an issue with NVIDIA drivers (since 580.105.08 only on Linux)
          // where the wait() will take far more time than expected and cause stuttering. While this seems to work fine everywhere else,
          // we stick to the pre-plume approach to be safe.
@@ -496,11 +687,14 @@ diff --git a/src/hle/rt64_application.cpp b/src/hle/rt64_application.cpp
 +            std::abort();
 +        }
 +        RT64_SWITCH_CHECKPOINT("rt64 setup: eager Switch swapchain resize returned");
++        SwitchLoadingScreen loading(device.get(), presentGraphicsWorker.get(), swapChain.get());
++        loading.draw(0.0f);
++        SwitchFastLoad fastLoad;
 +#endif
  
          // Before configuring multisampling, make sure the device actually supports it for the formats we'll use. If it doesn't, turn off antialiasing in the configuration.
          const RenderSampleCounts colorSampleCounts = device->getSampleCountsSupported(RenderTarget::colorBufferFormat(usesHDR));
-@@ -346,14 +383,35 @@
+@@ -346,14 +457,39 @@
          shaderLibrary = std::make_unique<ShaderLibrary>(usesHDR, usesHardwareResolve);
          shaderLibrary->setupCommonShaders(renderInterface.get(), device.get());
          shaderLibrary->setupMultisamplingShaders(renderInterface.get(), device.get(), multisampling);
@@ -526,6 +720,10 @@ diff --git a/src/hle/rt64_application.cpp b/src/hle/rt64_application.cpp
          rasterShaderCache = std::make_unique<RasterShaderCache>(rasterShaderThreads, ubershaderThreads);
 +#endif
          rasterShaderCache->setup(device.get(), renderInterface->getCapabilities().shaderFormat, shaderLibrary.get(), multisampling);
++#if defined(__SWITCH__)
++        waitForSwitchShaderWarmup(rasterShaderCache.get(), loading);
++        fastLoad.finish();
++#endif
 +        RT64_SWITCH_CHECKPOINT("rt64 setup: raster shader cache ready");
 +#if defined(__SWITCH__)
 +        // Runtime-specialized pipelines are serialized through one large-stack
@@ -536,7 +734,7 @@ diff --git a/src/hle/rt64_application.cpp b/src/hle/rt64_application.cpp
  
  #   if RT_ENABLED
          if (device->getCapabilities().raytracing) {
-@@ -369,6 +427,7 @@
+@@ -369,6 +505,7 @@
          const uint64_t MinimumTexturePoolSize = 512 * 1024 * 1024;
          uint64_t texturePoolSize = std::max((deviceDescription.dedicatedVideoMemory * 2) / 3, MinimumTexturePoolSize);
          textureCache->setReplacementPoolMaxSize(texturePoolSize);
@@ -544,7 +742,7 @@ diff --git a/src/hle/rt64_application.cpp b/src/hle/rt64_application.cpp
  
  #   if RT_ENABLED
          // Create the blue noise texture, upload it and wait for it to finish.
-@@ -423,6 +482,7 @@
+@@ -423,6 +560,7 @@
          presentExt.shaderLibrary = shaderLibrary.get();
          presentExt.createdGraphicsAPI = chosenGraphicsAPI;
          presentQueue->setup(presentExt);
@@ -552,7 +750,7 @@ diff --git a/src/hle/rt64_application.cpp b/src/hle/rt64_application.cpp
  
          // Configure the state to use all the created components.
          State::External stateExt;
-@@ -451,9 +511,11 @@
+@@ -451,9 +589,11 @@
          stateExt.rtConfig = &rtConfig;
  #   endif
          state->setup(stateExt);
@@ -564,7 +762,7 @@ diff --git a/src/hle/rt64_application.cpp b/src/hle/rt64_application.cpp
  
          return SetupResult::Success;
      }
-@@ -532,13 +594,31 @@
+@@ -532,13 +672,33 @@
          }
  #   endif
  
@@ -577,7 +775,9 @@ diff --git a/src/hle/rt64_application.cpp b/src/hle/rt64_application.cpp
 +        // partially rebuilt shader library, cache or render-target manager.
 +        std::scoped_lock renderingIdle(workloadQueue->threadMutex, presentQueue->threadMutex);
 +        rasterShaderCache->waitForAll();
-+        rasterShaderCache->destroyAll();
++        SwitchLoadingScreen loading(device.get(), presentGraphicsWorker.get(), swapChain.get());
++        loading.draw(0.0f);
++        SwitchFastLoad fastLoad;
 +        RT64_SWITCH_CHECKPOINT("renderer MSAA: compiling replacement shaders");
 +#else
          // Destroy shader cache by waiting for the queues to be idle.
@@ -596,17 +796,34 @@ diff --git a/src/hle/rt64_application.cpp b/src/hle/rt64_application.cpp
          // Set up shader cache again with new ubershaders.
          rasterShaderCache->setup(device.get(), renderInterface->getCapabilities().shaderFormat, shaderLibrary.get(), multisampling);
  
-@@ -550,6 +630,10 @@
+@@ -549,7 +709,14 @@
+         state->updateMultisampling();
  
          // Wait for all pipelines of the ubershader to be ready again.
-         rasterShaderCache->shaderUber->waitForPipelineCreation();
 +#if defined(__SWITCH__)
++        waitForSwitchShaderWarmup(rasterShaderCache.get(), loading);
++        fastLoad.finish();
 +        sharedQueueResources->setUserConfig(userConfig, true);
 +        RT64_SWITCH_CHECKPOINT("renderer MSAA: target rebuild complete; configuration published");
++#else
+         rasterShaderCache->shaderUber->waitForPipelineCreation();
 +#endif
      }
  
  #ifdef _WIN32
+@@ -686,6 +853,12 @@
+         workloadVelocityUploader.reset();
+         workloadTilesUploader.reset();
+         sharedQueueResources.reset();
++#if defined(__SWITCH__)
++        if (rasterShaderCache != nullptr) {
++            rasterShaderCache->waitForAll();
++            device->savePipelineCache();
++        }
++#endif
+         rasterShaderCache.reset();
+ #   if RT_ENABLED
+         rtShaderCache.reset();
 diff --git a/src/hle/rt64_application_window.cpp b/src/hle/rt64_application_window.cpp
 --- a/src/hle/rt64_application_window.cpp
 +++ b/src/hle/rt64_application_window.cpp
@@ -3621,10 +3838,29 @@ diff --git a/src/render/rt64_raster_shader.cpp b/src/render/rt64_raster_shader.c
  
          // Create the shaders.
          const void *VSBlob = nullptr;
-@@ -487,8 +503,33 @@
-         pipelineThreads.clear();
-         pipelineThreads.resize(pipelineThreadCreations.size());
-         for (uint32_t i = 0; i < uint32_t(pipelineThreads.size()); i++) {
+@@ -483,13 +499,6 @@
+             threadIndex = (threadIndex + 1) % threadCount;
+         }
+ 
+-        // Spawn the threads that will compile all the pipelines.
+-        pipelineThreads.clear();
+-        pipelineThreads.resize(pipelineThreadCreations.size());
+-        for (uint32_t i = 0; i < uint32_t(pipelineThreads.size()); i++) {
+-            pipelineThreads[i] = std::make_unique<std::thread>(&RasterShaderUber::threadCreatePipelines, this, i);
+-        }
+-
+         // Create the pipelines for post blend operations.
+         std::unique_ptr<RenderShader> postBlendAddPixelShader;
+         std::unique_ptr<RenderShader> postBlendSubPixelShader;
+@@ -552,13 +561,55 @@
+ 
+         postBlendDesc.pixelShader = postBlendSubNegativePixelShader.get();
+         postBlendDitherNoiseSubNegativePipeline = device->createGraphicsPipeline(postBlendDesc);
++
++        // Spawn the threads that will compile all the pipelines.
++        pipelineThreads.clear();
++        pipelineThreads.resize(pipelineThreadCreations.size());
++        for (uint32_t i = 0; i < uint32_t(pipelineThreads.size()); i++) {
 +#if defined(__SWITCH__)
 +            constexpr size_t SwitchPipelineStackSize = 8 * 1024 * 1024;
 +            SwitchPipelineThread &pipelineThread = pipelineThreads[i];
@@ -3648,15 +3884,14 @@ diff --git a/src/render/rt64_raster_shader.cpp b/src/render/rt64_raster_shader.c
 +                std::abort();
 +            }
 +#else
-             pipelineThreads[i] = std::make_unique<std::thread>(&RasterShaderUber::threadCreatePipelines, this, i);
--        }
++            pipelineThreads[i] = std::make_unique<std::thread>(&RasterShaderUber::threadCreatePipelines, this, i);
 +#endif
 +        }
 +        RT64_RASTER_SWITCH_CHECKPOINT("rt64 raster: large-stack ubershader worker spawned");
++
+     }
  
-         // Create the pipelines for post blend operations.
-         std::unique_ptr<RenderShader> postBlendAddPixelShader;
-@@ -558,7 +599,16 @@
+     RasterShaderUber::~RasterShaderUber() {
          waitForPipelineCreation();
      }
  
@@ -3673,7 +3908,7 @@ diff --git a/src/render/rt64_raster_shader.cpp b/src/render/rt64_raster_shader.c
          // Delay the creation of all other pipelines until the first pipeline is created. This can help the
          // driver reuse its shader cache between pipelines and achieve a much lower creation time than if
          // all threads started at the same time.
-@@ -572,29 +622,53 @@
+@@ -572,29 +623,50 @@
          for (const PipelineCreation &creation : pipelineThreadCreations[threadIndex]) {
              uint32_t pipelineIndex = pipelineStateIndex(creation.zCmp, creation.zUpd, creation.cvgAdd);
  
@@ -3695,6 +3930,7 @@ diff --git a/src/render/rt64_raster_shader.cpp b/src/render/rt64_raster_shader.c
 +                std::snprintf(checkpoint, sizeof(checkpoint), "rt64 raster: pipeline %u creation returned", pipelineIndex);
 +                RT64_RASTER_SWITCH_CHECKPOINT(checkpoint);
 +            }
++            completedPipelines.fetch_add(1, std::memory_order_release);
 +        }
 +        RT64_RASTER_SWITCH_CHECKPOINT("rt64 raster: ubershader worker complete");
      }
@@ -3716,10 +3952,6 @@ diff --git a/src/render/rt64_raster_shader.cpp b/src/render/rt64_raster_shader.c
 +                RT64_RASTER_SWITCH_CHECKPOINT("rt64 raster: pipeline worker join returned");
 +            }
 +#endif
-+
-+            RT64_RASTER_SWITCH_CHECKPOINT("rt64 raster: pipeline cache save entered");
-+            device->savePipelineCache();
-+            RT64_RASTER_SWITCH_CHECKPOINT("rt64 raster: pipeline cache save returned");
  
              pipelineThreads.clear();
              pipelineThreadCreations.clear();
@@ -3733,8 +3965,11 @@ diff --git a/src/render/rt64_raster_shader.cpp b/src/render/rt64_raster_shader.c
 diff --git a/src/render/rt64_raster_shader.h b/src/render/rt64_raster_shader.h
 --- a/src/render/rt64_raster_shader.h
 +++ b/src/render/rt64_raster_shader.h
-@@ -9,6 +9,9 @@
+@@ -7,8 +7,12 @@
+ #include "rt64_shader_common.h"
+ 
  #include <condition_variable>
++#include <atomic>
  #include <mutex>
  #include <thread>
 +#if defined(__SWITCH__)
@@ -3743,7 +3978,7 @@ diff --git a/src/render/rt64_raster_shader.h b/src/render/rt64_raster_shader.h
  
  #include "re-spirv/re-spirv.h"
  
-@@ -78,6 +81,7 @@
+@@ -78,6 +82,7 @@
          static const uint64_t RasterVSLibraryHash;
          static const uint64_t RasterPSLibraryHash;
  
@@ -3751,8 +3986,11 @@ diff --git a/src/render/rt64_raster_shader.h b/src/render/rt64_raster_shader.h
          std::unique_ptr<RenderPipeline> pipelines[8];
          std::unique_ptr<RenderPipeline> postBlendDitherNoiseAddPipeline;
          std::unique_ptr<RenderPipeline> postBlendDitherNoiseSubPipeline;
-@@ -87,7 +91,17 @@
+@@ -85,9 +90,20 @@
+         std::mutex firstPipelineMutex;
+         std::condition_variable firstPipelineCondition;
          bool pipelinesCreated = false;
++        std::atomic<uint32_t> completedPipelines{0};
          std::unique_ptr<RenderPipelineLayout> pipelineLayout;
          std::vector<std::vector<PipelineCreation>> pipelineThreadCreations;
 +#if defined(__SWITCH__)
@@ -3932,7 +4170,33 @@ diff --git a/src/render/rt64_raster_shader_cache.cpp b/src/render/rt64_raster_sh
          for (uint32_t t = 0; t < threadCount; t++) {
              compilationThreads.push_back(std::make_unique<CompilationThread>(this));
          }
-@@ -109,9 +170,14 @@
+@@ -100,6 +161,25 @@
+ 
+         this->device = device;
+         this->shaderFormat = shaderFormat;
++#if defined(__SWITCH__)
++        if (shaderUber != nullptr) {
++            SampleVariant &previous = sampleVariants[this->multisampling.sampleCount];
++            previous.uber = std::move(shaderUber);
++            previous.shaders = std::move(GPUShaders);
++        }
++        shaderHashes.clear();
++        auto cached = sampleVariants.find(multisampling.sampleCount);
++        if (cached != sampleVariants.end() && cached->second.uber != nullptr) {
++            shaderUber = std::move(cached->second.uber);
++            GPUShaders = std::move(cached->second.shaders);
++            sampleVariants.erase(cached);
++            for (const auto &entry : GPUShaders) shaderHashes[entry.first] = true;
++            this->multisampling = multisampling;
++            switch_log_checkpoint("renderer MSAA: reusing ready sample-count pipelines", false);
++            loadPersistentShaderDescriptions();
++            return;
++        }
++#endif
+         this->multisampling = multisampling;
+ 
+         shaderUber = std::make_unique<RasterShaderUber>(device, shaderFormat, multisampling, shaderLibrary, ubershaderThreadCount);
+@@ -109,9 +189,14 @@
          if (shaderFormat == RenderShaderFormat::SPIRV) {
              optimizerCacheSPIRV.initialize();
          }
@@ -3947,7 +4211,7 @@ diff --git a/src/render/rt64_raster_shader_cache.cpp b/src/render/rt64_raster_sh
          {
              std::unique_lock<std::mutex> queueLock(submissionMutex);
  
-@@ -132,19 +198,17 @@
+@@ -132,22 +217,23 @@
          }
  
          descQueueChanged.notify_all();
@@ -3975,7 +4239,13 @@ diff --git a/src/render/rt64_raster_shader_cache.cpp b/src/render/rt64_raster_sh
      }
  
      void RasterShaderCache::destroyAll() {
-@@ -179,4 +243,109 @@
++#if defined(__SWITCH__)
++        sampleVariants.clear();
++#endif
+         {
+             std::unique_lock<std::mutex> lock(GPUShadersMutex);
+             GPUShaders.clear();
+@@ -179,4 +265,114 @@
          std::unique_lock<std::mutex> lock(GPUShadersMutex);
          return GPUShaders.size();
      }
@@ -4002,6 +4272,11 @@ diff --git a/src/render/rt64_raster_shader_cache.cpp b/src/render/rt64_raster_sh
 +#pragma pack(pop)
 +
 +        static_assert(std::is_trivially_copyable_v<ShaderDescription>);
++    }
++
++    std::pair<uint32_t, uint32_t> RasterShaderCache::warmupProgress() {
++        const std::scoped_lock lock(submissionMutex, GPUShadersMutex);
++        return {uint32_t(GPUShaders.size()), uint32_t(shaderHashes.size())};
 +    }
 +
 +    void RasterShaderCache::loadPersistentShaderDescriptions() {
@@ -4125,11 +4400,18 @@ diff --git a/src/render/rt64_raster_shader_cache.h b/src/render/rt64_raster_shad
          std::unordered_map<uint64_t, bool> shaderHashes;
          std::unordered_map<uint64_t, std::unique_ptr<RasterShader>> GPUShaders;
          std::mutex GPUShadersMutex;
-@@ -45,8 +55,18 @@
+@@ -45,8 +55,25 @@
          std::unique_ptr<ShaderCompiler> shaderCompiler;
          RenderMultisampling multisampling;
          bool usesHDR = false;
 +#if defined(__SWITCH__)
++        // Keep ready pipelines for each sample count while the device lives.
++        // Rendering and compilation are drained before a variant is switched.
++        struct SampleVariant {
++            std::unique_ptr<RasterShaderUber> uber;
++            std::unordered_map<uint64_t, std::unique_ptr<RasterShader>> shaders;
++        };
++        std::unordered_map<uint32_t, SampleVariant> sampleVariants;
 +        std::filesystem::path descriptionCachePath;
 +        std::mutex descriptionCacheMutex;
 +        std::unordered_map<uint64_t, bool> persistedShaderHashes;
@@ -4145,13 +4427,14 @@ diff --git a/src/render/rt64_raster_shader_cache.h b/src/render/rt64_raster_shad
          ~RasterShaderCache();
          void setup(RenderDevice *device, RenderShaderFormat shaderFormat, const ShaderLibrary *shaderLibrary, const RenderMultisampling &multisampling);
          void submit(const ShaderDescription &desc);
-@@ -55,5 +75,9 @@
+@@ -55,5 +82,10 @@
          RasterShader *getGPUShader(const ShaderDescription &desc);
          RasterShaderUber *getGPUShaderUber() const;
          uint32_t shaderCount();
 +#if defined(__SWITCH__)
 +        void loadPersistentShaderDescriptions();
 +        void persistShaderDescription(const ShaderDescription &desc);
++        std::pair<uint32_t, uint32_t> warmupProgress();
 +#endif
      };
 -};

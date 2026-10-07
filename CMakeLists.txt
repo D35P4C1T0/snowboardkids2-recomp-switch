@@ -486,6 +486,8 @@ if (CMAKE_SYSTEM_NAME STREQUAL "NintendoSwitch")
         ${CMAKE_SOURCE_DIR}/switch/logging.cpp
         ${CMAKE_SOURCE_DIR}/switch/screenshots.cpp
         ${CMAKE_SOURCE_DIR}/switch/profiling.cpp
+        ${CMAKE_SOURCE_DIR}/switch/clock_control.cpp
+        ${CMAKE_SOURCE_DIR}/switch/performance_config.cpp
         ${CMAKE_SOURCE_DIR}/switch/asp_optimized.cpp
     )
     # Restrict stronger optimization to the integer audio microcode. Keep the

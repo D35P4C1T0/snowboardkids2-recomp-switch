@@ -217,9 +217,12 @@ zero in the captured failures.
   byte-equivalence tests pass and tested audio/textures remain correct.
 - [ ] Improve heavy gameplay beyond the current roughly 45 FPS checkpoint
   while preserving exact framebuffer copyback and normal game/audio speed.
-- [ ] Remove runtime pipeline-creation hitches. NVK currently serializes only
-  a 4,896-byte cache for this workload, so specialized pipelines still rebuild
-  after launch.
+- [ ] Remove runtime pipeline-creation hitches for previously unseen shaders.
+  The October 7 loading update fixes SD cache replacement, saves compiled
+  shaders after warmup, and retains ready pipelines per MSAA sample count.
+  Its first hardware run saved 3.9 MB at startup and 7.1 MB after 2X MSAA.
+  The final-build warm launch completed RT64 setup in 2.3 seconds; repeating
+  None/2X transitions within the earlier run took 0.75--1.03 seconds.
 - [ ] Measure thermals, clocks, and frame pacing on both Erista and Mariko.
 - [ ] Establish sustained 60 Hz presentation with correct interpolation and
   frame pacing. A 60 Hz output target does not imply 60 FPS in races.
@@ -365,17 +368,19 @@ Exit gate: the base game is completable with saves, menus, audio, rumble, and su
 ### M4 — Performance and release parity
 
 - Profile CPU, GPU, memory, SD I/O, and shader/pipeline creation on Erista and Mariko.
-- Persistent NVK pipeline data is loaded from SD at startup. A cold cache is
-  saved atomically only after all eight precompiled ubershader pipelines finish,
-  avoiding per-pipeline SD writes while compilation is active.
+- Persistent NVK pipeline data is loaded from SD at startup. The loading bar
+  tracks all eight ubershader pipelines and known specialized shaders. The cache
+  is saved after warmup and on clean shutdown, with backup recovery during file
+  replacement. Ready pipelines are retained per MSAA sample count until exit.
   Runtime-specialized raster shaders compile serially on one large-stack
   worker while rendering falls back to the precompiled ubershader. The Switch
   worker currently uses the ordinary pthread priority; the background-priority
   request was rejected on hardware.
   Earlier hardware runs reached roughly 37--40 FPS after specialization;
-  current tests with cached/vectorized readback report about 45 FPS. NVK currently
-  serializes a fixed 4,896-byte cache for this workload, so first-use specialized
-  pipeline compilation can still cause visible hitches after every launch.
+  current tests with cached/vectorized readback report about 45 FPS. Earlier
+  runs repeatedly loaded a 4,896-byte cache because cache replacement failed;
+  the October 7 loading update successfully saved compiled shader caches of
+  3.9 MB and 7.1 MB. First-use compilation remains possible for unseen shaders.
 - Target sustained 60 Hz only after frame pacing and thermal testing establish
   it on hardware; current race output remains around 45 FPS.
 - Test 720p handheld and 1080p docked scaling. The Switch baseline renders the

@@ -8,6 +8,9 @@
 #include "util/file.h"
 
 #include <filesystem>
+#if defined(__SWITCH__)
+#include "../../switch/clock_control.h"
+#endif
 
 namespace {
 constexpr const char* targeting_mode_option = "targeting_mode";
@@ -123,6 +126,9 @@ void zelda64::init_config() {
     );
 
     recompui::config::create_graphics_tab();
+#if defined(__SWITCH__)
+    sk2::clocks::create_performance_tab();
+#endif
 
     set_control_descriptions();
     recompui::config::create_controls_tab();
