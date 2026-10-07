@@ -57,15 +57,16 @@ diff --git a/CMakeLists.txt b/CMakeLists.txt
  endif()
  
  message(STATUS "${SDL2_INCLUDE_DIRS} ${SDL2_LIBRARIES}")
-@@ -540,6 +560,7 @@
+@@ -540,6 +560,8 @@
  build_pixel_shader(  rt64 "src/shaders/RtCopyDepthToColorPS.hlsl" "src/shaders/RtCopyDepthToColor2XPS.hlsl" "-D SAMPLES_2X")
  build_pixel_shader(  rt64 "src/shaders/RtCopyDepthToColorPS.hlsl" "src/shaders/RtCopyDepthToColor4XPS.hlsl" "-D SAMPLES_4X")
  build_pixel_shader(  rt64 "src/shaders/RtCopyDepthToColorPS.hlsl" "src/shaders/RtCopyDepthToColor8XPS.hlsl" "-D SAMPLES_8X")
 +build_pixel_shader(  rt64 "src/shaders/SwitchFramebufferColorCopyPS.hlsl")
++build_pixel_shader(  rt64 "src/shaders/SwitchFramebufferColorCopyPS.hlsl" "src/shaders/SwitchFramebufferDepthMSCopyPS.hlsl" "-D SWITCH_MULTISAMPLE_DEPTH")
  build_pixel_shader(  rt64 "src/shaders/TextureCopyPS.hlsl")
  build_compute_shader(rt64 "src/shaders/TextureDecodeCS.hlsl")
  build_pixel_shader(  rt64 "src/shaders/TextureResolvePS.hlsl" "src/shaders/TextureResolveSamples2XPS.hlsl" "-D SAMPLES_2X")
-@@ -555,4 +576,3 @@
+@@ -555,4 +577,3 @@
  build_pixel_shader(  rt64 "src/shaders/PostProcessPS.hlsl")
  
  target_include_directories(rt64 PRIVATE ${CMAKE_BINARY_DIR}/src)
@@ -563,6 +564,49 @@ diff --git a/src/hle/rt64_application.cpp b/src/hle/rt64_application.cpp
  
          return SetupResult::Success;
      }
+@@ -532,13 +594,31 @@
+         }
+ #   endif
+ 
++#if defined(__SWITCH__)
++        RT64_SWITCH_CHECKPOINT("renderer MSAA: draining rendering queues");
++        workloadQueue->waitForWorkloadId(state->workloadId);
++        presentQueue->waitForPresentId(state->presentId);
++        // A waitForIdle() call releases its lock immediately. Retain both
++        // locks throughout replacement so queued rendering cannot observe a
++        // partially rebuilt shader library, cache or render-target manager.
++        std::scoped_lock renderingIdle(workloadQueue->threadMutex, presentQueue->threadMutex);
++        rasterShaderCache->waitForAll();
++        rasterShaderCache->destroyAll();
++        RT64_SWITCH_CHECKPOINT("renderer MSAA: compiling replacement shaders");
++#else
+         // Destroy shader cache by waiting for the queues to be idle.
+         destroyShaderCache();
++#endif
+ 
+         // Recreate the multisampling shaders on the shader library.
+         const RenderMultisampling multisampling = RasterShader::generateMultisamplingPattern(userConfig.msaaSampleCount(), device->getCapabilities().sampleLocations);
+         shaderLibrary->setupMultisamplingShaders(renderInterface.get(), device.get(), multisampling);
+ 
++#if defined(__SWITCH__)
++        char samplesMessage[96]{};
++        std::snprintf(samplesMessage, sizeof(samplesMessage), "renderer MSAA: rebuilding targets samples=%u", multisampling.sampleCount);
++        RT64_SWITCH_CHECKPOINT(samplesMessage);
++#endif
+         // Set up shader cache again with new ubershaders.
+         rasterShaderCache->setup(device.get(), renderInterface->getCapabilities().shaderFormat, shaderLibrary.get(), multisampling);
+ 
+@@ -550,6 +630,10 @@
+ 
+         // Wait for all pipelines of the ubershader to be ready again.
+         rasterShaderCache->shaderUber->waitForPipelineCreation();
++#if defined(__SWITCH__)
++        sharedQueueResources->setUserConfig(userConfig, true);
++        RT64_SWITCH_CHECKPOINT("renderer MSAA: target rebuild complete; configuration published");
++#endif
+     }
+ 
+ #ifdef _WIN32
 diff --git a/src/hle/rt64_application_window.cpp b/src/hle/rt64_application_window.cpp
 --- a/src/hle/rt64_application_window.cpp
 +++ b/src/hle/rt64_application_window.cpp
@@ -2010,8 +2054,7 @@ diff --git a/src/hle/rt64_state.cpp b/src/hle/rt64_state.cpp
 +#if defined(__SWITCH__)
 +                            const uint32_t colorDitherSeed = ditherRandomSeed++;
 +                            bool switchColorEncoded = false;
-+                            if ((colorFb->siz == G_IM_SIZ_16b) && (colorImg.fmt == G_IM_FMT_RGBA) &&
-+                                (colorTarget->multisampling.sampleCount == 1))
++                            if ((colorFb->siz == G_IM_SIZ_16b) && (colorImg.fmt == G_IM_FMT_RGBA))
 +                            {
 +                                if (switchColorCopyTarget == nullptr) {
 +                                    switchColorCopyTarget = std::make_unique<RenderTarget>(0, Framebuffer::Type::Color,
@@ -2098,9 +2141,10 @@ diff --git a/src/hle/rt64_state.cpp b/src/hle/rt64_state.cpp
 +                            // shaders encode depth16 through a color target.
 +                            // Packed mode writes the native two bytes directly;
 +                            // the reference keeps its RGBA8 color round trip.
-+                            const bool packedDepth = switchDepthCopyTarget->switchNativeBytes;
++                            const bool encodeDepth = switchDepthCopyTarget->switchNativeBytes ||
++                                depthTarget->multisampling.sampleCount > 1;
 +                            bool depthEncoded = false;
-+                            if (packedDepth) {
++                            if (encodeDepth) {
 +                                depthEncoded = switchDepthCopyTarget->encodeColorToNativeBytes(ext.framebufferGraphicsWorker,
 +                                    depthTarget, depthWriteWidth, depthRowStart, depthRowEnd, 3, 0, ext.shaderLibrary);
 +                            }
@@ -2108,7 +2152,7 @@ diff --git a/src/hle/rt64_state.cpp b/src/hle/rt64_state.cpp
 +                                switchDepthCopyTarget->copyFromTarget(ext.framebufferGraphicsWorker, depthTarget,
 +                                    0, depthRowStart, depthWriteWidth, depthRowEnd - depthRowStart, ext.shaderLibrary);
 +                            }
-+                            switchDepthCPUReadback = (!packedDepth || depthEncoded) &&
++                            switchDepthCPUReadback = (!encodeDepth || depthEncoded) &&
 +                                depthFb->nativeTarget.copyToNativeCPU(ext.framebufferGraphicsWorker,
 +                                    switchDepthCopyTarget.get(), depthWriteWidth, depthRowStart, depthRowEnd,
 +                                    depthFb->siz, G_IM_FMT_RGBA, 3,
@@ -2604,7 +2648,26 @@ diff --git a/src/hle/rt64_workload_queue.cpp b/src/hle/rt64_workload_queue.cpp
  
      void WorkloadQueue::updateMultisampling() {
          renderFramebufferManager->destroyAll();
-@@ -275,7 +333,16 @@
+@@ -211,6 +269,18 @@
+         workloadConfig.resolutionScale = { resolutionMultiplier * workloadConfig.aspectRatioScale, resolutionMultiplier };
+         workloadConfig.downsampleMultiplier = ext.sharedResources->userConfig.downsampleMultiplier;
+         ext.sharedResources->resolutionScale = workloadConfig.resolutionScale;
++#if defined(__SWITCH__)
++        if (switchLoggedScaleX != float(workloadConfig.resolutionScale.x) ||
++            switchLoggedScaleY != float(workloadConfig.resolutionScale.y) ||
++            switchLoggedDownsample != workloadConfig.downsampleMultiplier ||
++            switchLoggedSamples != msaaSampleCount) {
++            switchLogNextTarget = true;
++            switchLoggedScaleX = float(workloadConfig.resolutionScale.x);
++            switchLoggedScaleY = float(workloadConfig.resolutionScale.y);
++            switchLoggedDownsample = workloadConfig.downsampleMultiplier;
++            switchLoggedSamples = msaaSampleCount;
++        }
++#endif
+ 
+         // Find the target refresh rate from the configuration.
+         const auto refreshRate = ext.sharedResources->userConfig.refreshRate;
+@@ -275,7 +345,16 @@
  
          if (ext.sharedResources->userConfigChanged) {
              idleMutex.lock();
@@ -2621,7 +2684,7 @@ diff --git a/src/hle/rt64_workload_queue.cpp b/src/hle/rt64_workload_queue.cpp
              idleMutex.unlock();
              idleCondition.notify_all();
          }
-@@ -299,6 +366,19 @@
+@@ -299,6 +378,19 @@
          FramebufferManager &fbManager = ext.sharedResources->framebufferManager;
          RenderTargetManager &targetManager = ext.sharedResources->renderTargetManager;
          const bool usingMSAA = (targetManager.multisampling.sampleCount > 1);
@@ -2641,12 +2704,22 @@ diff --git a/src/hle/rt64_workload_queue.cpp b/src/hle/rt64_workload_queue.cpp
  
          rendererCPUProfiler.start();
  
-@@ -464,6 +544,25 @@
+@@ -464,6 +556,35 @@
  
                      fixedResScale = RenderTarget::computeFixedResolutionScale(colorImg.width, fixedResScale);
                      RenderTarget::computeScaledSize(nativeColorWidth, nativeColorHeight, fixedResScale, targetWidth, targetHeight, targetMisalignX);
 +
 +#if defined(__SWITCH__)
++                    if (switchLogNextTarget) {
++                        char settings[256]{};
++                        std::snprintf(settings, sizeof(settings),
++                            "renderer target: native=%ux%u render=%ux%u scale=%.3fx%.3f downsample=%u samples=%u",
++                            nativeColorWidth, nativeColorHeight, targetWidth, targetHeight,
++                            double(fixedResScale.x), double(fixedResScale.y), downsampleMultiplier,
++                            targetManager.multisampling.sampleCount);
++                        RT64_WORKLOAD_SWITCH_CHECKPOINT(settings);
++                        switchLogNextTarget = false;
++                    }
 +                    if (traceNativeDiagnostic && !nativeTargetLogged) {
 +                        const unsigned int diagnosticNativeWidth = static_cast<unsigned int>(nativeColorWidth);
 +                        const unsigned int diagnosticNativeHeight = static_cast<unsigned int>(nativeColorHeight);
@@ -2667,7 +2740,7 @@ diff --git a/src/hle/rt64_workload_queue.cpp b/src/hle/rt64_workload_queue.cpp
  
                      rtWidth = targetWidth;
                      rtHeight = targetHeight;
-@@ -703,6 +802,20 @@
+@@ -703,6 +824,20 @@
              ext.workloadGraphicsWorker->commandList->writeTimestamp(queryPool.get(), 0);
              framebufferRenderer->endFramebuffers(ext.workloadGraphicsWorker, &workload.drawBuffers, &workload.outputBuffers, workloadConfig.raytracingEnabled);
              framebufferRenderer->recordSetup(ext.workloadGraphicsWorker, bufferUploaders, processRSP ? rspProcessor.get() : nullptr, processWorldVertices ? vertexProcessor.get() : nullptr, &workload.outputBuffers, workloadConfig.raytracingEnabled);
@@ -2688,7 +2761,7 @@ diff --git a/src/hle/rt64_workload_queue.cpp b/src/hle/rt64_workload_queue.cpp
              
              // Record all framebuffer pairs.
              uint32_t framebufferIndex = 0;
-@@ -840,8 +953,36 @@
+@@ -840,8 +975,36 @@
              ext.workloadGraphicsWorker->commandList->writeTimestamp(queryPool.get(), 1);
              ext.workloadGraphicsWorker->commandList->end();
              framebufferRenderer->waitForUploaders();
@@ -2726,7 +2799,7 @@ diff --git a/src/hle/rt64_workload_queue.cpp b/src/hle/rt64_workload_queue.cpp
              workerMutex.unlock();
  
              // Update the GPU profiler with the results from the timestamps of the frame.
-@@ -861,12 +1002,22 @@
+@@ -861,12 +1024,22 @@
          rendererCPUProfiler.end();
          rendererCPUProfiler.log();
          rendererCPUProfiler.reset();
@@ -2751,7 +2824,7 @@ diff --git a/src/hle/rt64_workload_queue.cpp b/src/hle/rt64_workload_queue.cpp
      }
  
      void WorkloadQueue::threadAdvanceWorkloadId(uint64_t newWorkloadId) {
-@@ -879,6 +1030,7 @@
+@@ -879,6 +1052,7 @@
      }
  
      void WorkloadQueue::renderThreadLoop() {
@@ -2759,7 +2832,7 @@ diff --git a/src/hle/rt64_workload_queue.cpp b/src/hle/rt64_workload_queue.cpp
          Thread::setCurrentThreadName("RT64 Workload");
  
          WorkloadConfiguration workloadConfig;
-@@ -888,6 +1040,7 @@
+@@ -888,6 +1062,7 @@
          uint32_t displayRateForTicks = 0;
          int processCursor = -1;
          bool frameReduction = false;
@@ -2767,7 +2840,7 @@ diff --git a/src/hle/rt64_workload_queue.cpp b/src/hle/rt64_workload_queue.cpp
          while (threadsRunning) {
              {
                  std::unique_lock<std::mutex> cursorLock(cursorMutex);
-@@ -902,17 +1055,21 @@
+@@ -902,17 +1077,21 @@
              }
  
              if (processCursor >= 0) {
@@ -2790,7 +2863,7 @@ diff --git a/src/hle/rt64_workload_queue.cpp b/src/hle/rt64_workload_queue.cpp
  
                  // FIXME: This is a very hacky way to find out if we need to advance the frame if the workload was paused for the first time.
                  if (!workload.paused || (!gameFrames[curFrameIndex].workloads.empty() && (gameFrames[curFrameIndex].workloads[0] != (uint32_t)processCursor))) {
-@@ -925,6 +1082,7 @@
+@@ -925,6 +1104,7 @@
                  const GameFrame &prevFrame = gameFrames[prevFrameIndex];
                  uint32_t workloadIndex = processCursor;
                  curFrame.set(*this, &workloadIndex, 1);
@@ -2798,7 +2871,7 @@ diff --git a/src/hle/rt64_workload_queue.cpp b/src/hle/rt64_workload_queue.cpp
  
                  // Detect the color image to interpolate for this workload.
                  RenderTargetKey interpolationTargetKey;
-@@ -1117,8 +1275,10 @@
+@@ -1117,8 +1297,10 @@
                      }
  
                      int64_t renderTimeMicro = workloadTimer.elapsedMicroseconds();
@@ -2809,7 +2882,7 @@ diff --git a/src/hle/rt64_workload_queue.cpp b/src/hle/rt64_workload_queue.cpp
  
                      // Add total time the frame took to render.
                      renderTimeTotalMicro += workloadTimer.elapsedMicroseconds() - renderTimeMicro;
-@@ -1126,6 +1286,7 @@
+@@ -1126,6 +1308,7 @@
                      // After one frame is rendered, we indicate the workload has been processed so the present thread can start presenting frames as soon as it can.
                      if (frame == 0) {
                          threadAdvanceWorkloadId(workload.workloadId);
@@ -2817,7 +2890,7 @@ diff --git a/src/hle/rt64_workload_queue.cpp b/src/hle/rt64_workload_queue.cpp
                      }
  
                      // For every additional frame, we increase the frames available and notify the present queue.
-@@ -1172,11 +1333,13 @@
+@@ -1172,11 +1355,13 @@
                  workloadProfiler.end();
                  workloadProfiler.log();
                  workloadProfiler.reset();
@@ -2831,7 +2904,7 @@ diff --git a/src/hle/rt64_workload_queue.cpp b/src/hle/rt64_workload_queue.cpp
          // Beware traveler as you enter the zone of dirty driver hacks. Given N64 games are not exactly a demanding thing to render
          // nowadays for modern GPUs and due to how the plugin's cooperative multiqueue system works, it's sometimes just not possible
          // to keep the GPU busy at all times. It is often the case that the GPU might've already rendered all the frames it needed to
-@@ -1213,7 +1376,7 @@
+@@ -1213,7 +1398,7 @@
                      commandList->dispatch(1, 1, 1);
                      commandList->end();
                      ext.workloadGraphicsWorker->execute();
@@ -2840,7 +2913,7 @@ diff --git a/src/hle/rt64_workload_queue.cpp b/src/hle/rt64_workload_queue.cpp
                      workerMutex.unlock();
                  }
                  
-@@ -1221,4 +1384,4 @@
+@@ -1221,4 +1406,4 @@
              }
          }
      }
@@ -2860,7 +2933,19 @@ diff --git a/src/hle/rt64_workload_queue.h b/src/hle/rt64_workload_queue.h
  
  #include "common/rt64_enhancement_configuration.h"
  #include "common/rt64_profiling_timer.h"
-@@ -71,8 +74,17 @@
+@@ -29,6 +32,11 @@
+     struct PresentQueue;
+ 
+     struct WorkloadQueue {
++#if defined(__SWITCH__)
++        bool switchLogNextTarget = true;
++        float switchLoggedScaleX = 0.0f, switchLoggedScaleY = 0.0f;
++        uint32_t switchLoggedDownsample = 0, switchLoggedSamples = 0;
++#endif
+         struct External {
+             RenderDevice *device = nullptr;
+             RenderWorker *workloadGraphicsWorker = nullptr;
+@@ -71,8 +79,17 @@
          uint64_t lastPresentId;
          std::mutex workloadIdMutex;
          std::condition_variable workloadIdCondition;
@@ -2878,7 +2963,7 @@ diff --git a/src/hle/rt64_workload_queue.h b/src/hle/rt64_workload_queue.h
          bool idleActive = false;
          std::mutex idleMutex;
          std::condition_variable idleCondition;
-@@ -123,4 +135,4 @@
+@@ -123,4 +140,4 @@
          void renderThreadLoop();
          void idleThreadLoop();
      };
@@ -4088,7 +4173,17 @@ diff --git a/src/render/rt64_render_target.cpp b/src/render/rt64_render_target.c
  #include "shared/rt64_texture_copy.h"
  
  #include "rt64_raster_shader.h"
-@@ -84,6 +86,9 @@
+@@ -47,6 +49,9 @@
+         textureFramebuffer.reset();
+         resolveFramebuffer.reset();
+         targetCopyDescSet.reset();
++#if defined(__SWITCH__)
++        switchNativeCopyDescSet.reset();
++#endif
+         textureCopyDescSet.reset();
+         textureResolveDescSet.reset();
+         filterDescSet.reset();
+@@ -84,6 +89,9 @@
  
          downsampledTextureMultiplier = 0;
          format = colorBufferFormat(usesHDR);
@@ -4098,7 +4193,7 @@ diff --git a/src/render/rt64_render_target.cpp b/src/render/rt64_render_target.c
          
          RenderClearValue clearValue = RenderClearValue::Color(RenderColor(), format);
          texture = worker->device->createTexture(RenderTextureDesc::ColorTarget(width, height, format, multisampling, &clearValue));
-@@ -213,6 +218,66 @@
+@@ -213,6 +221,73 @@
  
          markForResolve();
      }
@@ -4121,22 +4216,26 @@ diff --git a/src/render/rt64_render_target.cpp b/src/render/rt64_render_target.c
 +        const bool packed = format == RenderFormat::R8G8_UNORM;
 +        const bool depth = src->format == RenderFormat::D32_FLOAT;
 +        if ((!packed && (format != RenderFormat::R8G8B8A8_UNORM)) ||
-+            (depth && !packed) || (src->multisampling.sampleCount != 1) ||
 +            (rowWidth == 0) || (rowWidth > src->width) || (rowStart >= rowEnd) || (rowEnd > src->height))
 +        {
 +            return false;
 +        }
 +
++        // Resolve color using the normal RT64 path before encoding. Depth
++        // stays multisampled and the packed shader chooses its closest sample.
++        if (!depth) src->resolveTarget(worker, shaderLibrary);
++        RenderTexture *inputTexture = depth ? src->texture.get() : src->getResolvedTexture();
++        RenderTextureView *inputView = depth ? src->textureView.get() : src->getResolvedTextureView();
 +        setupColorFramebuffer(worker);
-+        if (src->targetCopyDescSet == nullptr) {
-+            src->targetCopyDescSet = std::make_unique<RenderTargetCopyDescriptorSet>(worker->device);
-+            src->targetCopyDescSet->setTexture(src->targetCopyDescSet->gInput, src->texture.get(),
-+                RenderTextureLayout::SHADER_READ, src->textureView.get());
++        if (src->switchNativeCopyDescSet == nullptr) {
++            src->switchNativeCopyDescSet = std::make_unique<RenderTargetCopyDescriptorSet>(worker->device);
++            src->switchNativeCopyDescSet->setTexture(src->switchNativeCopyDescSet->gInput, inputTexture,
++                RenderTextureLayout::SHADER_READ, inputView);
 +        }
 +
 +        const RenderTextureBarrier barriers[] = {
 +            RenderTextureBarrier(texture.get(), RenderTextureLayout::COLOR_WRITE),
-+            RenderTextureBarrier(src->texture.get(), RenderTextureLayout::SHADER_READ)
++            RenderTextureBarrier(inputTexture, RenderTextureLayout::SHADER_READ)
 +        };
 +        worker->commandList->barriers(RenderBarrierStage::GRAPHICS, barriers, uint32_t(std::size(barriers)));
 +        worker->commandList->setFramebuffer(textureFramebuffer.get());
@@ -4147,14 +4246,17 @@ diff --git a/src/render/rt64_render_target.cpp b/src/render/rt64_render_target.c
 +        copyCB.ditherRandomSeed = ditherRandomSeed;
 +        copyCB.usesHDR = src->usesHDR ? 1U : 0U;
 +        copyCB.depth = depth ? 1U : 0U;
++        copyCB.sampleCount = src->multisampling.sampleCount;
 +
 +        const uint32_t rowCount = rowEnd - rowStart;
 +        worker->commandList->setViewports(RenderViewport(0.0f, float(rowStart), float(rowWidth), float(rowCount)));
 +        worker->commandList->setScissors(RenderRect(0, rowStart, rowWidth, rowEnd));
-+        const ShaderRecord &copyShader = packed ? shaderLibrary->switchFramebufferPackedCopy : shaderLibrary->switchFramebufferColorCopy;
++        const ShaderRecord &copyShader = (depth && src->multisampling.sampleCount > 1)
++            ? shaderLibrary->switchFramebufferDepthMSCopy
++            : (packed ? shaderLibrary->switchFramebufferPackedCopy : shaderLibrary->switchFramebufferColorCopy);
 +        worker->commandList->setPipeline(copyShader.pipeline.get());
 +        worker->commandList->setGraphicsPipelineLayout(shaderLibrary->switchFramebufferColorCopy.pipelineLayout.get());
-+        worker->commandList->setGraphicsDescriptorSet(src->targetCopyDescSet->get(), 0);
++        worker->commandList->setGraphicsDescriptorSet(src->switchNativeCopyDescSet->get(), 0);
 +        worker->commandList->setGraphicsPushConstants(0, &copyCB);
 +        worker->commandList->setVertexBuffers(0, nullptr, 0, nullptr);
 +        worker->commandList->drawInstanced(3, 1, 0, 0);
@@ -4165,7 +4267,7 @@ diff --git a/src/render/rt64_render_target.cpp b/src/render/rt64_render_target.c
  
      void RenderTarget::resolveFromTarget(RenderWorker *worker, RenderTarget *src, const ShaderLibrary *shaderLibrary) {
          assert(!usesResolve() && "The target must not be an MSAA target to allow resolving from other targets.");
-@@ -512,4 +577,4 @@
+@@ -512,4 +587,4 @@
      RenderFormat RenderTarget::depthBufferFormat() {
          return RenderFormat::D32_FLOAT;
      }
@@ -4175,19 +4277,22 @@ diff --git a/src/render/rt64_render_target.cpp b/src/render/rt64_render_target.c
 diff --git a/src/render/rt64_render_target.h b/src/render/rt64_render_target.h
 --- a/src/render/rt64_render_target.h
 +++ b/src/render/rt64_render_target.h
-@@ -46,6 +46,11 @@
+@@ -46,6 +46,14 @@
          int32_t invMisalignX = 0;
          bool resolvedTextureDirty = false;
          bool usesHDR = false;
 +#if defined(__SWITCH__)
 +        // Only dedicated copyback targets use this two-byte native layout.
 +        bool switchNativeBytes = false;
++        // Encoded copyback can sample a resolved color image. Keep its binding
++        // separate from copies which consume the raw multisampled image.
++        std::unique_ptr<RenderTargetCopyDescriptorSet> switchNativeCopyDescSet;
 +        static bool packedCopybackEnabled();
 +#endif
  
          RenderTarget(uint32_t addressForName, Framebuffer::Type type, const RenderMultisampling &multisampling, bool usesHDR);
          ~RenderTarget();
-@@ -58,6 +63,10 @@
+@@ -58,6 +66,10 @@
          void setupResolveFramebuffer(RenderWorker *worker);
          void setupDepthFramebuffer(RenderWorker *worker);
          void copyFromTarget(RenderWorker *worker, RenderTarget *src, uint32_t x, uint32_t y, uint32_t width, uint32_t height, const ShaderLibrary *shaderLibrary);
@@ -4198,7 +4303,7 @@ diff --git a/src/render/rt64_render_target.h b/src/render/rt64_render_target.h
          void resolveFromTarget(RenderWorker *worker, RenderTarget *src, const ShaderLibrary *shaderLibrary);
          void copyFromChanges(RenderWorker *worker, const FramebufferChange &fbChange, uint32_t fbWidth, uint32_t fbHeight, uint32_t rowStart, const ShaderLibrary *shaderLibrary);
          void clearColorTarget(RenderWorker *worker);
-@@ -75,4 +84,4 @@
+@@ -75,4 +87,4 @@
          static RenderFormat colorBufferFormat(bool usesHDR);
          static RenderFormat depthBufferFormat();
      };
@@ -4289,15 +4394,18 @@ diff --git a/src/render/rt64_shader_library.cpp b/src/render/rt64_shader_library
  
  #include "shaders/FbChangesClearCS.hlsl.spirv.h"
  #include "shaders/FbChangesDrawColorPS.hlsl.spirv.h"
-@@ -39,6 +40,7 @@
+@@ -39,6 +40,10 @@
  #include "shaders/RtCopyDepthToColor2XPS.hlsl.spirv.h"
  #include "shaders/RtCopyDepthToColor4XPS.hlsl.spirv.h"
  #include "shaders/RtCopyDepthToColor8XPS.hlsl.spirv.h"
 +#include "shaders/SwitchFramebufferColorCopyPS.hlsl.spirv.h"
++#if defined(__SWITCH__)
++#include "shaders/SwitchFramebufferDepthMSCopyPS.hlsl.spirv.h"
++#endif
  #include "shaders/TextureCopyPS.hlsl.spirv.h"
  #include "shaders/TextureDecodeCS.hlsl.spirv.h"
  #include "shaders/TextureResolveSamples2XPS.hlsl.spirv.h"
-@@ -85,6 +87,7 @@
+@@ -85,6 +90,7 @@
  #   include "shaders/RtCopyDepthToColor2XPS.hlsl.dxil.h"
  #   include "shaders/RtCopyDepthToColor4XPS.hlsl.dxil.h"
  #   include "shaders/RtCopyDepthToColor8XPS.hlsl.dxil.h"
@@ -4305,7 +4413,7 @@ diff --git a/src/render/rt64_shader_library.cpp b/src/render/rt64_shader_library
  #   include "shaders/TextureCopyPS.hlsl.dxil.h"
  #   include "shaders/TextureDecodeCS.hlsl.dxil.h"
  #   include "shaders/TextureResolveSamples2XPS.hlsl.dxil.h"
-@@ -130,6 +133,7 @@
+@@ -130,6 +136,7 @@
  #   include "shaders/RtCopyDepthToColor2XPS.hlsl.metal.h"
  #   include "shaders/RtCopyDepthToColor4XPS.hlsl.metal.h"
  #   include "shaders/RtCopyDepthToColor8XPS.hlsl.metal.h"
@@ -4313,7 +4421,7 @@ diff --git a/src/render/rt64_shader_library.cpp b/src/render/rt64_shader_library
  #   include "shaders/TextureCopyPS.hlsl.metal.h"
  #   include "shaders/TextureDecodeCS.hlsl.metal.h"
  #   include "shaders/TextureResolveSamples2XPS.hlsl.metal.h"
-@@ -790,6 +794,32 @@
+@@ -790,6 +797,40 @@
              RenderTargetCopyDescriptorSet descriptorSet;
              layoutBuilder.begin();
              layoutBuilder.addDescriptorSet(descriptorSet);
@@ -4339,6 +4447,14 @@ diff --git a/src/render/rt64_shader_library.cpp b/src/render/rt64_shader_library
 +                switchColorPipelineDesc.renderTargetFormat[0] = RenderFormat::R8G8_UNORM;
 +                switchFramebufferPackedCopy.pipeline = device->createGraphicsPipeline(switchColorPipelineDesc);
 +            }
++            if (multisampling.sampleCount > 1) {
++                switchColorPipelineDesc.renderTargetFormat[0] = RenderTarget::packedCopybackEnabled()
++                    ? RenderFormat::R8G8_UNORM : RenderFormat::R8G8B8A8_UNORM;
++                std::unique_ptr<RenderShader> depthMSCopyShader = device->createShader(
++                    SwitchFramebufferDepthMSCopyPSBlobSPIRV, std::size(SwitchFramebufferDepthMSCopyPSBlobSPIRV), "PSMain", shaderFormat);
++                switchColorPipelineDesc.pixelShader = depthMSCopyShader.get();
++                switchFramebufferDepthMSCopy.pipeline = device->createGraphicsPipeline(switchColorPipelineDesc);
++            }
 +#endif
 +
 +            layoutBuilder.begin();
@@ -4349,12 +4465,13 @@ diff --git a/src/render/rt64_shader_library.cpp b/src/render/rt64_shader_library
 diff --git a/src/render/rt64_shader_library.h b/src/render/rt64_shader_library.h
 --- a/src/render/rt64_shader_library.h
 +++ b/src/render/rt64_shader_library.h
-@@ -51,6 +51,8 @@
+@@ -51,6 +51,9 @@
          ShaderRecord rtCopyDepthToColor;
          ShaderRecord rtCopyColorToDepthMS;
          ShaderRecord rtCopyDepthToColorMS;
 +        ShaderRecord switchFramebufferColorCopy;
 +        ShaderRecord switchFramebufferPackedCopy;
++        ShaderRecord switchFramebufferDepthMSCopy;
          ShaderRecord textureDecode;
          ShaderRecord textureCopy;
          ShaderRecord textureResolve;
@@ -4950,7 +5067,7 @@ diff --git a/src/shaders/SwitchFramebufferColorCopyPS.hlsl b/src/shaders/SwitchF
 new file mode 100644
 --- /dev/null
 +++ b/src/shaders/SwitchFramebufferColorCopyPS.hlsl
-@@ -0,0 +1,30 @@
+@@ -0,0 +1,43 @@
 +//
 +// RT64
 +//
@@ -4961,7 +5078,11 @@ new file mode 100644
 +#include "shared/rt64_switch_framebuffer_copy.h"
 +
 +[[vk::push_constant]] ConstantBuffer<SwitchFramebufferColorCopyCB> gConstants : register(b0);
++#ifdef SWITCH_MULTISAMPLE_DEPTH
++Texture2DMS<float4> gInput : register(t1);
++#else
 +Texture2D<float4> gInput : register(t1);
++#endif
 +
 +float4 PSMain(in float4 pos : SV_Position, in float2 uv : TEXCOORD0) : SV_TARGET {
 +    const uint2 coord = uint2(pos.xy);
@@ -4972,7 +5093,16 @@ new file mode 100644
 +        ? initRand(gConstants.ditherRandomSeed, dstIndex, 16)
 +        : 0;
 +    const uint dither = DitherPatternValue(gConstants.ditherPattern, coord, randomSeed);
++#ifdef SWITCH_MULTISAMPLE_DEPTH
++    // Match RtCopyDepthToColorPS: use the closest covered depth sample.
++    float inputDepth = 1.0f;
++    for (uint sample = 0; sample < gConstants.sampleCount; sample++) {
++        inputDepth = min(inputDepth, gInput.Load(coord, sample).r);
++    }
++    const float4 input = float4(inputDepth, 0.0f, 0.0f, 1.0f);
++#else
 +    const float4 input = gInput.Load(uint3(coord, 0));
++#endif
 +    const uint nativeValue = (gConstants.depth != 0)
 +        ? FloatToDepth16(input.r, 0.0f)
 +        : Float4ToRGBA16(input, dither, gConstants.usesHDR != 0);
@@ -4985,7 +5115,7 @@ diff --git a/src/shared/rt64_switch_framebuffer_copy.h b/src/shared/rt64_switch_
 new file mode 100644
 --- /dev/null
 +++ b/src/shared/rt64_switch_framebuffer_copy.h
-@@ -0,0 +1,21 @@
+@@ -0,0 +1,22 @@
 +//
 +// RT64
 +//
@@ -5003,6 +5133,7 @@ new file mode 100644
 +        uint ditherRandomSeed;
 +        uint usesHDR;
 +        uint depth;
++        uint sampleCount;
 +    };
 +#ifdef HLSL_CPU
 +};

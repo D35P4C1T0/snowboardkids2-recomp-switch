@@ -37,8 +37,12 @@ struct float4 {
     float r,g,b,a; float2 xy;
     float4(float x,float y,float z,float w):r(x),g(y),b(z),a(w),xy{x,y}{}
 };
-struct { uint rowWidth=320,ditherPattern=3,ditherRandomSeed=0x12345,usesHDR=0,depth=0; } gConstants;
-struct { float4 value{0,0,0,0}; float4 Load(uint3) { return value; } } gInput;
+struct { uint rowWidth=320,ditherPattern=3,ditherRandomSeed=0x12345,usesHDR=0,depth=0,sampleCount=1; } gConstants;
+struct {
+    float4 value{0,0,0,0}; float samples[8]{}; bool multisampled=false;
+    float4 Load(uint3) { return value; }
+    float4 Load(uint2,uint sample) { return multisampled?float4(samples[sample],0,0,1):value; }
+} gInput;
 '''
 test = r'''
 uint byte(float x) { return uint(hlslRound(clamp(x,0.0f,1.0f)*255.0f)); }
@@ -64,6 +68,7 @@ int main() {
         gInput.value=float4(z,0,0,1);
         assert(result(PSMain(float4(7.5f,21.5f,0,1),float2{0,0}))==reference);
     }
+#ifndef SWITCH_MULTISAMPLE_DEPTH
     gConstants.depth=0;
     for(uint hdr:{0U,1U}) for(uint pattern=0;pattern<4;pattern++)
     for(uint y:{0U,7U,21U}) for(uint x=0;x<320;x++) {
@@ -75,12 +80,24 @@ int main() {
         uint reference=Float4ToRGBA16(gInput.value,DitherPatternValue(pattern,coord,seed),hdr!=0);
         assert(result(PSMain(float4(float(x)+0.5f,float(y)+0.5f,0,1),float2{0,0}))==reference);
     }
+#else
+    gInput.multisampled=true;
+    for(uint samples:{2U,4U,8U}) for(uint closest=0;closest<samples;closest++)
+    for(uint fixed=0;fixed<262144;fixed+=17) {
+        gConstants.sampleCount=samples;
+        float expectedDepth=float(fixed)/262143.0f;
+        for(uint i=0;i<samples;i++) gInput.samples[i]=std::min(expectedDepth+0.1f*float(i+1),1.0f);
+        gInput.samples[closest]=expectedDepth;
+        assert(result(PSMain(float4(7.5f,21.5f,0,1),float2{0,0}))==FloatToDepth16(expectedDepth,0.0f));
+    }
+#endif
 }
 '''
 with tempfile.TemporaryDirectory(prefix='sk2-packed-shader-') as temp:
     src=Path(temp)/'test.cpp'; exe=Path(temp)/'test'
     src.write_text(stub+functions+test)
-    subprocess.run([os.environ.get('CXX','c++'),'-std=c++17','-O2','-Wall','-Wextra','-Werror',
-                    '-Wno-unused-parameter',str(src),'-o',str(exe)],check=True)
-    subprocess.run([str(exe)],check=True)
-print('PASS: production pixel shader, 65536 native words, 262144 depth values, color/HDR dithering and row offsets')
+    for defines in ([], ['-DSWITCH_MULTISAMPLE_DEPTH']):
+        subprocess.run([os.environ.get('CXX','c++'),'-std=c++17','-O2','-Wall','-Wextra','-Werror',
+                        '-Wno-unused-parameter',*defines,str(src),'-o',str(exe)],check=True)
+        subprocess.run([str(exe)],check=True)
+print('PASS: production pixel shader, 65536 native words, 262144 depth values, color/HDR dithering and row offsets, nearest depth across 2/4/8 samples')

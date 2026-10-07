@@ -606,3 +606,19 @@ playable-performance target.
    target.
 
 These are engineering gates, not reasons to fork the game logic. The recompiled ARM64 code, SDL audio/input model, assets, configuration system, and most UI/game features remain reusable.
+
+
+## Graphics menu overrides removed (2026-10-06)
+
+Resolution, downsampling and MSAA selections now reach the game renderer, both
+at startup and when applied during play. This supersedes the fixed native/no-AA
+configuration and `force-480p` marker described in earlier bring-up notes above.
+The output remains 1280x720. See [settings and validation](SWITCH_GRAPHICS_SETTINGS.md).
+
+Original 2x was confirmed on hardware. The first settings candidate failed when
+2X MSAA was applied; its log stopped during shader compilation before an MSAA
+draw. The subsequent candidate holds both rendering queues idle through shader
+and target replacement, then publishes the configuration after pipelines are
+ready. Offline checks and both NRO builds pass; MSAA hardware confirmation is
+still pending. An optional `--msaa-probe` core run tests simple 2X/4X draws and
+resolves independently of the game's shader rebuild.

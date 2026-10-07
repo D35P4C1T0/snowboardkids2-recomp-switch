@@ -77,6 +77,7 @@ def parse_log(path: Path) -> dict[str, object]:
     sampling_status: str | None = None
     sampling_results: list[str] = []
     modes: list[str] = []
+    graphics_settings: list[tuple[int, str]] = []
     pipeline_cache_state: str | None = None
     pipeline_cache_saved: str | None = None
     swapchains: list[str] = []
@@ -100,6 +101,8 @@ def parse_log(path: Path) -> dict[str, object]:
         duration_ms = max(duration_ms, timestamp_ms)
         message = timestamp_match.group("message") if timestamp_match else raw_line.strip()
         message = message.removeprefix("[nvk] ")
+        if message.startswith(("renderer settings:", "renderer target:", "renderer MSAA:")):
+            graphics_settings.append((timestamp_ms, message))
         if message.startswith("profile: stage="):
             values = dict(re.findall(r"(\w+)=([\w.-]+)", message))
             required = {'stage', 'count', 'mean_us', 'p50_us', 'p95_us', 'p99_us', 'max_us', 'late', 'id'}
@@ -234,6 +237,7 @@ def parse_log(path: Path) -> dict[str, object]:
         "sampling_status": sampling_status if sampling_status else ("incomplete" if sampling_started else None),
         "sampling_results": sampling_results,
         "modes": list(dict.fromkeys(modes)),
+        "graphics_settings": graphics_settings,
         "pipeline_cache_state": pipeline_cache_state,
         "pipeline_cache_saved": pipeline_cache_saved,
         "swapchains": list(dict.fromkeys(swapchains)),
@@ -305,6 +309,8 @@ def print_summary(path: Path, data: dict[str, object]) -> None:
               f"max={max(s['max_us'] for s in timing)/1000:.2f} ms; "
               f"production gap max={max(s['gap_us'] for s in timing)/1000:.2f} ms; "
               f"corrected chunks={sum(s['corrections'] for s in timing)}")
+    for timestamp_ms, settings in data['graphics_settings']:
+        print(f"Graphics t={timestamp_ms/1000:.3f}s: {settings}")
     for stage in sorted({sample['stage'] for sample in data['profiles']}):
         windows = [sample for sample in data['profiles'] if sample['stage'] == stage]
         count = sum(s['count'] for s in windows)

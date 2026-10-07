@@ -67,6 +67,17 @@ class LogTests(unittest.TestCase):
 """)
         self.assertNotIn('Texture staging avoided:', output)
 
+    def test_graphics_requests_and_actual_targets_are_retained(self):
+        data, output = self.parse("""[ 1000 ms] renderer settings: resolution=2 scale=2.00 downsample=1 msaa=4 output=1280x720
+[ 1001 ms] renderer MSAA: sample_positions=1 max_samples=8
+[ 4000 ms] renderer target: native=320x240 render=640x480 scale=2.000x2.000 downsample=1 samples=4
+""")
+        self.assertEqual(len(data['graphics_settings']), 3)
+        self.assertIn('Graphics t=4.000s: renderer target:', output)
+        self.assertIn('render=640x480', output)
+        analyzer.select_metrics(data, 3, 5)
+        self.assertEqual(len(data['graphics_settings']), 3)
+
     def test_crash_after_pass_is_incomplete(self):
         data, output = self.parse('''transfer probe: testing image readback
 transfer probe: buffer 4x2 PASS mismatches=0

@@ -437,6 +437,33 @@ diff --git a/recompui/src/config/ui_config_page_controls.cpp b/recompui/src/conf
      multiplayer_enabled = max_num_players > 1;
      multiplayer_view_mappings = !multiplayer_enabled;
  
+diff --git a/recompui/src/config/ui_config_tab_graphics.cpp b/recompui/src/config/ui_config_tab_graphics.cpp
+--- a/recompui/src/config/ui_config_tab_graphics.cpp
++++ b/recompui/src/config/ui_config_tab_graphics.cpp
+@@ -237,7 +237,11 @@
+                 "Resolution",
+                 "Sets the output resolution of the game. <recomp-color primary>Original</recomp-color> matches the game's original 240p resolution. <recomp-color primary>Original 2x</recomp-color> will render at 480p. <recomp-color primary>Auto</recomp-color> will scale based on the game window's resolution.",
+                 resolution_options,
++#if defined(__SWITCH__)
++                ultramodern::renderer::Resolution::Original
++#else
+                 ultramodern::renderer::Resolution::Auto
++#endif
+             );
+             {
+                 config.add_option_change_callback(
+@@ -330,7 +334,11 @@
+                 "<br />"
+                 "<recomp-color primary>Note: This option won't be available if your GPU does not support programmable MSAA sample positions, as it is currently required to avoid rendering glitches.</recomp-color>",
+                 antialiasing_options,
++#if defined(__SWITCH__)
++                ultramodern::renderer::Antialiasing::None
++#else
+                 ultramodern::renderer::Antialiasing::MSAA2X
++#endif
+             );
+ 
+             config.add_enum_option(
 diff --git a/recompui/src/core/ui_context.cpp b/recompui/src/core/ui_context.cpp
 --- a/recompui/src/core/ui_context.cpp
 +++ b/recompui/src/core/ui_context.cpp
@@ -525,7 +552,14 @@ diff --git a/recompui/src/elements/ui_modal.cpp b/recompui/src/elements/ui_modal
 diff --git a/recompui/src/renderer/rt64_render_context.cpp b/recompui/src/renderer/rt64_render_context.cpp
 --- a/recompui/src/renderer/rt64_render_context.cpp
 +++ b/recompui/src/renderer/rt64_render_context.cpp
-@@ -14,6 +14,10 @@
+@@ -1,5 +1,6 @@
+ #include <memory>
+ #include <cstring>
++#include <cstdio>
+ #include <variant>
+ #include <algorithm>
+ 
+@@ -14,6 +15,10 @@
  #include "recompui/recompui.h"
  #include "recompui/config.h"
  #include "concurrentqueue.h"
@@ -536,39 +570,27 @@ diff --git a/recompui/src/renderer/rt64_render_context.cpp b/recompui/src/render
  
  using namespace recompui;
  
-@@ -177,6 +181,31 @@
+@@ -177,6 +182,19 @@
      application->userConfig.refreshRateTarget = config.rr_manual_value;
      application->userConfig.internalColorFormat = to_rt64(config.hpfb_option);
      application->userConfig.displayBuffering = RT64::UserConfiguration::DisplayBuffering::Triple;
 +
 +#if defined(__SWITCH__)
-+    // Native resolution is the Switch baseline. The output remains 1280x720;
-+    // RT64's VI pass performs the final upscale. A 480p internal target causes
-+    // long GM20B/NVK workload waits and eventually loses the device.
-+    const char *nativeDiagnosticValue = SDL_getenv("SK2_SWITCH_DIAGNOSTIC_NATIVE_RESOLUTION");
-+    const bool nativeDiagnostic = nativeDiagnosticValue != nullptr &&
-+        std::strcmp(nativeDiagnosticValue, "1") == 0;
-+    if (nativeDiagnostic) {
-+        application->userConfig.resolution = RT64::UserConfiguration::Resolution::Manual;
-+        application->userConfig.resolutionMultiplier = 1.0;
-+        application->userConfig.downsampleMultiplier = 1;
-+    }
-+    else {
-+        application->userConfig.resolution = RT64::UserConfiguration::Resolution::Manual;
-+        application->userConfig.resolutionMultiplier = 2.0;
-+        application->userConfig.downsampleMultiplier = 1;
-+    }
-+    application->userConfig.antialiasing = RT64::UserConfiguration::Antialiasing::None;
++    // Game resolution, downsampling and MSAA come from the graphics menu.
++    // Keep the proven scanout/color format independently of those selections.
 +    application->userConfig.internalColorFormat = RT64::UserConfiguration::InternalColorFormat::Standard;
 +    application->userConfig.displayBuffering = RT64::UserConfiguration::DisplayBuffering::Double;
-+    switch_log_checkpoint(nativeDiagnostic
-+        ? "renderer: Switch native internal resolution, guarded first submit, 720p output"
-+        : "renderer: Switch 480p recovery mode, RGBA8, no MSAA, double-buffered", false);
++    char settings[256]{};
++    std::snprintf(settings, sizeof(settings),
++        "renderer settings: resolution=%u scale=%.2f downsample=%u msaa=%u output=1280x720",
++        static_cast<unsigned>(application->userConfig.resolution), application->userConfig.resolutionMultiplier,
++        application->userConfig.downsampleMultiplier, application->userConfig.msaaSampleCount());
++    switch_log_checkpoint(settings, false);
 +#endif
  }
  
  ultramodern::renderer::SetupResult map_setup_result(RT64::Application::SetupResult rt64_result) {
-@@ -218,6 +247,9 @@
+@@ -218,6 +236,9 @@
  }
  
  renderer::RT64Context::RT64Context(uint8_t* rdram, ultramodern::renderer::WindowHandle window_handle, ultramodern::renderer::PresentationMode presentation_mode, bool debug) {
@@ -578,7 +600,7 @@ diff --git a/recompui/src/renderer/rt64_render_context.cpp b/recompui/src/render
      static unsigned char dummy_rom_header[0x40];
      recompui::set_render_hooks();
  
-@@ -227,6 +259,8 @@
+@@ -227,6 +248,8 @@
      appCore.window = window_handle.window;
  #elif defined(__linux__) || defined(__ANDROID__)
      appCore.window = window_handle;
@@ -587,7 +609,7 @@ diff --git a/recompui/src/renderer/rt64_render_context.cpp b/recompui/src/render
  #elif defined(__APPLE__)
      appCore.window.window = window_handle.window;
      appCore.window.view = window_handle.view;
-@@ -272,6 +306,9 @@
+@@ -272,6 +295,9 @@
  
      // Create the RT64 application.
      app = std::make_unique<RT64::Application>(appCore, appConfig);
@@ -597,7 +619,7 @@ diff --git a/recompui/src/renderer/rt64_render_context.cpp b/recompui/src/render
  
      // Set initial user config settings based on the current settings.
      auto& cur_config = ultramodern::renderer::get_graphics_config();
-@@ -305,7 +342,13 @@
+@@ -305,7 +331,13 @@
  #ifdef _WIN32
      thread_id = window_handle.thread_id;
  #endif
@@ -611,7 +633,22 @@ diff --git a/recompui/src/renderer/rt64_render_context.cpp b/recompui/src/render
      // Get the API that RT64 chose.
      chosen_api = map_graphics_api(app->chosenGraphicsAPI);
      if (setup_result != ultramodern::renderer::SetupResult::Success) {
-@@ -345,19 +388,55 @@
+@@ -330,6 +362,14 @@
+         sample_positions_supported = false;
+     }
+ 
++#if defined(__SWITCH__)
++    char capability_message[128]{};
++    std::snprintf(capability_message, sizeof(capability_message),
++        "renderer MSAA: sample_positions=%u max_samples=%u",
++        unsigned(sample_positions_supported), RT64::UserConfiguration::msaaSampleCount(device_max_msaa));
++    switch_log_checkpoint(capability_message, false);
++#endif
++
+     recompui::config::graphics::update_msaa_supported(sample_positions_supported);
+ 
+     high_precision_fb_enabled = app->shaderLibrary->usesHDR;
+@@ -345,19 +385,55 @@
  }
  
  void renderer::RT64Context::send_dummy_workload(uint32_t fb_address) {
@@ -667,6 +704,29 @@ diff --git a/recompui/src/renderer/rt64_render_context.cpp b/recompui/src/render
  }
  
  void renderer::RT64Context::shutdown() {
+@@ -382,11 +458,21 @@
+     bool aspect_ratio_changed = new_config.ar_option != old_config.ar_option;
+     bool downsampling_changed = new_config.ds_option != old_config.ds_option;
+     bool msaa_changed = new_config.msaa_option != old_config.msaa_option;
++#if defined(__SWITCH__)
++    if (msaa_changed) {
++        // Publish the new config from inside the idle-queue transaction, after
++        // sample-count-dependent shaders and targets have been replaced.
++        app->updateMultisampling();
++    }
++    else {
++        app->updateUserConfig(resolution_changed || aspect_ratio_changed || downsampling_changed);
++    }
++#else
+     app->updateUserConfig(resolution_changed || aspect_ratio_changed || downsampling_changed || msaa_changed);
+-
+     if (msaa_changed) {
+         app->updateMultisampling();
+     }
++#endif
+     return true;
+ }
+ 
 diff --git a/recompui/src/renderer/ui_renderer.cpp b/recompui/src/renderer/ui_renderer.cpp
 --- a/recompui/src/renderer/ui_renderer.cpp
 +++ b/recompui/src/renderer/ui_renderer.cpp

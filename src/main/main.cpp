@@ -919,17 +919,11 @@ int main(int argc, char** argv) {
         ? "startup: NVK CPU-copy recovery mode selected"
         : "startup: NVK zero-copy presentation selected");
 
-    // Render the N64 scene at its native resolution and let the VI pass scale
-    // it to the fixed 1280x720 swapchain. The 480p internal target overloads
-    // GM20B/NVK once gameplay begins and eventually loses the device. Keep a
-    // recovery marker for comparing driver behavior without rebuilding.
-    const bool force_480p = std::filesystem::exists(
-        switch_root / "config" / "force-480p", switch_path_error);
-    SDL_setenv("SK2_SWITCH_DIAGNOSTIC_NATIVE_RESOLUTION",
-        force_480p ? "0" : "1", 1);
-    switch_log_checkpoint(force_480p
-        ? "startup: 480p internal-resolution recovery mode selected"
-        : "startup: native internal resolution selected; 720p output retained");
+    // Retain the guarded first native workload while allowing graphics-menu
+    // selections to control rendering resolution and multisampling.
+    SDL_setenv("SK2_SWITCH_DIAGNOSTIC_NATIVE_RESOLUTION", "1", 1);
+    switch_log_checkpoint("startup: resolution and MSAA controlled by graphics settings; 720p output retained");
+
 #endif
     recomp::Version project_version{};
     if (!recomp::Version::from_string(version_string, project_version)) {

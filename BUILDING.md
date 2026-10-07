@@ -150,10 +150,16 @@ host watcher started by `switch-run.sh` downloads it automatically to
 reserved only while this debug capture server is active; normal SD launches
 keep the configured game binding.
 
-The full Switch build always presents at 1280x720. Game render targets default
-to native N64 resolution for GM20B/NVK stability and are scaled by RT64's VI
-pass. To compare the older 480p internal path, create the empty file
-`sdmc:/switch/snowboardkids2-recompiled/config/force-480p` before launch.
+The full Switch build presents at 1280x720. Graphics settings control the game
+render targets: Original uses native resolution, Original 2x doubles it, and
+Auto scales for the 720p screen. Downsampling and 2X/4X MSAA selections now reach
+the game renderer. Original 2x is confirmed on hardware; the corrected MSAA
+candidate still needs a hardware retest after a reported crash. Apply changes
+in the graphics menu; MSAA changes recreate
+rendering pipelines and can pause while shaders compile. Fresh configurations
+default to Original with MSAA None; existing saved selections are honored.
+The former `config/force-480p` marker is superseded by Original 2x in the menu.
+See [graphics-setting validation](docs/SWITCH_GRAPHICS_SETTINGS.md).
 
 After a run, generate a compact performance and failure summary with:
 
