@@ -739,6 +739,7 @@ if (CMAKE_SYSTEM_NAME STREQUAL "NintendoSwitch")
     nx_create_nro(
         SnowboardKids2Recompiled
         OUTPUT "${CMAKE_BINARY_DIR}/snowboardkids2-recompiled.nro"
+        ICON "${CMAKE_SOURCE_DIR}/icons/switch.jpg"
         NACP "${SK2_SWITCH_NACP}"
     )
 endif()

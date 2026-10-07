@@ -472,8 +472,10 @@ A ready-to-copy directory containing the NRO, required UI assets, and controller
 database is created at
 `build-switch-full/sdcard/switch/snowboardkids2-recompiled/`. Add the user-owned
 ROM to that directory as `snowboardkids2.z64` before copying it to the SD card.
-The same payload is also emitted as `build-switch-full/snowboardkids2-switch-sdcard.zip`
+The same payload is also emitted as `build-switch-full/snowboardkids2-switch.zip`
 for extraction directly at the SD-card root.
+The standard package enables the accepted packed-copyback and fused-transfer
+optimizations.
 
 ## Live hardware logging
 

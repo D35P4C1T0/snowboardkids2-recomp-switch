@@ -6,17 +6,15 @@ REPO_ROOT=$(CDPATH= cd -- "${SCRIPT_DIR}/.." && pwd)
 BUILD_DIR="${REPO_ROOT}/build-switch-full"
 NRO="${BUILD_DIR}/snowboardkids2-recompiled.nro"
 case "${1:-}" in
-    "")
+    ""|--fused-transfers)
         SD_ROOT="${BUILD_DIR}/sdcard"
-        ARCHIVE="${BUILD_DIR}/snowboardkids2-switch-sdcard.zip"
+        ARCHIVE="${BUILD_DIR}/snowboardkids2-switch.zip"
+        FUSED_TRANSFERS=1
         ;;
     --packed-copyback)
         SD_ROOT="${BUILD_DIR}/sdcard-packed"
         ARCHIVE="${BUILD_DIR}/snowboardkids2-switch-packed-copyback.zip"
-        ;;
-    --fused-transfers)
-        SD_ROOT="${BUILD_DIR}/sdcard-fused"
-        ARCHIVE="${BUILD_DIR}/snowboardkids2-switch-fused-transfers.zip"
+        FUSED_TRANSFERS=0
         ;;
     *)
         echo "Usage: $0 [--packed-copyback|--fused-transfers]" >&2
@@ -42,12 +40,12 @@ cmake -E rm -f \
     "${APP_DIR}/assets/.DS_Store" \
     "${APP_DIR}/assets/icons/.DS_Store"
 
-if [ "${1:-}" = --packed-copyback ] || [ "${1:-}" = --fused-transfers ]; then
-    cmake -E make_directory "${APP_DIR}/config"
-    : > "${APP_DIR}/config/packed-framebuffer-copyback"
-fi
-if [ "${1:-}" = --fused-transfers ]; then
+cmake -E make_directory "${APP_DIR}/config"
+: > "${APP_DIR}/config/packed-framebuffer-copyback"
+if [ "${FUSED_TRANSFERS}" = 1 ]; then
     : > "${APP_DIR}/config/fused-framebuffer-transfers"
+else
+    cmake -E rm -f "${APP_DIR}/config/fused-framebuffer-transfers"
 fi
 
 cd "${SD_ROOT}"

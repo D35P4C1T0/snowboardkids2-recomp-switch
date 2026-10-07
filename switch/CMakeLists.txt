@@ -20,5 +20,6 @@ nx_generate_nacp(
 nx_create_nro(
     SnowboardKids2SwitchBootstrap
     OUTPUT "${CMAKE_BINARY_DIR}/snowboardkids2-recompiled.nro"
+    ICON "${CMAKE_SOURCE_DIR}/icons/switch.jpg"
     NACP "${SK2_SWITCH_NACP}"
 )

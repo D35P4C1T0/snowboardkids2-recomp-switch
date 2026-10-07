@@ -165,7 +165,7 @@ the Vulkan driver can compile and execute the game's MSAA pipelines.
 
 The tested native-resolution build is preserved at
 `build-switch-baseline/stable-0cea74f.nro`. The graphics-settings candidate is
-packaged in `build-switch-full/snowboardkids2-switch-fused-transfers.zip` with
+packaged in `build-switch-full/snowboardkids2-switch.zip` with
 packed/fused transfers enabled and no ROM included.
 
 ## Hardware log

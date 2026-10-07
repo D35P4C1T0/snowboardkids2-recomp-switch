@@ -1,8 +1,12 @@
-# Snowboard Kids 2: Recompiled
+# Snowboard Kids 2: Recompiled for Nintendo Switch
 
 [Snowboard Kids 2: Recompiled](https://github.com/cdlewis/snowboardkids2-recomp) is a project that uses [N64: Recompiled](https://github.com/Mr-Wiseguy/N64Recomp) to **statically recompile** Snowboard Kids 2 into a native port with many new features, enhancements, and extensive mod support. This project uses [RT64](https://github.com/rt64/rt64) as the rendering engine to provide some of these enhancements.
 
-This fork adds a native Nintendo Switch homebrew port. See the [Switch status](#nintendo-switch-homebrew) below for the tested behavior, build instructions, and remaining work.
+This fork brings Snowboard Kids 2: Recompiled to Nintendo Switch homebrew, with graphics settings, cached shaders, a loading progress bar, and optional CPU/GPU/memory controls. Follow the [Switch setup guide](#nintendo-switch-homebrew) to install and play. The port is experimental and has been tested on real hardware; performance varies by scene and settings.
+
+### [Switch downloads](https://github.com/D35P4C1T0/snowboardkids2-recomp-switch/releases)
+
+Use a Switch SD-card ZIP from this fork. The upstream desktop downloads below are for PCs.
 
 ### [Download the upstream desktop release here](https://github.com/cdlewis/snowboardkids2-recomp/releases/latest).
 
@@ -29,21 +33,75 @@ You're also welcome to join the [Snowboard Kids Community Discord](https://disco
 - [Building](#building)
 - [Articles](#articles)
 - [Libraries Used and Projects Referenced](#libraries-used-and-projects-referenced)
+- [Disclosure](#disclosure)
 - [Credits](#credits)
 
 ## Nintendo Switch Homebrew
 
-Status updated **2026-10-03** on `codex/switch-performance`, through implementation commit `41ee648`.
+### What you need
 
-The full game builds as a native NRO and has been tested on real hardware through Homebrew Menu title takeover. The GPU cache fix corrected the reported texture corruption, and the native audio backend fix corrected choppy sound. The latest race test retained correct audio and textures, with the tester reporting about **45 FPS**. Sustained 60 FPS remains a target; the port is still under development.
+- A Nintendo Switch set up to run homebrew through Atmosphere and hbmenu, with access to **title takeover**.
+- Your own dump of the supported **North American (NTSC-U) Snowboard Kids 2 ROM**, in big-endian `.z64` format. Use the hashes below to check the exact tested version.
 
-Recent changes include fenced texture-upload batching, cached CPU framebuffer readback, vector packing of encoded pixels, an on-screen presentation FPS counter, and detailed frame/audio timing. CPU framebuffer conversion averaged **1.17 ms per copy** before the packing change and **0.94 ms** in the later tested race interval. Routes were not replayed, so these observations do not establish a controlled FPS speedup.
+**The copyrighted ROM is not included in this repository or its release packages and must not be uploaded to GitHub. Supply your own copy; renaming a different ROM does not make it compatible.**
 
-The default uses synchronous GPU submissions and cached readback. Bounded asynchronous submissions and combined draw/color copyback are experimental options. A 30-minute uninterrupted stress run, broader course/item coverage, handheld/docked testing, and save/controller/suspend validation remain outstanding.
+### Install and launch
 
-Use [BUILDING.md](BUILDING.md#nintendo-switch-homebrew) to build and package the Switch version. The build produces `build-switch-full/snowboardkids2-switch-sdcard.zip`; extract it at the SD-card root and add your own supported ROM as `switch/snowboardkids2-recompiled/snowboardkids2.z64`. Launch through title takeover. The upstream desktop release linked above is a separate distribution.
+1. Download **`snowboardkids2-switch.zip`** and extract it **at the root of your SD card**, merging its `switch/` folder with the existing one. Do not extract the whole ZIP inside `switch/`, which would create `switch/switch/`.
+2. Copy your ROM into `switch/snowboardkids2-recompiled/` and name it **`snowboardkids2.z64`**. Keep the included `assets/`, controller database, and any `config/` files alongside the NRO.
+3. Insert the SD card and boot into Atmosphere. **Hold R while launching an installed game**, keeping R held until hbmenu opens. Album/applet mode is unsupported because it does not provide enough application memory.
+4. In hbmenu, launch **Snowboard Kids 2: Recompiled**. If the launcher shows **Load ROM**, select it to import the file from the fixed path above, then choose **Start Game**.
+5. Let shader loading finish. The centered red bar with a white border shows progress. The first launch or first use of an uncached anti-aliasing mode can take tens of seconds; later launches reuse the SD shader cache.
 
-See the [tested results and diagnostic options](docs/SWITCH_PERFORMANCE_RESULTS.md), [performance roadmap](docs/SWITCH_PERFORMANCE_PLAN.md), and [port status and architecture](docs/SWITCH_PORT.md) for evidence and remaining release gates.
+Your SD card should look like this:
+
+```text
+SD card/
+└── switch/
+    └── snowboardkids2-recompiled/
+        ├── snowboardkids2-recompiled.nro
+        ├── snowboardkids2.z64          ← your ROM, added separately
+        ├── recompcontrollerdb.txt
+        ├── assets/
+        └── config/                    ← included by some packages
+```
+
+### Supported ROM hashes
+
+These hashes were calculated from the **16,777,216-byte (16 MiB) `.z64` ROM used for this port's hardware tests**. They apply to the file's contents in big-endian format; byte-swapped dumps have different hashes.
+
+| Hash | Expected value |
+| --- | --- |
+| SHA-1 | `5ce896fd64276948bc2b8cccd8cd51c25a9f32aa` |
+| SHA-256 | `8af426d05af66033ab6ba8e643aaf3ea4eee329a642440600821f6faf6618ebd` |
+| MD5 | `08e1152e9d9742e9bbf6c224b6958f2d` |
+
+To check SHA-256 on your computer:
+
+```sh
+# macOS
+shasum -a 256 snowboardkids2.z64
+
+# Linux
+sha256sum snowboardkids2.z64
+```
+
+```powershell
+# Windows PowerShell
+Get-FileHash .\snowboardkids2.z64 -Algorithm SHA256
+```
+
+### Settings and updates
+
+Press **Select/minus (−)** during play to open the white/blue settings menu. Apply changes to save them.
+
+- **Performance:** choose System or Custom CPU/GPU/memory clocks. System is the default; Custom offers supported rates and caps GPU requests for the current power mode. Enabled sys-clk takes priority, and this app does not change sys-clk's settings.
+
+To target a stable **60 FPS**, enable modest overclocking through **Performance → Custom**, or through sys-clk if you use it to manage clocks.
+
+Saves live in `switch/snowboardkids2-recompiled/saves/`; settings and shader cache also remain in the application folder. To update, merge a new package into the same location, preserving your ROM, saves, settings and cache. Keep the NRO and packaged assets from the same release together.
+
+For troubleshooting, check the ROM filename/hash, the complete folder layout, and title takeover first. See [graphics settings](docs/SWITCH_GRAPHICS_SETTINGS.md), [Performance settings](docs/SWITCH_PERFORMANCE_SETTINGS.md), [tested results and diagnostics](docs/SWITCH_PERFORMANCE_RESULTS.md), and [port architecture](docs/SWITCH_PORT.md) for details. To build your own package, follow [BUILDING.md](BUILDING.md#nintendo-switch-homebrew).
 
 ## System Requirements
 
@@ -104,9 +162,11 @@ Customize your experience by setting your stick deadzone to your liking, as well
 
 This project has been optimized to have as little input lag as possible, making the game feel more responsive than ever!
 
-#### Instant Load Times
+#### Desktop Load Times
 
 Saving and loading files, going from place to place, and pausing all happen in the blink of an eye thanks to the game running natively on modern hardware.
+
+On Switch, startup and MSAA changes can require shader compilation; see the [Switch setup guide](#nintendo-switch-homebrew).
 
 #### Linux and Steam Deck Support
 
@@ -168,6 +228,10 @@ Upstream desktop binaries (which do not contain game assets) can be found in the
 
 If you're interested in learning more about decompilation and Snowboard Kids 2, the following articles might be of interest:
 * [Snowboard Kids 2 is Recompiled](https://blog.chrislewis.au/snowboard-kids-2-is-recompiled/)
+
+## Disclosure
+
+We used AI throughout the development of this Switch port, including research, implementation, debugging, and documentation. The port took months of work, with repeated iteration and testing on real hardware.
 
 ## Credits
 

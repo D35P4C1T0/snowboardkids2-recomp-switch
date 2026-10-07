@@ -126,8 +126,10 @@ The complete SD-card payload is staged at
 `build-switch-full/sdcard/switch/snowboardkids2-recompiled/`. Copy that whole
 directory to `sdmc:/switch/`, then add your own ROM as `snowboardkids2.z64`.
 The `assets/` directory is required by the launcher and must accompany the NRO.
-Alternatively, extract `build-switch-full/snowboardkids2-switch-sdcard.zip`
+Alternatively, extract `build-switch-full/snowboardkids2-switch.zip`
 directly at the SD-card root; it contains the exact `switch/` hierarchy.
+The standard package includes the accepted packed-copyback and fused-transfer
+optimizations. Repackage the current NRO with `scripts/package-switch.sh`.
 
 For fast hardware iteration, enter hbmenu through Atmosphere title takeover
 (hold R while launching a game), press Y to start NetLoader, then run:
@@ -201,17 +203,16 @@ SDL/backend failures, and observed empty queues. These counters complement
 listening tests; an empty-queue observation alone is not an audible underrun.
 
 
-The stock-memory bandwidth candidate is available with
-`--packed-framebuffer-copyback`. It halves eligible color/depth readback payloads
-and commits native bytes directly to RAM. Build normally, then run
-`scripts/package-switch.sh --packed-copyback` for a separate SD-card archive
-that enables it. `--rgba-framebuffer-copyback` restores reference mode for a
+The standard SD-card package enables packed framebuffer copyback. It halves
+eligible color/depth readback payloads and commits native bytes directly to RAM.
+`--rgba-framebuffer-copyback` restores reference mode for a
 NetLoader comparison. See the [candidate validation and controls](docs/SWITCH_PERFORMANCE_RESULTS.md#2026-10-06--stock-memory-bandwidth-candidate).
 
-The subsequent single-pass RAM transfer candidate adds
-`--fused-framebuffer-transfers` to packed copyback. Package it with
-`scripts/package-switch.sh --fused-transfers`; compare against
-`--staged-framebuffer-transfers` while retaining packed copyback.
+The standard package also enables single-pass RAM transfers. For comparisons,
+`--staged-framebuffer-transfers` retains packed copyback while disabling fused
+transfers. `scripts/package-switch.sh --packed-copyback` creates a separate
+comparison archive. The old `--fused-transfers` packaging flag remains an alias
+for the standard package.
 
 The Switch texture uploader copies and flushes active texture bytes when reusing
 larger pooled buffers. Profile windows include the worst sample's workload ID
