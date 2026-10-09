@@ -4,6 +4,8 @@
 
 This fork brings Snowboard Kids 2: Recompiled to Nintendo Switch homebrew, with graphics settings, cached shaders, a loading progress bar, and optional CPU/GPU/memory controls. Follow the [Switch setup guide](#nintendo-switch-homebrew) to install and play. The port is experimental and has been tested on real hardware; performance varies by scene and settings.
 
+Read the [Switch port diary](docs/SWITCH_PORT_DIARY.md) for a brief account of the process and the choices behind the port.
+
 ### [Switch downloads](https://github.com/D35P4C1T0/snowboardkids2-recomp-switch/releases)
 
 Use a Switch SD-card ZIP from this fork. The upstream desktop downloads below are for PCs.

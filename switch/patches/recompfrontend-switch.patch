@@ -114,6 +114,20 @@ diff --git a/recompui/CMakeLists.txt b/recompui/CMakeLists.txt
      target_include_directories(recompui PRIVATE ${SDL2_INCLUDE_DIRS})
  endif()
  
+diff --git a/recompui/include/recompui/config.h b/recompui/include/recompui/config.h
+--- a/recompui/include/recompui/config.h
++++ b/recompui/include/recompui/config.h
+@@ -139,6 +139,10 @@
+         bool close();
+ 
+         void set_modal_on_close_callback(std::function<void()> callback);
++        // Called on the UI thread before visible config contexts update.
++        // Use for live status; it must not modify pending option values.
++        void set_refresh_callback(std::function<void()> callback);
++        void refresh();
+ 
+         // Get the config modal instance. nullptr until created with init_modal() internally.
+         // Will throw an error if it hasn't been created yet.
 diff --git a/recompui/src/base/ui_state.cpp b/recompui/src/base/ui_state.cpp
 --- a/recompui/src/base/ui_state.cpp
 +++ b/recompui/src/base/ui_state.cpp
@@ -420,6 +434,21 @@ diff --git a/recompui/src/composites/ui_player_card.cpp b/recompui/src/composite
  
          profile_select->add_change_callback([this](SelectOption& option, int option_index) {
              this->on_select_player_profile(std::stoi(option.value));
+diff --git a/recompui/src/config/ui_config.cpp b/recompui/src/config/ui_config.cpp
+--- a/recompui/src/config/ui_config.cpp
++++ b/recompui/src/config/ui_config.cpp
+@@ -17,8 +17,11 @@
+ static std::vector<PendingTab> pending_tabs;
+ static std::function<void()> modal_on_close_callback = nullptr;
+ static bool loaded_configs = false;
++static std::function<void()> refresh_callback;
+ 
+ namespace recompui {
++    void config::set_refresh_callback(std::function<void()> callback) { refresh_callback = std::move(callback); }
++    void config::refresh() { if (refresh_callback) refresh_callback(); }
+     static recompui::TabbedModal *config_modal = nullptr;
+ 
+     recomp::config::Config &config::get_config(const std::string &id) {
 diff --git a/recompui/src/config/ui_config_option.cpp b/recompui/src/config/ui_config_option.cpp
 --- a/recompui/src/config/ui_config_option.cpp
 +++ b/recompui/src/config/ui_config_option.cpp

@@ -1,5 +1,8 @@
 # Building Guide
 
+For local Switch builds and GitHub release uploads, see
+[Publishing a Switch release](#publishing-a-switch-release).
+
 This guide will help you build the project on your local machine. The process will require you to provide a decompressed ROM of the 1.1 US version of the game.
 
 These steps cover: decompressing the ROM, running the recompiler and finally building the project.
@@ -78,6 +81,58 @@ Voilà! You should now have a `SnowboardKids2Recompiled` executable in the build
 
 > [!IMPORTANT]  
 > In the game itself, you should be using a standard ROM, not the decompressed one.
+
+## Publishing a Switch release
+
+Build and upload the Switch package from your own machine. No GitHub Actions
+secrets or private storage are needed. Set up the local Switch toolchain as
+described below, keep Docker running, and install [GitHub CLI](https://cli.github.com/).
+Authenticate once:
+
+```sh
+gh auth login
+```
+
+Commit and push the source you want to release, then run this from the repository:
+
+```sh
+./scripts/release-switch.sh v1.0.0-switch.1
+```
+
+Replace the example with your chosen release version. The script builds the
+full port with that version, packages the accepted optimizations, verifies the
+ZIP, then creates a release on the GitHub repository configured as `origin`.
+Only `snowboardkids2-switch.zip` is uploaded. The release tag targets the exact
+source commit; the script requires that branch to be clean and pushed first.
+It refuses to reuse a remote tag pointing at different source. Existing releases
+are not overwritten.
+
+The script reuses your installed SDK, generated game sources and NVK package.
+It builds NVK if missing. Your own ROM is needed locally when generating game
+sources for the first time; it is never uploaded. Players download the prebuilt
+ZIP and supply their own ROM at runtime.
+
+Optional modes:
+
+```sh
+# Upload the exact ZIP already tested on hardware, without rebuilding it.
+# The tag must match the version embedded in its NRO.
+./scripts/release-switch.sh v1.0.0-switch.1 --use-existing
+
+# Build the ZIP for a manual upload; do not contact GitHub.
+./scripts/release-switch.sh v1.0.0-switch.1 --build-only
+
+# Create a draft to review before publishing.
+./scripts/release-switch.sh v1.0.0-switch.1 --draft
+
+# Mark a release as a prerelease and supply your own Markdown notes.
+./scripts/release-switch.sh v1.0.0-switch.1 --prerelease --notes-file release-notes.md
+```
+
+Without custom notes, the release includes SD-card setup instructions and the
+supported ROM hash. Package checks reject unexpected files, including ROMs,
+saves and personal settings left in the staging folder. Keep those on your
+actual SD card, separate from `build-switch-full/sdcard/`.
 
 ## Nintendo Switch homebrew
 
