@@ -57,7 +57,7 @@ git check-ref-format "refs/tags/$tag"
 if [[ $build_only == 0 ]]; then
     command -v gh >/dev/null || { echo "Install GitHub CLI and run gh auth login first." >&2; exit 1; }
     gh auth status --hostname github.com >/dev/null
-    if [[ -n $(git status --porcelain --untracked-files=normal) ]]; then
+    if [[ -n $(git status --porcelain --untracked-files=normal --ignore-submodules=none) ]]; then
         echo "Commit your source changes before creating a release (or use --build-only)." >&2
         exit 1
     fi
@@ -95,51 +95,23 @@ if [[ $use_existing == 0 ]]; then
 fi
 
 archive="$REPO_ROOT/build-switch-full/snowboardkids2-switch.zip"
-python3 - "$archive" "$version" <<'PY'
-from pathlib import Path
-import sys, zipfile, struct
-root = Path.cwd()
-prefix = 'switch/snowboardkids2-recompiled/'
-expected = {
-    prefix + 'snowboardkids2-recompiled.nro': (root / 'build-switch-full/snowboardkids2-recompiled.nro').read_bytes(),
-    prefix + 'recompcontrollerdb.txt': (root / 'recompcontrollerdb.txt').read_bytes(),
-    prefix + 'config/packed-framebuffer-copyback': b'',
-    prefix + 'config/fused-framebuffer-transfers': b'',
-}
-for path in (root / 'assets').rglob('*'):
-    if path.is_file() and path.name != '.DS_Store':
-        expected[prefix + path.relative_to(root).as_posix()] = path.read_bytes()
-with zipfile.ZipFile(sys.argv[1]) as package:
-    if package.testzip() is not None:
-        raise SystemExit('ZIP integrity check failed.')
-    files = [entry.filename for entry in package.infolist() if not entry.is_dir()]
-    if len(files) != len(set(files)) or set(files) != set(expected):
-        raise SystemExit('ZIP has missing or unexpected files. Keep ROMs, saves and personal settings outside the packaging staging folder.')
-    if any(package.read(name) != data for name, data in expected.items()):
-        raise SystemExit('ZIP does not match the current NRO/assets/optimization settings.')
-    nro = package.read(prefix + 'snowboardkids2-recompiled.nro')
-    try:
-        if nro[0x10:0x14] != b'NRO0':
-            raise ValueError('Invalid NRO header')
-        asset = struct.unpack_from('<I', nro, 0x18)[0]
-        if nro[asset:asset+4] != b'ASET':
-            raise ValueError('Missing NRO assets')
-        nacp, nacp_size = struct.unpack_from('<QQ', nro, asset + 24)
-        if nacp_size < 0x3070 or asset + nacp + nacp_size > len(nro):
-            raise ValueError('Invalid NACP bounds')
-        version = nro[asset+nacp+0x3060:asset+nacp+0x3070].split(b'\0')[0].decode()
-    except (ValueError, struct.error) as error:
-        raise SystemExit(f'Cannot verify the packaged version: {error}')
-    if version != sys.argv[2]:
-        raise SystemExit(f'Packaged version is {version}; use the matching release tag or rebuild.')
-print('Verified release ZIP: latest NRO/assets, accepted optimizations, no ROM or personal files.')
-PY
+verify_args=(--verify "$version")
+if [[ $build_only == 0 || $use_existing == 1 ]]; then
+    verify_args+=(--commit "$target_sha")
+fi
+if [[ $build_only == 0 ]]; then
+    upload_dir=$(mktemp -d)
+    trap 'rm -rf -- "$upload_dir"' EXIT
+    cp "$archive" "$upload_dir/"
+    archive="$upload_dir/${archive##*/}"
+fi
+"$SCRIPT_DIR/package-switch.sh" "${verify_args[@]}" --archive "$archive"
 
 if [[ $build_only == 1 ]]; then
     printf 'Package ready: %s\n' "$archive"
     exit 0
 fi
-if [[ $(git rev-parse HEAD) != "$target_sha" || -n $(git status --porcelain --untracked-files=normal) ]]; then
+if [[ $(git rev-parse HEAD) != "$target_sha" || -n $(git status --porcelain --untracked-files=normal --ignore-submodules=none) ]]; then
     echo "Source changed during the build; commit, push, and rerun." >&2
     exit 1
 fi

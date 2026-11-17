@@ -11,7 +11,8 @@ ROOT = Path(__file__).resolve().parent.parent
 with tempfile.TemporaryDirectory(prefix="sk2-release-test-") as directory:
     root = Path(directory)
     (root / "scripts").mkdir()
-    shutil.copy2(ROOT / "scripts/release-switch.sh", root / "scripts/release-switch.sh")
+    for name in ("release-switch.sh", "package-switch.sh", "package-switch.py"):
+        shutil.copy2(ROOT / "scripts" / name, root / "scripts" / name)
     tools = root / "tools"
     tools.mkdir()
 
@@ -22,8 +23,10 @@ with tempfile.TemporaryDirectory(prefix="sk2-release-test-") as directory:
     executable(tools / "git", '''#!/usr/bin/env python3
 import os,sys
 args=sys.argv[1:]
-sha='a'*40
-if args[0]=='rev-parse': print(sha)
+sha=('b' if os.environ.get('NEW_HEAD') else 'a')*40
+if args[0]=='ls-files':
+    sys.stdout.buffer.write(b'assets/font.ttf\\0recompcontrollerdb.txt\\0')
+elif args[0]=='rev-parse': print(sha)
 elif args[0]=='status': print(' M source.c' if os.environ.get('DIRTY') else '',end='')
 elif args[0]=='remote': print('https://github.com/example/switch-port.git')
 elif args[0]=='symbolic-ref': print('codex/test')
@@ -44,7 +47,7 @@ if sys.argv[1:3]==['release','create']:
         executable(tools / name, "#!/bin/sh\nexit 0\n")
     executable(root / "scripts/switch-build.sh", '''#!/usr/bin/env python3
 from pathlib import Path
-import os,zipfile,struct
+import os,subprocess,zipfile,struct
 root=Path.cwd()
 build=root/'build-switch-full'
 build.mkdir(exist_ok=True)
@@ -58,15 +61,12 @@ nro[0x80+0x38+0x3060:0x80+0x38+0x3060+len(version)]=version
 (build/'snowboardkids2-recompiled.nro').write_bytes(nro)
 count=build/'build-count'
 count.write_text(str(int(count.read_text())+1 if count.exists() else 1))
-prefix='switch/snowboardkids2-recompiled/'
-with zipfile.ZipFile(build/'snowboardkids2-switch.zip','w') as archive:
-    archive.write(build/'snowboardkids2-recompiled.nro',prefix+'snowboardkids2-recompiled.nro')
-    archive.write('recompcontrollerdb.txt',prefix+'recompcontrollerdb.txt')
-    for path in Path('assets').rglob('*'):
-        if path.is_file(): archive.write(path,prefix+path.as_posix())
-    for marker in ('packed-framebuffer-copyback','fused-framebuffer-transfers'):
-        archive.writestr(prefix+'config/'+marker,b'')
-    if os.environ.get('CONTAMINATED'): archive.writestr(prefix+'snowboardkids2.z64',b'private ROM')
+subprocess.run(["sh", "scripts/package-switch.sh"], check=True)
+archive = build/'snowboardkids2-switch.zip'
+if os.environ.get('CONTAMINATED'):
+    with zipfile.ZipFile(archive,'a') as package:
+        package.writestr('switch/snowboardkids2-recompiled/snowboardkids2.z64',b'private ROM')
+subprocess.run(["sh", "scripts/package-switch.sh", "--record", 'a'*40], check=True)
 ''')
     (root / "assets").mkdir()
     (root / "assets/font.ttf").write_bytes(b"font")
@@ -85,8 +85,19 @@ with zipfile.ZipFile(build/'snowboardkids2-switch.zip','w') as archive:
         assert (result.returncode == 0) == success, result.stderr
         return root / "upload.json"
 
+    import zipfile
+    previous_stage = root / "build-switch-full/sdcard"
+    private_save = Path("switch/snowboardkids2-recompiled/saves/local.bin")
+    (previous_stage / private_save).parent.mkdir(parents=True)
+    (previous_stage / private_save).write_bytes(b"personal save")
+    (root / "assets/local.z64").write_bytes(b"untracked ROM")
     upload = run(("--build-only",))
     assert not upload.exists()
+    with zipfile.ZipFile(root / "build-switch-full/snowboardkids2-switch.zip") as archive:
+        assert not any(name.endswith(("local.z64", "local.bin")) for name in archive.namelist())
+    assert any(folder.joinpath("sdcard", private_save).is_file()
+               for folder in (root / "build-switch-full").glob("sdcard-previous-*"))
+
     upload = run()
     args = json.loads(upload.read_text())
     assert args[:3] == ["release", "create", "v1.0.0-switch.1"]
@@ -107,17 +118,21 @@ with zipfile.ZipFile(build/'snowboardkids2-switch.zip','w') as archive:
     assert run(("--use-existing",)).exists()
     assert count == (root / "build-switch-full/build-count").read_text()
     assert before == (root / "build-switch-full/snowboardkids2-switch.zip").read_bytes()
+    assert not run(("--use-existing",), flags={"NEW_HEAD": "1"}, success=False).exists()
+    package = root / "build-switch-full/snowboardkids2-switch.zip"
+    package.write_bytes(before + b"changed ZIP bytes")
+    assert not run(("--use-existing",), success=False).exists()
+    package.write_bytes(before)
     nro = root / "build-switch-full/snowboardkids2-recompiled.nro"
     data = bytearray(nro.read_bytes())
     data[0x80+0x38+0x3060] = ord('2')
     nro.write_bytes(data)
-    package = root / "build-switch-full/snowboardkids2-switch.zip"
-    import zipfile
     with zipfile.ZipFile(package) as archive:
         contents = {name: archive.read(name) for name in archive.namelist()}
     contents['switch/snowboardkids2-recompiled/snowboardkids2-recompiled.nro'] = bytes(data)
     with zipfile.ZipFile(package, 'w') as archive:
         for name, value in contents.items():
             archive.writestr(name, value)
+    subprocess.run(["sh", "scripts/package-switch.sh", "--record", "a"*40], cwd=root, env=env, check=True)
     assert not run(("--use-existing",), success=False).exists()
-print("PASS: ZIP-only upload, exact source target, notes/draft/prerelease, local-only mode, source/tag checks and ROM rejection")
+print("PASS: ZIP-only upload, exact source target, notes/draft/prerelease, local-only mode, source/ZIP provenance, clean staging, and ROM rejection")

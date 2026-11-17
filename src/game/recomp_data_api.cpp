@@ -1,3 +1,4 @@
+#include <cstring>
 #include <vector>
 #include <mutex>
 #include <unordered_map>
@@ -515,6 +516,7 @@ void recomputil_u32_slotmap_get(uint8_t* rdram, recomp_context* ctx) {
     uint32_t* ret;
     if (!map->get(key, &ret)) {
         _return(ctx, 0);
+        return;
     }
     MEM_W(0, val_out) = *ret;
     _return(ctx, 1);
@@ -569,8 +571,12 @@ void recomputil_u32_slotmap_size(uint8_t* rdram, recomp_context* ctx) {
 // memory slotmap.
 
 void recomputil_create_memory_slotmap(uint8_t* rdram, recomp_context* ctx) {
-    (void)rdram;
-    _return(ctx, memory_slotmaps.create());
+    uint32_t element_size = _arg<0, uint32_t>(rdram, ctx);
+    uint32_t map_key = memory_slotmaps.create();
+    MemorySlotmap* map;
+    memory_slotmaps.get(map_key, &map);
+    map->second = element_size;
+    _return(ctx, map_key);
 }
 
 void recomputil_destroy_memory_slotmap(uint8_t* rdram, recomp_context* ctx) {
@@ -613,22 +619,17 @@ void recomputil_memory_slotmap_create(uint8_t* rdram, recomp_context* ctx) {
         HANDLE_INVALID_ERROR();
     }
 
-    // Create the slotmap element.
-    u32 key = map->first.create();
-
-    // Allocate the map's element size.
     void* mem = recomp::alloc(rdram, map->second);
-    gpr addr = reinterpret_cast<uint8_t*>(mem) - rdram + 0xFFFFFFFF80000000ULL;
-
-    // Zero the memory.
-    for (size_t i = 0; i < map->second; i++) {
-        MEM_B(i, addr) = 0;
+    if (mem == nullptr) {
+        _return(ctx, 0);
+        return;
     }
+    std::memset(mem, 0, map->second);
 
-    // Store the allocated pointer.
+    u32 key = map->first.create();
     PTR(void)* value_ptr;
     map->first.get(key, &value_ptr);
-    MEM_W(0, *value_ptr) = addr;
+    *value_ptr = reinterpret_cast<uint8_t*>(mem) - rdram + 0xFFFFFFFF80000000ULL;
 
     // Return the key.
     _return(ctx, key);
@@ -664,7 +665,7 @@ void recomputil_memory_slotmap_erase(uint8_t* rdram, recomp_context* ctx) {
     PTR(void)* addr;
     bool has_value = map->first.get(key, &addr);
     if (has_value) {
-        void* mem = TO_PTR(void, addr);
+        void* mem = TO_PTR(void, *addr);
         recomp::free(rdram, mem);
     }
 

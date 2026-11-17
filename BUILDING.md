@@ -107,16 +107,17 @@ source commit; the script requires that branch to be clean and pushed first.
 It refuses to reuse a remote tag pointing at different source. Existing releases
 are not overwritten.
 
-The script reuses your installed SDK, generated game sources and NVK package.
-It builds NVK if missing. Your own ROM is needed locally when generating game
-sources for the first time; it is never uploaded. Players download the prebuilt
+The script reuses your installed SDK and NVK package and builds NVK if missing.
+Each full build regenerates the game and audio code from your local ROM, keeping
+unchanged outputs for incremental compilation. Players download the prebuilt
 ZIP and supply their own ROM at runtime.
 
 Optional modes:
 
 ```sh
 # Upload the exact ZIP already tested on hardware, without rebuilding it.
-# The tag must match the version embedded in its NRO.
+# Use the ZIP and provenance record produced by a clean build of this commit.
+# The tag must match the version embedded in the NRO.
 ./scripts/release-switch.sh v1.0.0-switch.1 --use-existing
 
 # Build the ZIP for a manual upload; do not contact GitHub.
@@ -130,9 +131,10 @@ Optional modes:
 ```
 
 Without custom notes, the release includes SD-card setup instructions and the
-supported ROM hash. Package checks reject unexpected files, including ROMs,
-saves and personal settings left in the staging folder. Keep those on your
-actual SD card, separate from `build-switch-full/sdcard/`.
+supported ROM hash. Packaging starts from tracked assets and the current build.
+If the previous staging folder contains extra files, the packager preserves it
+under `build-switch-full/sdcard-previous-*/` and prints the path. Keep ROMs,
+saves and personal settings on your SD card.
 
 ## Nintendo Switch homebrew
 

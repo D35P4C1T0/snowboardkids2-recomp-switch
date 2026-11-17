@@ -1,5 +1,6 @@
 # Dependency path (relative to the disposable root), patch filename.
 N64ModernRuntime n64modernruntime-switch.patch
+N64ModernRuntime n64modernruntime-correctness.patch
 RecompFrontend recompfrontend-switch.patch
 RecompFrontend/recompui/lib/lunasvg lunasvg-switch.patch
 rt64 rt64-switch.patch

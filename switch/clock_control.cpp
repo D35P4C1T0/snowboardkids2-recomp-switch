@@ -217,8 +217,9 @@ void shutdown() {
     loading = false;
     resetPending = false;
     // An external manager takes precedence even during clean shutdown.
-    auto manager = backend.manager();
-    if (manager == Manager::Absent || manager == Manager::Inactive) state.release(!state.environment.samePower(backend.environment()));
+    auto environment = backend.environment();
+    environment.exiting = true;
+    state.poll(environment);
     logState();
     appletUnhook(&hookCookie);
     backend.close(); initialized = false;

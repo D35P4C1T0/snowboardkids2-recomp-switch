@@ -46,7 +46,7 @@ class State {
     Backend& backend;
     std::array<bool, 3> owned{};
     Rates baseline{}, written{};
-    bool blocked = false, pendingFocusRelease = false;
+    bool blocked = false, pendingFocusRelease = false, pendingProfileRelease = false;
     bool rollback(const std::vector<unsigned>& changed, const Rates& before) {
         bool restored = true;
         for (auto it = changed.rbegin(); it != changed.rend(); ++it) restored = backend.write(*it, before[*it]) && restored;
@@ -77,15 +77,24 @@ public:
         return true;
     }
     bool release(bool profileChanged = false) {
+        pendingProfileRelease |= profileChanged && hasOwnership();
         if (!hasOwnership()) return true;
         Rates current;
         if (!backend.read(current)) { status = "Clock read failed; restoration pending"; return false; }
-        // If another owner/system changed a rate, never replace its new value.
-        bool unchanged = true;
-        for (unsigned i = 0; i < 3; ++i) if (owned[i] && current[i] != written[i]) unchanged = false;
-        if (profileChanged) {
-            if (unchanged && !backend.resetProfile()) { status = "System profile reset failed"; return false; }
+        if (pendingProfileRelease) {
+            bool appRateRemains = false;
+            for (unsigned i = 0; i < 3; ++i) {
+                appRateRemains |= owned[i] && current[i] == written[i];
+            }
+            if ((appRateRemains || current[1] > environment.gpuCap()) &&
+                (!backend.resetProfile() || !backend.read(current) || current[1] > environment.gpuCap())) {
+                status = "System profile reset failed; retry pending";
+                return false;
+            }
             owned.fill(false);
+            pendingProfileRelease = false;
+            effective = {};
+            actual = current;
             return true;
         }
         bool success = true;
@@ -98,7 +107,7 @@ public:
         return success;
     }
     bool apply() {
-        if (!canControl() || blocked) return false;
+        if (!canControl() || blocked || (pendingProfileRelease && !release())) return false;
         if (!desired.custom) {
             bool ok = release();
             if (ok) { effective = {}; status = "System managed"; }
@@ -153,7 +162,8 @@ public:
         return apply();
     }
     void poll(Environment next) {
-        bool powerChanged = !environment.samePower(next);
+        bool powerChanged = next.available && !environment.samePower(next);
+        pendingProfileRelease |= powerChanged && hasOwnership();
         bool regained = (!environment.focused && next.focused) || (!environment.available && next.available);
         regained = regained || (environment.manager != next.manager && (next.manager == Manager::Absent || next.manager == Manager::Inactive));
         environment = next;
@@ -161,14 +171,18 @@ public:
         if (next.manager != Manager::Absent && next.manager != Manager::Inactive) {
             // A stale/failed manager query is not evidence of a new owner.
             // Preserve matching-rate restoration records until discovery recovers.
-            if (next.manager == Manager::Present) { owned.fill(false); pendingFocusRelease = false; }
+            if (next.manager == Manager::Present) {
+                owned.fill(false);
+                pendingFocusRelease = pendingProfileRelease = false;
+            }
             effective = {}; blocked = true;
             status = next.manager == Manager::Present ? "Managed by sys-clk" : "Clock ownership unavailable";
             if (!backend.read(actual)) actual = {};
             return;
         }
         if (!next.available) { status = "Clock services unavailable"; return; }
-        if (powerChanged && !release(true)) { blocked = true; return; }
+        powerChanged |= pendingProfileRelease;
+        if (pendingProfileRelease && !release()) { blocked = true; return; }
         if (pendingFocusRelease || (regained && hasOwnership())) {
             if (!release()) return;
             pendingFocusRelease = false;

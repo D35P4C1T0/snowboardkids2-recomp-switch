@@ -1,0 +1,371 @@
+diff --git a/librecomp/src/pi.cpp b/librecomp/src/pi.cpp
+--- a/librecomp/src/pi.cpp
++++ b/librecomp/src/pi.cpp
+@@ -88,12 +88,11 @@
+     std::vector<char> save_buffer;
+     std::thread saving_thread;
+     std::filesystem::path save_file_path;
+-    moodycamel::LightweightSemaphore write_sempahore;
+-    // Used to tell the saving thread that a file swap is pending.
+-    moodycamel::LightweightSemaphore swap_file_pending_sempahore;
+-    // Used to tell the consumer thread that the saving thread is ready for a file swap.
+-    moodycamel::LightweightSemaphore swap_file_ready_sempahore;
++    moodycamel::LightweightSemaphore write_semaphore;
+     std::mutex save_buffer_mutex;
++    std::atomic_bool stopping = false;
++    bool recovering_backup = false;
++    bool dirty = false;
+ } save_context;
+ 
+ const std::u8string save_folder = u8"saves";
+@@ -101,6 +100,7 @@
+ extern std::filesystem::path config_path;
+ 
+ std::filesystem::path ultramodern::get_save_file_path() {
++    std::lock_guard lock{ save_context.save_buffer_mutex };
+     return save_context.save_file_path;
+ }
+ 
+@@ -112,31 +112,40 @@
+     save_context.save_file_path = save_folder_path / (name + u8".bin");
+ }
+ 
+-void update_save_file() {
+-    bool saving_failed = false;
++static bool write_save_file() {
++    if (!save_context.dirty) return true;
++    const auto& path = save_context.save_file_path;
++    auto file = recomp::open_output_file_with_backup(path, std::ios_base::binary);
++    file.write(save_context.save_buffer.data(), save_context.save_buffer.size());
++    file.close();
++    if (!file) return false;
++    if (save_context.recovering_backup) {
++        // Keep the recovered backup until a complete new primary is installed.
++        std::error_code ec;
++        std::filesystem::remove(path, ec);
++        if (ec) return false;
++    }
++    if (!recomp::finalize_output_file_with_backup(path)) return false;
++    save_context.recovering_backup = false;
++    save_context.dirty = false;
++    return true;
++}
++
++static void report_save_failure() {
++    ultramodern::error_handling::message_box("Failed to write the game save. Check that the save folder is writable and has free space.");
++}
++
++static void update_save_file() {
++    bool saved;
+     {
+-        std::ofstream save_file = recomp::open_output_file_with_backup(ultramodern::get_save_file_path(), std::ios_base::binary);
+-
+-        if (save_file.good()) {
+-            std::lock_guard lock{ save_context.save_buffer_mutex };
+-            save_file.write(save_context.save_buffer.data(), save_context.save_buffer.size());
+-        }
+-        else {
+-            saving_failed = true;
+-        }
+-    }
+-    if (!saving_failed) {
+-        saving_failed = !recomp::finalize_output_file_with_backup(ultramodern::get_save_file_path());
+-    }
+-    if (saving_failed) {
+-        ultramodern::error_handling::message_box("Failed to write to the save file. Check your file permissions and whether the save folder has been moved to Dropbox or similar, as this can cause issues.");
+-    }
+-}
+-
+-extern std::atomic_bool exited;
++        std::lock_guard lock{ save_context.save_buffer_mutex };
++        saved = write_save_file();
++    }
++    if (!saved) report_save_failure();
++}
+ 
+ void saving_thread_func(RDRAM_ARG1) {
+-    while (!exited) {
++    while (!save_context.stopping) {
+         bool save_buffer_updated = false;
+         // Repeatedly wait for a new action to be sent.
+         constexpr int64_t wait_time_microseconds = 10000;
+@@ -146,7 +155,8 @@
+         // Wait up to the given timeout for a write to come in. Allow multiple writes to coalesce together into a single save.
+         // Cap the number of coalesced writes to guarantee that the save buffer eventually gets written out to the file even if the game
+         // is constantly sending writes.
+-        while (save_context.write_sempahore.wait(wait_time_microseconds) && num_actions < max_actions) {
++        while (num_actions < max_actions && !save_context.stopping &&
++               save_context.write_semaphore.wait(wait_time_microseconds)) {
+             save_buffer_updated = true;
+             num_actions++;
+         }
+@@ -156,10 +166,8 @@
+             update_save_file();
+         }
+ 
+-        if (save_context.swap_file_pending_sempahore.tryWait()) {
+-            save_context.swap_file_ready_sempahore.signal();
+-        }
+-    }
++    }
++    update_save_file();
+ }
+ 
+ void save_write_ptr(const void* in, uint32_t offset, uint32_t count) {
+@@ -167,10 +175,11 @@
+ 
+     {
+         std::lock_guard lock { save_context.save_buffer_mutex };
++        if (save_context.stopping) return;
+         memcpy(&save_context.save_buffer[offset], in, count);
+-    }
+-    
+-    save_context.write_sempahore.signal();
++        save_context.dirty = true;
++        save_context.write_semaphore.signal();
++    }
+ }
+ 
+ void save_write(RDRAM_ARG PTR(void) rdram_address, uint32_t offset, uint32_t count) {
+@@ -178,12 +187,13 @@
+ 
+     {
+         std::lock_guard lock { save_context.save_buffer_mutex };
++        if (save_context.stopping) return;
+         for (gpr i = 0; i < count; i++) {
+             save_context.save_buffer[offset + i] = MEM_B(i, rdram_address);
+         }
+-    }
+-
+-    save_context.write_sempahore.signal();
++        save_context.dirty = true;
++        save_context.write_semaphore.signal();
++    }
+ }
+ 
+ void save_read(RDRAM_ARG PTR(void) rdram_address, uint32_t offset, uint32_t count) {
+@@ -200,10 +210,11 @@
+ 
+     {
+         std::lock_guard lock { save_context.save_buffer_mutex };
++        if (save_context.stopping) return;
+         std::fill_n(save_context.save_buffer.begin() + start, size, value);
+-    }
+-
+-    save_context.write_sempahore.signal();
++        save_context.dirty = true;
++        save_context.write_semaphore.signal();
++    }
+ }
+ 
+ size_t get_save_size(recomp::SaveType save_type) {
+@@ -224,19 +235,21 @@
+ }
+ 
+ void read_save_file() {
+-    std::filesystem::path save_file_path = ultramodern::get_save_file_path();
+-
+-    // Ensure the save file directory exists.
+-    std::filesystem::create_directories(save_file_path.parent_path());
+-
+-    // Read the save file if it exists.
+-    std::ifstream save_file = recomp::open_input_file_with_backup(save_file_path, std::ios_base::binary);
+-    if (save_file.good()) {
+-        save_file.read(save_context.save_buffer.data(), save_context.save_buffer.size());
+-    }
+-    else {
+-        // Otherwise clear the save file to all zeroes.
+-        std::fill(save_context.save_buffer.begin(), save_context.save_buffer.end(), 0);
++    const auto& save_file_path = save_context.save_file_path;
++    std::error_code ec;
++    std::filesystem::create_directories(save_file_path.parent_path(), ec);
++
++    auto read_complete_save = [](std::ifstream file) {
++        auto& buffer = save_context.save_buffer;
++        return bool(file.read(buffer.data(), buffer.size()));
++    };
++    save_context.recovering_backup = false;
++    if (!read_complete_save(std::ifstream(save_file_path, std::ios_base::binary))) {
++        save_context.recovering_backup = read_complete_save(
++            recomp::open_input_backup_file(save_file_path, std::ios_base::binary));
++        if (!save_context.recovering_backup) {
++            std::fill(save_context.save_buffer.begin(), save_context.save_buffer.end(), 0);
++        }
+     }
+ }
+ 
+@@ -251,17 +264,24 @@
+ }
+ 
+ void ultramodern::change_save_file(const std::u8string& subfolder, const std::u8string& name) {
+-    // Tell the saving thread that a file swap is pending.
+-    save_context.swap_file_pending_sempahore.signal();
+-    // Wait until the saving thread indicates it's ready to swap files.
+-    save_context.swap_file_ready_sempahore.wait();
+-    // Perform the save file swap.
+-    set_save_file_path(subfolder, name);
+-    read_save_file();
++    {
++        std::lock_guard lock{ save_context.save_buffer_mutex };
++        if (save_context.stopping) return;
++        if (write_save_file()) {
++            set_save_file_path(subfolder, name);
++            read_save_file();
++            return;
++        }
++    }
++    report_save_failure();
+ }
+ 
+ void ultramodern::join_saving_thread() {
+     if (save_context.saving_thread.joinable()) {
++        {
++            std::lock_guard lock{ save_context.save_buffer_mutex };
++            save_context.stopping = true;
++        }
+         save_context.saving_thread.join();
+     }
+ }
+diff --git a/librecomp/src/recomp.cpp b/librecomp/src/recomp.cpp
+--- a/librecomp/src/recomp.cpp
++++ b/librecomp/src/recomp.cpp
+@@ -173,10 +173,12 @@
+ 
+     if (file.good()) {
+         file.seekg(0, std::ios::end);
+-        ret.resize(file.tellg());
++        auto size = file.tellg();
++        if (size <= 0) return {};
++        ret.resize(static_cast<size_t>(size));
+         file.seekg(0, std::ios::beg);
+ 
+-        file.read(reinterpret_cast<char*>(ret.data()), ret.size());
++        if (!file.read(reinterpret_cast<char*>(ret.data()), size)) return {};
+     }
+ 
+     return ret;
+@@ -190,29 +192,26 @@
+     }
+ 
+     out_file.write(reinterpret_cast<const char*>(data.data()), data.size());
+-
+-    return true;
++    out_file.close();
++    return bool(out_file);
+ }
+ 
+ bool check_stored_rom(const recomp::GameEntry& game_entry) {
+     std::vector stored_rom_data = read_file(config_path / game_entry.stored_filename());
+ 
+-    if (!check_hash(stored_rom_data, game_entry.rom_hash)) {
+-        // Incorrect hash, remove the stored ROM file if it exists.
+-        std::filesystem::remove(config_path / game_entry.stored_filename());
+-        return false;
+-    }
+-
+-    return true;
++    return !stored_rom_data.empty() && check_hash(stored_rom_data, game_entry.rom_hash);
+ }
+ 
+ static std::unordered_set<std::u8string> valid_game_roms;
++static std::mutex valid_game_roms_mutex;
+ 
+ bool recomp::is_rom_valid(std::u8string& game_id) {
++    std::lock_guard lock(valid_game_roms_mutex);
+     return valid_game_roms.contains(game_id);
+ }
+ 
+ void recomp::check_all_stored_roms() {
++    std::lock_guard lock(valid_game_roms_mutex);
+     for (const auto& cur_rom_entry: game_roms) {
+         if (check_stored_rom(cur_rom_entry.second)) {
+             valid_game_roms.insert(cur_rom_entry.first);
+@@ -229,9 +228,9 @@
+     
+     std::vector<uint8_t> stored_rom_data = read_file(config_path / find_it->second.stored_filename());
+ 
+-    if (!check_hash(stored_rom_data, find_it->second.rom_hash)) {
+-        // The ROM no longer has the right hash, delete it.
+-        std::filesystem::remove(config_path / find_it->second.stored_filename());
++    if (stored_rom_data.empty() || !check_hash(stored_rom_data, find_it->second.rom_hash)) {
++        std::lock_guard lock(valid_game_roms_mutex);
++        valid_game_roms.erase(game_id);
+         return false;
+     }
+ 
+@@ -391,22 +390,21 @@
+     }
+ 
+     if (!check_hash(rom_data, game_entry.rom_hash)) {
+-        const std::string_view name{ reinterpret_cast<const char*>(rom_data.data()) + 0x20, game_entry.internal_name.size()};
+-        if (name == game_entry.internal_name) {
++        if (rom_data.size() < 0x20) return recomp::RomValidationError::NotARom;
++        std::string_view header(reinterpret_cast<const char*>(rom_data.data()) + 0x20, rom_data.size() - 0x20);
++        if (header.substr(0, game_entry.internal_name.size()) == game_entry.internal_name) {
+             return recomp::RomValidationError::IncorrectVersion;
+         }
+-        else {
+-            if (game_entry.is_enabled && std::string_view{ reinterpret_cast<const char*>(rom_data.data()) + 0x20, 19 } == game_entry.internal_name) {
+-                return recomp::RomValidationError::NotYet;
+-            }
+-            else {
+-                return recomp::RomValidationError::IncorrectRom;
+-            }
+-        }
+-    }
+-
+-    write_file(config_path / game_entry.stored_filename(), rom_data);
+-    
++        return recomp::RomValidationError::IncorrectRom;
++    }
++
++    if (!write_file(config_path / game_entry.stored_filename(), rom_data)) {
++        return recomp::RomValidationError::OtherError;
++    }
++    {
++        std::lock_guard lock(valid_game_roms_mutex);
++        valid_game_roms.insert(game_id);
++    }
+     return recomp::RomValidationError::Good;
+ }
+ 
+@@ -552,11 +550,11 @@
+ moodycamel::LightweightSemaphore graphics_shutdown_ready;
+ 
+ void ultramodern::quit() {
++    std::lock_guard<std::mutex> lock(current_game_mutex);
+     exited.store(true);
+     GameStatus desired = GameStatus::None;
+     game_status.compare_exchange_strong(desired, GameStatus::Quit);
+     game_status.notify_all();
+-    std::lock_guard<std::mutex> lock(current_game_mutex);
+     current_game.reset();
+ }
+ 
+@@ -705,12 +703,22 @@
+         // TODO refactor this to allow a project to specify what entrypoint function to run for a give game.
+         case GameStatus::Running:
+             {
+-                if (!recomp::load_stored_rom(current_game.value())) {
+-                    ultramodern::error_handling::message_box("Error opening stored ROM! Please restart this program.");
++                std::u8string game_id;
++                {
++                    std::lock_guard lock(current_game_mutex);
++                    if (exited || !current_game) return true;
++                    game_id = *current_game;
+                 }
+ 
+-                auto find_it = game_roms.find(current_game.value());
+-                const recomp::GameEntry& game_entry = find_it->second;
++                if (!recomp::load_stored_rom(game_id)) {
++                    ultramodern::error_handling::message_box("Could not read the stored ROM. Select the original ROM again.");
++                    std::lock_guard lock(current_game_mutex);
++                    if (exited) return true;
++                    game_status.store(GameStatus::None);
++                    return false;
++                }
++
++                const recomp::GameEntry& game_entry = game_roms.at(game_id);
+ 
+                 init(rdram, context, game_entry.entrypoint_address);
+                 if (game_entry.on_init_callback) {

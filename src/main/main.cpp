@@ -1142,6 +1142,10 @@ int main(int argc, char** argv) {
                   gfx_callbacks, thread_callbacks, error_handling_callbacks, threads_callbacks);
     switch_log_checkpoint("runtime: recomp::start returned cleanly");
 
+    // Join SDL's audio thread before hbloader can unmap the executable.
+    SDL_CloseAudioDevice(audio_device);
+    switch_log_checkpoint("audio: device closed");
+
 #if !defined(__SWITCH__)
     NFD_Quit();
 #endif

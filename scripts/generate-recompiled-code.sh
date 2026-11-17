@@ -8,7 +8,7 @@ TOOLS_BUILD="${REPO_ROOT}/build-tools/n64recomp-host"
 
 if [ ! -f "${ROM_PATH}" ]; then
     echo "Missing ${ROM_PATH}" >&2
-    echo "Copy your decompressed NTSC-U 1.1 ROM there, named snowboardkids2.z64." >&2
+    echo "Copy your supported NTSC-U 1.1 ROM there, named snowboardkids2.z64." >&2
     exit 1
 fi
 
@@ -29,8 +29,39 @@ fi
 
 "${SCRIPT_DIR}/build-host-tools.sh"
 
-cd "${REPO_ROOT}"
+STAGING=$(mktemp -d "${REPO_ROOT}/build-recompiled.XXXXXX")
+trap 'rm -rf -- "${STAGING}"' EXIT
+trap 'exit 1' HUP INT TERM
+cp "${REPO_ROOT}/us.toml" "${REPO_ROOT}/aspMain.us.toml" "${STAGING}/"
+ln -s "${ROM_PATH}" "${STAGING}/snowboardkids2.z64"
+ln -s "${REPO_ROOT}/snowboardkids2-recomp-syms" "${STAGING}/snowboardkids2-recomp-syms"
+mkdir "${STAGING}/rsp"
+
+cd "${STAGING}"
 "${TOOLS_BUILD}/N64Recomp" us.toml
 "${TOOLS_BUILD}/RSPRecomp" aspMain.us.toml
+
+python3 - "${REPO_ROOT}" <<'PY'
+from pathlib import Path
+import filecmp
+import sys
+
+root = Path(sys.argv[1])
+generated = Path('RecompiledFuncs')
+if not any(generated.glob('*.c')) or not Path('rsp/aspMain.cpp').is_file():
+    raise SystemExit('Recompiler did not produce the expected outputs.')
+
+outputs = set(generated.iterdir())
+for source in sorted(outputs | {Path('rsp/aspMain.cpp')}):
+    target = root / source
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if not target.is_file() or not filecmp.cmp(source, target, shallow=False):
+        source.replace(target)
+
+for pattern in ('*.c', '*.cpp'):
+    for previous in (root / generated).glob(pattern):
+        if generated / previous.name not in outputs:
+            previous.unlink()
+PY
 
 echo "Generated RecompiledFuncs/ and rsp/aspMain.cpp from the user-supplied ROM."

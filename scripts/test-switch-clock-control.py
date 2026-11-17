@@ -15,14 +15,15 @@ struct Fake : Backend {
     Rates rates{1020000000,307200000,1331200000};
     unsigned writes=0,resets=0;
     std::set<unsigned> failures;
-    bool readable=true,mismatch=false;
+    bool readable=true,mismatch=false,resetFails=false;
+    Rates systemRates{1020000000,768000000,1600000000};
     bool read(Rates& out) override { if (!readable) return false;out=rates;return true; }
     bool write(unsigned i,uint32_t hz) override {
         assert(hz);++writes;
         if (failures.count(writes)) return false;
         rates[i]=mismatch && writes==1 ? hz-1 : hz;return true;
     }
-    bool resetProfile() override { resets++;rates={1020000000,768000000,1600000000};return true; }
+    bool resetProfile() override { resets++;if (resetFails) return false;rates=systemRates;return true; }
 };
 Environment available() { Environment e;e.available=true;e.manager=Manager::Absent;return e; }
 void setup(State& state) {
@@ -59,6 +60,14 @@ int main() {
       auto docked=available();docked.docked=true;docked.configuration=42;s.poll(docked);
       assert(b.resets==1 && b.rates[1]==768000000);
       s.configure({});assert(b.rates[1]==768000000); }
+    { Fake b;State s(b);setup(s);auto docked=available();docked.docked=true;
+      s.poll(docked);assert(s.configure(custom()));
+      b.rates[0]=1020000000;b.systemRates={1020000000,307200000,1331200000};
+      auto battery=available();battery.manager=Manager::Unknown;
+      s.poll(battery);assert(b.resets==0 && s.hasOwnership());
+      b.resetFails=true;s.poll(available());assert(b.resets==1 && s.hasOwnership());
+      b.resetFails=false;s.poll(available());assert(b.resets==2 && b.rates[1]==460800000);
+      assert(s.configure({}));assert(b.rates==b.systemRates); }
     { Fake b;State s(b);setup(s);assert(s.configure(custom()));
       auto external=available();external.manager=Manager::Present;auto writes=b.writes;
       s.poll(external);assert(b.writes==writes && !s.hasOwnership());

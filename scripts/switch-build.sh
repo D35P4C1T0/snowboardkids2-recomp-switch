@@ -62,17 +62,16 @@ if [ "${MODE}" != bootstrap ]; then
         exit 1
     fi
     "${SCRIPT_DIR}/prepare-switch-dependencies.sh" "${SWITCH_DEPS_ROOT}"
-    "${SCRIPT_DIR}/build-host-tools.sh"
-fi
-
-if [ "${MODE}" = full ] &&
-   { [ ! -d "${REPO_ROOT}/RecompiledFuncs" ] ||
-     [ ! -f "${REPO_ROOT}/rsp/aspMain.cpp" ]; }; then
-    "${SCRIPT_DIR}/generate-recompiled-code.sh"
 fi
 
 if [ "${MODE}" = full ]; then
+    build_commit=$(git -C "${REPO_ROOT}" rev-parse HEAD)
+    build_status=$(git -C "${REPO_ROOT}" status --porcelain --untracked-files=normal --ignore-submodules=none)
+    rm -f -- "${BUILD_DIR}/snowboardkids2-switch.provenance.json"
+    "${SCRIPT_DIR}/generate-recompiled-code.sh"
     "${SCRIPT_DIR}/build-switch-patches.sh"
+elif [ "${MODE}" = core ]; then
+    "${SCRIPT_DIR}/build-host-tools.sh"
 fi
 
 cmake \
@@ -95,4 +94,9 @@ fi
 
 if [ "${MODE}" = full ]; then
     "${SCRIPT_DIR}/package-switch.sh"
+    if [ -z "${build_status}" ] &&
+       [ "${build_commit}" = "$(git -C "${REPO_ROOT}" rev-parse HEAD)" ] &&
+       [ -z "$(git -C "${REPO_ROOT}" status --porcelain --untracked-files=normal --ignore-submodules=none)" ]; then
+        "${SCRIPT_DIR}/package-switch.sh" --record "${build_commit}"
+    fi
 fi

@@ -23,4 +23,4 @@ docker run --rm \
     -v "${REPO_ROOT}:/work" \
     -w /work \
     "${IMAGE}" \
-    make -C patches CC=clang-15 "LD=${RUST_LLD} -flavor gnu"
+    make -B -C patches CC=clang-15 "LD=${RUST_LLD} -flavor gnu"

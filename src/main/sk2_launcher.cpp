@@ -275,7 +275,7 @@ void start_or_select_rom() {
                                       "This project requires the NTSC-U N64 version of the game.");
                 break;
             case recomp::RomValidationError::OtherError:
-                recompui::message_box("An unknown error has occurred.");
+                recompui::message_box("Could not import the ROM. Check that the application folder is writable and has free space.");
                 break;
         }
     });
@@ -371,6 +371,11 @@ void on_launcher_init(recompui::LauncherMenu* menu) {
 }
 
 void on_launcher_update(recompui::LauncherMenu*) {
+    bool stored_rom_valid = recomp::is_rom_valid(game_id);
+    if (stored_rom_valid != rom_valid) {
+        rom_valid = stored_rom_valid;
+        if (start_option != nullptr) start_option->set_title(rom_valid ? "Start game" : "Select ROM");
+    }
     if (initial_focus_pending && start_option != nullptr) {
         start_option->focus();
         initial_focus_pending = false;

@@ -297,6 +297,27 @@ set(BUILD_SHARED_LIBS OFF)
 
 add_subdirectory(${SK2_N64MODERNRUNTIME_SOURCE_DIR} ${SK2_N64MODERNRUNTIME_BINARY_DIR})
 
+if(NOT CMAKE_SYSTEM_NAME STREQUAL "NintendoSwitch")
+    find_package(Git REQUIRED)
+    set(runtime_patch "${CMAKE_SOURCE_DIR}/switch/patches/n64modernruntime-correctness.patch")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${runtime_patch}")
+    file(REAL_PATH "${CMAKE_CURRENT_BINARY_DIR}" runtime_build_dir)
+    set(runtime_stage "${runtime_build_dir}/runtime-patch-stage")
+    get_target_property(runtime_sources librecomp SOURCES)
+    foreach(source IN ITEMS pi.cpp recomp.cpp)
+        set(path "librecomp/src/${source}")
+        configure_file("${SK2_N64MODERNRUNTIME_SOURCE_DIR}/${path}" "${runtime_stage}/${path}" COPYONLY)
+        list(REMOVE_ITEM runtime_sources "${SK2_N64MODERNRUNTIME_SOURCE_DIR}/${path}")
+    endforeach()
+    execute_process(COMMAND "${GIT_EXECUTABLE}" apply --unsafe-paths "--directory=${runtime_stage}" "${runtime_patch}"
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}" COMMAND_ERROR_IS_FATAL ANY)
+    foreach(source IN ITEMS pi.cpp recomp.cpp)
+        configure_file("${runtime_stage}/librecomp/src/${source}" "${runtime_build_dir}/runtime-patched/${source}" COPYONLY)
+        list(APPEND runtime_sources "${runtime_build_dir}/runtime-patched/${source}")
+    endforeach()
+    set_property(TARGET librecomp PROPERTY SOURCES "${runtime_sources}")
+endif()
+
 target_include_directories(rt64 PRIVATE ${SK2_RT64_BINARY_DIR}/src)
 
 if (CMAKE_SYSTEM_NAME STREQUAL "NintendoSwitch" AND SK2_SWITCH_CORE_PROBE_ONLY)
