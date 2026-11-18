@@ -819,6 +819,8 @@ int main(int argc, char** argv) {
             SDL_setenv("SK2_SWITCH_OPTIMIZED_AUDIO_RSP", "0", 1);
         if (std::strcmp(argv[i], "--cached-encoded-readbacks") == 0)
             SDL_setenv("SK2_SWITCH_DIRECT_ENCODED_READBACKS", "0", 1);
+        if (std::strcmp(argv[i], "--ram-framebuffers") == 0)
+            SDL_setenv("SK2_SWITCH_RAM_FRAMEBUFFERS", "1", 1);
         if (std::strcmp(argv[i], "--optimized-audio-rsp") == 0)
             SDL_setenv("SK2_SWITCH_OPTIMIZED_AUDIO_RSP", "1", 1);
         if (std::strcmp(argv[i], "--direct-encoded-readbacks") == 0)
@@ -876,6 +878,13 @@ int main(int argc, char** argv) {
     switch_initialize_logging();
     switch_log_checkpoint("startup: entered main", true);
     switch_log_checkpoint("startup: nonblocking nxlink checkpoints enabled");
+    if (std::filesystem::exists(switch_root / "config" / "ram-framebuffers", switch_path_error)) {
+        SDL_setenv("SK2_SWITCH_RAM_FRAMEBUFFERS", "1", 1);
+    }
+    const char* ram_framebuffers = SDL_getenv("SK2_SWITCH_RAM_FRAMEBUFFERS");
+    switch_log_checkpoint(ram_framebuffers && *ram_framebuffers == '1'
+        ? "startup: framebuffer RAM copyback selected"
+        : "startup: GPU framebuffers selected");
     const char* upload_prefix = SDL_getenv("SK2_SWITCH_BATCH_UPLOAD_PREFIX");
     switch_log_checkpoint(upload_prefix && *upload_prefix == '1'
         ? "startup: batched texture upload prefix selected"

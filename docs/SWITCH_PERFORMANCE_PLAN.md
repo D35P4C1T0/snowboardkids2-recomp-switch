@@ -2,9 +2,8 @@
 
 Written 2026-10-01. Baseline: `4d03da9`, the hardware-confirmed texture fix.
 Implementation started on `codex/switch-performance` on 2026-10-03.
-See [implementation results](SWITCH_PERFORMANCE_RESULTS.md) for tested changes,
-current measurements, and outstanding release gates. The evidence below
-records the original analysis; it is not the current implementation status.
+See [port status](SWITCH_PORT.md) for outstanding release gates. The evidence
+below records the original analysis.
 
 ## Progress — 2026-10-03
 
@@ -23,8 +22,7 @@ Implementation checkpoint: `41ee648` on `codex/switch-performance`.
 The accounting fix alone did not repair choppy audio; the native backend
 handoff change did. Readback improvements reduced CPU conversion work, but the
 latest tests do not prove a controlled FPS speedup or sustained 60 FPS. The
-phase descriptions below retain the original proposal; use the table above and
-[results](SWITCH_PERFORMANCE_RESULTS.md) for the current state.
+phase descriptions below retain the original proposal.
 
 ## Objective and constraints
 

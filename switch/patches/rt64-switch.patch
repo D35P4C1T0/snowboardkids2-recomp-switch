@@ -71,6 +71,36 @@ diff --git a/CMakeLists.txt b/CMakeLists.txt
  
  target_include_directories(rt64 PRIVATE ${CMAKE_BINARY_DIR}/src)
 -
+diff --git a/src/common/rt64_emulator_configuration.cpp b/src/common/rt64_emulator_configuration.cpp
+--- a/src/common/rt64_emulator_configuration.cpp
++++ b/src/common/rt64_emulator_configuration.cpp
+@@ -3,6 +3,10 @@
+ //
+ 
+ #include "rt64_emulator_configuration.h"
++
++#if defined(__SWITCH__)
++#include <cstdlib>
++#endif
+ 
+ namespace RT64 {
+     // EmulatorConfiguration
+@@ -10,7 +14,13 @@
+     EmulatorConfiguration::EmulatorConfiguration() {
+         dither.postBlendNoise = true;
+         dither.postBlendNoiseNegative = false;
++#if defined(__SWITCH__)
++        // Stock SK2 keeps framebuffer sampling on the GPU. GBI can still request RAM copyback.
++        const char *ramFramebuffers = std::getenv("SK2_SWITCH_RAM_FRAMEBUFFERS");
++        framebuffer.renderToRAM = ramFramebuffers && *ramFramebuffers == '1';
++#else
+         framebuffer.renderToRAM = true;
++#endif
+         framebuffer.copyWithGPU = true;
+     }
+-};
+\ No newline at end of file
++};
 diff --git a/src/common/rt64_mapped_file.cpp b/src/common/rt64_mapped_file.cpp
 --- a/src/common/rt64_mapped_file.cpp
 +++ b/src/common/rt64_mapped_file.cpp

@@ -138,11 +138,10 @@ saves and personal settings on your SD card.
 
 ## Nintendo Switch homebrew
 
-The full game is hardware-tested with corrected textures and audio, an FPS
-counter, and cached/vectorized framebuffer readback. Current races are around
-45 FPS; sustained 60 FPS and the long hardware stress gate remain outstanding.
-See [tested results](docs/SWITCH_PERFORMANCE_RESULTS.md) for the latest evidence
-and [port status](docs/SWITCH_PORT.md) for the remaining platform work.
+The full game is hardware-tested with corrected textures and audio and an FPS
+counter. The standard graphics configuration keeps framebuffers on the GPU to
+target 60 FPS at stock clocks. The long hardware stress test remains open.
+See [port status](docs/SWITCH_PORT.md) for the remaining platform work.
 
 With devkitA64, libnx, and `switch-sdl2` installed, build the validated SDK/SDL
 bootstrap with:
@@ -249,11 +248,14 @@ SWITCH_NRO_ARGS='--no-profile --no-fps' ./scripts/switch-run.sh "$SWITCH_IP" ful
 SWITCH_NRO_ARGS='--async-submissions' ./scripts/switch-run.sh "$SWITCH_IP" full
 ```
 
-Synchronous GPU submissions and cached readback are the default. Asynchronous
-submissions and `--batch-framebuffer-copyback` remain experimental.
+Synchronous GPU submissions and GPU framebuffers are the default. To restore
+automatic RAM copyback for a mod that reads framebuffer pixels on the CPU,
+launch with `--ram-framebuffers` or create an empty `config/ram-framebuffers`
+in the SD-card application directory. Explicit RT64 render-to-RAM commands
+still work with the default. Asynchronous submissions and
+`--batch-framebuffer-copyback` remain experimental.
 `--direct-readbacks` and `--legacy-audio-backend` are comparison controls that
-can reduce smoothness or restore choppy sound. See the
-[complete option reference](docs/SWITCH_PERFORMANCE_RESULTS.md#profiling-and-comparison-controls).
+can reduce smoothness or restore choppy sound.
 
 Audio diagnostics include queue duration, production gaps, catch-up chunks,
 SDL/backend failures, and observed empty queues. These counters complement
@@ -263,7 +265,7 @@ listening tests; an empty-queue observation alone is not an audible underrun.
 The standard SD-card package enables packed framebuffer copyback. It halves
 eligible color/depth readback payloads and commits native bytes directly to RAM.
 `--rgba-framebuffer-copyback` restores reference mode for a
-NetLoader comparison. See the [candidate validation and controls](docs/SWITCH_PERFORMANCE_RESULTS.md#2026-10-06--stock-memory-bandwidth-candidate).
+NetLoader comparison.
 
 The standard package also enables single-pass RAM transfers. For comparisons,
 `--staged-framebuffer-transfers` retains packed copyback while disabling fused
@@ -276,4 +278,3 @@ larger pooled buffers. Profile windows include the worst sample's workload ID
 and approximate completion time. The analyzer's `--profiles-csv <path>` option
 exports these alongside the timing histograms. Texture traffic counters
 compare the active staging payload with retained capacity in the same run.
-See `docs/SWITCH_PERFORMANCE_RESULTS.md` for candidate results and their limits.

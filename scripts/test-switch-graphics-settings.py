@@ -24,6 +24,7 @@ stub=r'''
 #include <string>
 #include <vector>
 #include "ultramodern/config.hpp"
+#include "common/rt64_emulator_configuration.h"
 #include "common/rt64_user_configuration.h"
 namespace RT64 {
 struct Application {
@@ -46,6 +47,13 @@ struct Context {
 '''
 test=r'''
 int main() {
+    unsetenv("SK2_SWITCH_RAM_FRAMEBUFFERS");
+    const RT64::EmulatorConfiguration defaults;
+    assert(!defaults.framebuffer.renderToRAM && defaults.framebuffer.copyWithGPU);
+    assert(setenv("SK2_SWITCH_RAM_FRAMEBUFFERS", "1", 1) == 0);
+    const RT64::EmulatorConfiguration ram;
+    assert(ram.framebuffer.renderToRAM && ram.framebuffer.copyWithGPU);
+
     namespace R=ultramodern::renderer;
     using U=RT64::UserConfiguration;
     for(auto resolution:{R::Resolution::Original,R::Resolution::Original2x,R::Resolution::Auto})
@@ -91,6 +99,8 @@ with tempfile.TemporaryDirectory(prefix='sk2-graphics-settings-') as temp:
                     method('bool renderer::RT64Context::update_config')+'\n'+method('float renderer::RT64Context::get_resolution_scale')+test)
     subprocess.run([os.environ.get('CXX','c++'),'-std=c++20','-D__SWITCH__','-Wall','-Wextra','-Werror','-Wno-return-type',
                     '-I',str(src/'rt64/src'),'-I',str(root/'lib/rt64/src/contrib'),
-                    '-I',str(src/'N64ModernRuntime/ultramodern/include'),str(path),'-o',str(exe)],check=True)
+                    '-isystem',str(src/'rt64/src/contrib/hlslpp/include'),
+                    '-I',str(src/'N64ModernRuntime/ultramodern/include'),str(path),
+                    str(src/'rt64/src/common/rt64_emulator_configuration.cpp'),'-o',str(exe)],check=True)
     subprocess.run([str(exe)],check=True)
 print('PASS: real config types, production mapping/live updates, all 27 resolution/downsampling/MSAA combinations, invalidation and rebuild rules')

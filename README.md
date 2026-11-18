@@ -99,11 +99,11 @@ Press **Select/minus (−)** during play to open the white/blue settings menu. A
 
 - **Performance:** choose System or Custom CPU/GPU/memory clocks. System is the default; Custom offers supported rates and caps GPU requests for the current power mode. Enabled sys-clk takes priority, and this app does not change sys-clk's settings.
 
-To target a stable **60 FPS**, enable modest overclocking through **Performance → Custom**, or through sys-clk if you use it to manage clocks.
+The default graphics settings target **60 FPS at stock clocks**. Higher resolutions and MSAA add GPU work. Custom clocks remain available under **Performance → Custom**.
 
 Saves live in `switch/snowboardkids2-recompiled/saves/`; settings and shader cache also remain in the application folder. To update, merge a new package into the same location, preserving your ROM, saves, settings and cache. Keep the NRO and packaged assets from the same release together.
 
-For troubleshooting, check the ROM filename/hash, the complete folder layout, and title takeover first. See [graphics settings](docs/SWITCH_GRAPHICS_SETTINGS.md), [Performance settings](docs/SWITCH_PERFORMANCE_SETTINGS.md), [tested results and diagnostics](docs/SWITCH_PERFORMANCE_RESULTS.md), and [port architecture](docs/SWITCH_PORT.md) for details. To build your own package, follow [BUILDING.md](BUILDING.md#nintendo-switch-homebrew).
+For troubleshooting, check the ROM filename/hash, the complete folder layout, and title takeover first. See [graphics settings](docs/SWITCH_GRAPHICS_SETTINGS.md), [Performance settings](docs/SWITCH_PERFORMANCE_SETTINGS.md), and [port architecture](docs/SWITCH_PORT.md) for details. To build your own package, follow [BUILDING.md](BUILDING.md#nintendo-switch-homebrew).
 
 ## System Requirements
 
@@ -208,7 +208,7 @@ Yes, if you place a file named `portable.txt` in the same folder as the executab
 
 ## Known Issues
 
-- Switch: sustained 60 FPS, cold shader-startup cost, and the full hardware release gates remain unresolved; see the [current Switch results](docs/SWITCH_PERFORMANCE_RESULTS.md).
+- Switch: stock-clock performance has been measured on selected courses. Cold shader startup and the full hardware release tests remain open. See the [remaining hardware tests](docs/SWITCH_PORT.md#still-missing-before-the-port-is-release-ready).
 - Overlays such as MSI Afterburner and other software such as Wallpaper Engine can cause performance issues with this project that prevent the game from rendering correctly. Disabling such software is recommended.
 
 ## Building

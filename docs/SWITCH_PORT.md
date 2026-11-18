@@ -28,9 +28,8 @@ The 30-minute stress gate, wider course/item/menu coverage, handheld/docked
 tests, save/controller validation, and suspend/resume remain outstanding.
 Cold shader/pipeline initialization also remains costly.
 
-See [performance results](SWITCH_PERFORMANCE_RESULTS.md) for measurements,
-comparison caveats, build/test commands, and diagnostic flags. The
-[performance roadmap](SWITCH_PERFORMANCE_PLAN.md) tracks implemented phases
+See the [build guide](../BUILDING.md#nintendo-switch-homebrew) for diagnostic
+flags. The [performance roadmap](SWITCH_PERFORMANCE_PLAN.md) tracks the phases
 and remaining work. The dated investigations below preserve earlier evidence;
 their historical FPS and audio queue readings are not the current checkpoint.
 
