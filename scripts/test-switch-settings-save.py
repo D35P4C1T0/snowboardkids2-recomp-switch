@@ -6,7 +6,7 @@ import subprocess
 import tempfile
 
 root = Path(__file__).resolve().parent.parent
-runtime = root / 'build-switch-deps/N64ModernRuntime'
+runtime = root / 'build/switch/deps/N64ModernRuntime'
 files = (runtime / 'librecomp/src/files.cpp').read_text().replace('#include "files.hpp"', '#include "librecomp/files.hpp"').replace('std::filesystem::rename(', 'horizonRename(')
 config = (runtime / 'librecomp/src/config.cpp').read_text()
 json_methods = config[config.index('static bool read_json('):config.index('static std::filesystem::path get_path_to_config(')]

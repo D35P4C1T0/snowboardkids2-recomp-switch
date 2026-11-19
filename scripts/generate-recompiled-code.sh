@@ -4,7 +4,7 @@ set -eu
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 REPO_ROOT=$(CDPATH= cd -- "${SCRIPT_DIR}/.." && pwd)
 ROM_PATH="${REPO_ROOT}/snowboardkids2.z64"
-TOOLS_BUILD="${REPO_ROOT}/build-tools/n64recomp-host"
+TOOLS_BUILD="${REPO_ROOT}/build/tools/n64recomp"
 
 if [ ! -f "${ROM_PATH}" ]; then
     echo "Missing ${ROM_PATH}" >&2
@@ -29,7 +29,7 @@ fi
 
 "${SCRIPT_DIR}/build-host-tools.sh"
 
-STAGING=$(mktemp -d "${REPO_ROOT}/build-recompiled.XXXXXX")
+STAGING=$(mktemp -d "${REPO_ROOT}/build/recompiled.XXXXXX")
 trap 'rm -rf -- "${STAGING}"' EXIT
 trap 'exit 1' HUP INT TERM
 cp "${REPO_ROOT}/us.toml" "${REPO_ROOT}/aspMain.us.toml" "${STAGING}/"

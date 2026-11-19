@@ -32,7 +32,7 @@ with tempfile.TemporaryDirectory(prefix='sk2-memory-transfer-') as temp:
     src.write_text(code)
     flags=['-fsanitize=address,undefined'] if args.sanitize else []
     subprocess.run([os.environ.get('CXX','c++'),'-std=c++17','-O2','-Wall','-Wextra','-Werror',
-                    *flags,'-I',str(root/'build-switch-deps/rt64/src'),str(src),'-o',str(exe)],check=True)
+                    *flags,'-I',str(root/'build/switch/deps/rt64/src'),str(src),'-o',str(exe)],check=True)
     subprocess.run([str(exe)],check=True)
 print('PASS: production swap/copy helper, every 0–15 byte alignment, vector/tail sizes, untouched source and guards' +
       (', ASan and UBSan' if args.sanitize else ''))

@@ -3,8 +3,8 @@ set -eu
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 REPO_ROOT=$(CDPATH= cd -- "${SCRIPT_DIR}/.." && pwd)
-TOOLS_BUILD="${REPO_ROOT}/build-tools/n64recomp-host"
-FILE_TO_C_BUILD="${REPO_ROOT}/build-tools/file-to-c-host"
+TOOLS_BUILD="${REPO_ROOT}/build/tools/n64recomp"
+FILE_TO_C_BUILD="${REPO_ROOT}/build/tools/file-to-c"
 
 if command -v ninja >/dev/null 2>&1; then
     CMAKE_GENERATOR=Ninja

@@ -5,7 +5,7 @@ import os
 import subprocess
 import tempfile
 root=Path(__file__).resolve().parent.parent
-src=root/'build-switch-deps'
+src=root/'build/switch/deps'
 frontend=(src/'RecompFrontend/recompui/src/renderer/rt64_render_context.cpp').read_text()
 user=(src/'rt64/src/common/rt64_user_configuration.cpp').read_text()
 conversions=frontend[frontend.index('RT64::UserConfiguration::AspectRatio to_rt64'):frontend.index('RT64::EnhancementConfiguration::Presentation::Mode to_rt64')]

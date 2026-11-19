@@ -178,7 +178,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "NintendoSwitch")
     endif()
 
     set(SK2_HOST_FILE_TO_C
-        "${CMAKE_SOURCE_DIR}/build-tools/file-to-c-host/file_to_c"
+        "${CMAKE_SOURCE_DIR}/build/tools/file-to-c/file_to_c"
         CACHE FILEPATH "Runnable host file_to_c executable"
     )
     if(NOT EXISTS "${SK2_HOST_FILE_TO_C}")
@@ -190,7 +190,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "NintendoSwitch")
     endif()
 
     set(SK2_HOST_N64RECOMP
-        "${CMAKE_SOURCE_DIR}/build-tools/n64recomp-host/N64Recomp"
+        "${CMAKE_SOURCE_DIR}/build/tools/n64recomp/N64Recomp"
         CACHE FILEPATH "Runnable host N64Recomp executable"
     )
     if(NOT EXISTS "${SK2_HOST_N64RECOMP}")

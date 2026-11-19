@@ -5,13 +5,13 @@ import os
 import subprocess
 import tempfile
 root=Path(__file__).resolve().parent.parent
-source=(root/'build-switch-deps/rt64/src/render/rt64_render_target.cpp').read_text()
+source=(root/'build/switch/deps/rt64/src/render/rt64_render_target.cpp').read_text()
 def method(signature):
     start=source.index(signature)
     return source[start:source.index('\n    }',start)+6].replace('RenderTarget::','')
 encode=method('    bool RenderTarget::encodeColorToNativeBytes')
 release=method('    void RenderTarget::releaseTextures')
-cb=(root/'build-switch-deps/rt64/src/shared/rt64_switch_framebuffer_copy.h').read_text()
+cb=(root/'build/switch/deps/rt64/src/shared/rt64_switch_framebuffer_copy.h').read_text()
 cb=cb[cb.index('    struct SwitchFramebufferColorCopyCB'):cb.index('#ifdef HLSL_CPU', cb.index('    struct SwitchFramebufferColorCopyCB'))]
 stub=r'''
 #include <cassert>

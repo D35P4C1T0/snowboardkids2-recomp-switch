@@ -3,7 +3,7 @@ set -eu
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 REPO_ROOT=$(CDPATH= cd -- "${SCRIPT_DIR}/.." && pwd)
-DEPENDENCY_ROOT=${1:-${SK2_SWITCH_DEPS_ROOT:-"${REPO_ROOT}/build-switch-deps"}}
+DEPENDENCY_ROOT=${1:-${SK2_SWITCH_DEPS_ROOT:-"${REPO_ROOT}/build/switch/deps"}}
 DEPENDENCY_ROOT=$(CDPATH= cd -- "${DEPENDENCY_ROOT}" && pwd -P)
 PATCH_ROOT="${REPO_ROOT}/switch/patches"
 case "${2:-}" in

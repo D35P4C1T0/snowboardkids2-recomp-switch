@@ -5,7 +5,7 @@ import os
 import subprocess
 import tempfile
 root=Path(__file__).resolve().parent.parent
-source=(root/'build-switch-deps/rt64/src/hle/rt64_application.cpp').read_text()
+source=(root/'build/switch/deps/rt64/src/hle/rt64_application.cpp').read_text()
 start=source.index('    void Application::updateMultisampling()')
 method=source[start:source.index('\n#ifdef _WIN32',start)].replace('Application::','')
 stub=r'''

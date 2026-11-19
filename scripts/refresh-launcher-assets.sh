@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-BUILD_DIR="${BUILD_DIR:-build-cmake}"
+BUILD_DIR="${BUILD_DIR:-build/desktop}"
 APP_NAME="${APP_NAME:-SnowboardKids2Recompiled.app}"
 APP_DIR="$ROOT_DIR/$BUILD_DIR/$APP_NAME"
 ASSETS_SRC="$ROOT_DIR/assets"
@@ -17,7 +17,7 @@ Sync non-C++ UI assets into the existing macOS app bundle.
 Options:
   --build-dir DIR
             Build directory containing $APP_NAME.
-            Defaults to BUILD_DIR, or build-cmake when BUILD_DIR is unset.
+            Defaults to BUILD_DIR, or build/desktop when BUILD_DIR is unset.
   -h, --help
             Show this help.
 EOF

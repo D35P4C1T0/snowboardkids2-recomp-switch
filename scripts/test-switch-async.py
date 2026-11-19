@@ -6,7 +6,7 @@ import subprocess
 import tempfile
 
 root=Path(__file__).resolve().parent.parent
-subprocess.run(['git','-C',str(root/'build-switch-nvk/source'),'apply','--reverse','--check',
+subprocess.run(['git','-C',str(root/'build/switch/nvk/source'),'apply','--reverse','--check',
                 str(root/'switch/nvk/switch-nvk-build.patch')],check=True)
 test=r'''
 #include <assert.h>
@@ -59,6 +59,6 @@ with tempfile.TemporaryDirectory(prefix='sk2-async-') as temp:
     src=Path(temp)/'test.c';exe=Path(temp)/'test'
     src.write_text(test)
     subprocess.run([os.environ.get('CC','cc'),'-std=c11','-Wall','-Wextra','-Werror',
-                    '-I',str(root/'build-switch-nvk/source/winsys'),str(src),'-o',str(exe)],check=True)
+                    '-I',str(root/'build/switch/nvk/source/winsys'),str(src),'-o',str(exe)],check=True)
     subprocess.run([str(exe)],check=True)
 print('PASS: bounded timeline history, oldest-point backpressure, pending/available, failed work, drain, reset')

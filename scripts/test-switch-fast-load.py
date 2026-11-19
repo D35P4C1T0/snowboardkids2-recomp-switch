@@ -6,7 +6,7 @@ import subprocess
 import tempfile
 
 root = Path(__file__).resolve().parent.parent
-tree = root / 'build-switch-deps/rt64/src'
+tree = root / 'build/switch/deps/rt64/src'
 stub = r'''
 #pragma once
 #include <cstdint>

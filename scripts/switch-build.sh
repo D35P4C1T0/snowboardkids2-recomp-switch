@@ -4,7 +4,7 @@ set -eu
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 REPO_ROOT=$(CDPATH= cd -- "${SCRIPT_DIR}/.." && pwd)
 MODE="${1:-bootstrap}"
-SWITCH_DEPS_ROOT="${REPO_ROOT}/build-switch-deps"
+SWITCH_DEPS_ROOT="${REPO_ROOT}/build/switch/deps"
 
 if [ -z "${DEVKITPRO:-}" ]; then
     echo "DEVKITPRO is not set. Install devkitA64/libnx and export DEVKITPRO." >&2
@@ -21,19 +21,16 @@ fi
 
 case "${MODE}" in
     bootstrap)
-        BUILD_DIR="${REPO_ROOT}/build-switch"
         BOOTSTRAP=ON
         CORE_PROBE=ON
         TARGET=SnowboardKids2SwitchBootstrap_nro
         ;;
     core)
-        BUILD_DIR="${REPO_ROOT}/build-switch-core"
         BOOTSTRAP=OFF
         CORE_PROBE=ON
         TARGET=SnowboardKids2SwitchCoreProbe_nro
         ;;
     full)
-        BUILD_DIR="${REPO_ROOT}/build-switch-full"
         BOOTSTRAP=OFF
         CORE_PROBE=OFF
         TARGET=SnowboardKids2Recompiled_nro
@@ -43,6 +40,7 @@ case "${MODE}" in
         exit 1
         ;;
 esac
+BUILD_DIR="${REPO_ROOT}/build/switch/${MODE}"
 
 # An existing build directory keeps its generator even if Ninja was installed
 # after the first configuration. Switching generators requires a fresh tree.

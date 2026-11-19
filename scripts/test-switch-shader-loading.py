@@ -6,7 +6,7 @@ import subprocess
 import tempfile
 
 root = Path(__file__).resolve().parent.parent
-tree = root / 'build-switch-deps/rt64/src'
+tree = root / 'build/switch/deps/rt64/src'
 
 def method(source, signature):
     start = source.index(signature)

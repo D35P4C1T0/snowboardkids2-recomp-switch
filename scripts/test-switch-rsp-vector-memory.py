@@ -6,7 +6,7 @@ import platform
 import subprocess
 import tempfile
 root=Path(__file__).resolve().parent.parent
-runtime=root/'build-switch-deps/N64ModernRuntime'
+runtime=root/'build/switch/deps/N64ModernRuntime'
 program=r'''
 #define SK2_SWITCH_RSP_VECTOR_MEMORY 1
 #include "librecomp/rsp.hpp"

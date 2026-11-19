@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-BUILD_DIR="${BUILD_DIR:-build-cmake}"
+BUILD_DIR="${BUILD_DIR:-build/desktop}"
 BUILD_TYPE="${BUILD_TYPE:-Release}"
 TARGET="${TARGET:-SnowboardKids2Recompiled}"
 C_COMPILER="${CC:-clang}"

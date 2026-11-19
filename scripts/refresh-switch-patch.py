@@ -11,12 +11,12 @@ entries = [line.split() for line in (root / 'switch/patches/series').read_text()
            if line.strip() and not line.startswith('#')]
 dependency = sys.argv[1]
 if dependency == 'nvk':
-    canonical = disposable = root / 'build-switch-nvk/source'
+    canonical = disposable = root / 'build/switch/nvk/source'
     patch = root / 'switch/nvk/switch-nvk-build.patch'
 else:
     relative, name = next(entry for entry in entries if entry[0] == dependency)
     canonical = root / 'lib' / relative
-    disposable = root / 'build-switch-deps' / relative
+    disposable = root / 'build/switch/deps' / relative
     patch = root / 'switch/patches' / name
 paths = set(re.findall(r'^diff --git a/(.+) b/.+$', patch.read_text(), re.M))
 paths.update(sys.argv[2:])

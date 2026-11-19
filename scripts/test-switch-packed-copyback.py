@@ -6,7 +6,7 @@ import subprocess
 import tempfile
 
 root = Path(__file__).resolve().parent.parent
-base = root / 'build-switch-deps/rt64/src'
+base = root / 'build/switch/deps/rt64/src'
 formats = (base/'shaders/Formats.hlsli').read_text()
 depth = (base/'shaders/Depth.hlsli').read_text()
 random = (base/'shaders/Random.hlsli').read_text()

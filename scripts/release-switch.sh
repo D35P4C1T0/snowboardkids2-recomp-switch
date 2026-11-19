@@ -86,7 +86,7 @@ if [[ $use_existing == 0 ]]; then
     done
     export GAME_VERSION="$version"
     export DEVKITPRO=${DEVKITPRO:-/opt/devkitpro}
-    export SK2_SWITCH_NVK_ROOT=${SK2_SWITCH_NVK_ROOT:-"$REPO_ROOT/build-switch-nvk/source/nvk-switch"}
+    export SK2_SWITCH_NVK_ROOT=${SK2_SWITCH_NVK_ROOT:-"$REPO_ROOT/build/switch/nvk/source/nvk-switch"}
     if [[ ! -f $SK2_SWITCH_NVK_ROOT/lib/libvulkan.a ]]; then
         "$SCRIPT_DIR/build-switch-nvk.sh"
         [[ -f $SK2_SWITCH_NVK_ROOT/lib/libvulkan.a ]] || { echo "Set SK2_SWITCH_NVK_ROOT to the generated NVK package." >&2; exit 1; }
@@ -94,7 +94,7 @@ if [[ $use_existing == 0 ]]; then
     "$SCRIPT_DIR/switch-build.sh" full
 fi
 
-archive="$REPO_ROOT/build-switch-full/snowboardkids2-switch.zip"
+archive="$REPO_ROOT/build/switch/full/snowboardkids2-switch.zip"
 verify_args=(--verify "$version")
 if [[ $build_only == 0 || $use_existing == 1 ]]; then
     verify_args+=(--commit "$target_sha")
@@ -116,7 +116,7 @@ if [[ $(git rev-parse HEAD) != "$target_sha" || -n $(git status --porcelain --un
     exit 1
 fi
 if [[ -z $notes_file ]]; then
-    notes_file="$REPO_ROOT/build-switch-full/switch-release-notes.md"
+    notes_file="$REPO_ROOT/build/switch/full/switch-release-notes.md"
     cat > "$notes_file" <<'NOTES'
 Native Nintendo Switch homebrew port of Snowboard Kids 2: Recompiled.
 

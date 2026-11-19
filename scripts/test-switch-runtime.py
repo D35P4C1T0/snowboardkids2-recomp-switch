@@ -7,7 +7,7 @@ import subprocess
 import tempfile
 
 ROOT = Path(__file__).resolve().parent.parent
-RUNTIME = ROOT / "build-switch-deps/N64ModernRuntime/librecomp"
+RUNTIME = ROOT / "build/switch/deps/N64ModernRuntime/librecomp"
 pi = (RUNTIME / "src/pi.cpp").read_text()
 recomp = (RUNTIME / "src/recomp.cpp").read_text()
 

@@ -69,7 +69,7 @@ with tempfile.TemporaryDirectory(prefix='sk2-queue-priority-') as temp:
     source.write_text(test)
     subprocess.run([os.environ.get('CXX', 'c++'), '-std=c++17', '-O2',
                     '-pthread', '-Wall', '-Wextra', '-Werror',
-                    '-I', str(root / 'build-switch-deps/rt64/src/contrib/plume'),
+                    '-I', str(root / 'build/switch/deps/rt64/src/contrib/plume'),
                     str(source), '-o', str(exe)], check=True)
     subprocess.run([str(exe)], check=True, timeout=20)
 print('Switch queue priority: exclusivity, presentation ordering and progress passed')

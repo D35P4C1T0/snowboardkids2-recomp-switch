@@ -33,13 +33,13 @@ else
 
     case "${MODE}" in
         full)
-            NRO="${REPO_ROOT}/build-switch-full/snowboardkids2-recompiled.nro"
+            NRO="${REPO_ROOT}/build/switch/full/snowboardkids2-recompiled.nro"
             ;;
         core)
-            NRO="${REPO_ROOT}/build-switch-core/snowboardkids2-core-probe.nro"
+            NRO="${REPO_ROOT}/build/switch/core/snowboardkids2-core-probe.nro"
             ;;
         bootstrap)
-            NRO="${REPO_ROOT}/build-switch/snowboardkids2-recompiled.nro"
+            NRO="${REPO_ROOT}/build/switch/bootstrap/snowboardkids2-recompiled.nro"
             ;;
         *)
             echo "Unknown mode '${MODE}'. Expected full, core, or bootstrap." >&2
@@ -68,7 +68,7 @@ if [[ ! -f "${NRO}" ]]; then
     exit 1
 fi
 
-LOG_DIR="${REPO_ROOT}/build-switch-logs"
+LOG_DIR="${REPO_ROOT}/build/switch/logs"
 mkdir -p "${LOG_DIR}"
 LOG_NAME=${MODE//[^A-Za-z0-9._-]/_}
 LOG_PATH="${LOG_DIR}/${LOG_NAME}-$(date '+%Y%m%d-%H%M%S').log"

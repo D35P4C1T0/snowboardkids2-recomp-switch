@@ -13,7 +13,7 @@ import tempfile
 import zipfile
 
 ROOT = Path(__file__).resolve().parent.parent
-BUILD = ROOT / "build-switch-full"
+BUILD = ROOT / "build/switch/full"
 APP = Path("switch/snowboardkids2-recompiled")
 NRO = "snowboardkids2-recompiled.nro"
 ARCHIVE = BUILD / "snowboardkids2-switch.zip"

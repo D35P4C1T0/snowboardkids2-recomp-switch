@@ -10,7 +10,7 @@ if [[ -z "${SWITCH_ADDRESS}" ]]; then
     exit 1
 fi
 
-LOG_DIR="${REPO_ROOT}/build-switch-logs"
+LOG_DIR="${REPO_ROOT}/build/switch/logs"
 mkdir -p "${LOG_DIR}"
 TEMP_PATH="${LOG_DIR}/.manual-screenshot-$$.jpg"
 

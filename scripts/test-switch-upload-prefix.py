@@ -6,7 +6,7 @@ import subprocess
 import tempfile
 
 root = Path(__file__).resolve().parent.parent
-source = (root / 'build-switch-deps/rt64/src/render/rt64_texture_cache.cpp').read_text()
+source = (root / 'build/switch/deps/rt64/src/render/rt64_texture_cache.cpp').read_text()
 start = source.index('                    const size_t decodedCount = switchDecodedCommandIndices.size();')
 end = source.index('                    switchDirectWaitComplete = true;', start)
 schedule = source[start:end]

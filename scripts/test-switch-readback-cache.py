@@ -6,9 +6,9 @@ import subprocess
 import tempfile
 
 root = Path(__file__).resolve().parent.parent
-subprocess.run(['git', '-C', str(root/'build-switch-deps/rt64'), 'apply', '--reverse', '--check',
+subprocess.run(['git', '-C', str(root/'build/switch/deps/rt64'), 'apply', '--reverse', '--check',
                 str(root/'switch/patches/rt64-switch.patch')], check=True)
-source = (root/'build-switch-deps/rt64/src/render/rt64_native_target.cpp').read_text()
+source = (root/'build/switch/deps/rt64/src/render/rt64_native_target.cpp').read_text()
 helpers = source[source.index('namespace {'):source.index('\n}\n#endif')+2]
 start = source.index('    void NativeTarget::copyToRAMCPU(')
 method = source[start:source.index('\n    }', start)+6].replace('void NativeTarget::', 'void ')
@@ -16,7 +16,7 @@ start = source.index('    bool NativeTarget::copyToNativeCPU(')
 record_method = source[start:source.index('\n    }', start)+6].replace('bool NativeTarget::', 'bool ')
 start = source.index('    bool NativeTarget::copyToRDRAMCPU(')
 fused_method = source[start:source.index('\n    }', start)+6].replace('bool NativeTarget::', 'bool ')
-fb_source = (root/'build-switch-deps/rt64/src/hle/rt64_framebuffer.cpp').read_text()
+fb_source = (root/'build/switch/deps/rt64/src/hle/rt64_framebuffer.cpp').read_text()
 start = fb_source.index('    void Framebuffer::copyNativeToRAMCPU(')
 commit_method = fb_source[start:fb_source.index('\n    }', start)+6].replace('void Framebuffer::', 'void ')
 start = fb_source.index('    uint32_t Framebuffer::copyRAMToNativeAndChanges(')
@@ -254,7 +254,7 @@ with tempfile.TemporaryDirectory(prefix='sk2-readback-') as temp:
     src=Path(temp)/'test.cpp'; exe=Path(temp)/'test'
     src.write_text(stub.split('struct NativeTarget')[0]+helpers+'\nstruct NativeTarget'+stub.split('struct NativeTarget')[1]+upload_stub+record_method+fused_method+method+'\n};\n'+fb_stub+tests)
     subprocess.run([os.environ.get('CXX','c++'),'-std=c++17','-D_POSIX_C_SOURCE=200809L',
-                    '-O2','-Wall','-Wextra','-Werror','-D__SWITCH__','-I',str(root/'build-switch-deps/rt64/src'),str(src),'-o',str(exe)],check=True)
+                    '-O2','-Wall','-Wextra','-Werror','-D__SWITCH__','-I',str(root/'build/switch/deps/rt64/src'),str(src),'-o',str(exe)],check=True)
     subprocess.run([str(exe),'gpu'],check=True)
     direct=subprocess.check_output([str(exe),'0'])
     cached=subprocess.check_output([str(exe),'1'])

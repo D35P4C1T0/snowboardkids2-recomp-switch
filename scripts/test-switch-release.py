@@ -49,8 +49,8 @@ if sys.argv[1:3]==['release','create']:
 from pathlib import Path
 import os,subprocess,zipfile,struct
 root=Path.cwd()
-build=root/'build-switch-full'
-build.mkdir(exist_ok=True)
+build=root/'build/switch/full'
+build.mkdir(parents=True, exist_ok=True)
 nro=bytearray(0x80+0x38+0x4000)
 nro[0x10:0x14]=b'NRO0'
 struct.pack_into('<I',nro,0x18,0x80)
@@ -71,11 +71,11 @@ subprocess.run(["sh", "scripts/package-switch.sh", "--record", 'a'*40], check=Tr
     (root / "assets").mkdir()
     (root / "assets/font.ttf").write_bytes(b"font")
     (root / "recompcontrollerdb.txt").write_bytes(b"controllers")
-    nvk = root / "nvk/lib"
+    nvk = root / "build/switch/nvk/source/nvk-switch/lib"
     nvk.mkdir(parents=True)
     (nvk / "libvulkan.a").write_bytes(b"driver")
-    env = {**os.environ, "PATH": str(tools) + os.pathsep + os.environ["PATH"],
-           "SK2_SWITCH_NVK_ROOT": str(root / "nvk")}
+    env = {**os.environ, "PATH": str(tools) + os.pathsep + os.environ["PATH"]}
+    env.pop("SK2_SWITCH_NVK_ROOT", None)
 
     def run(options=(), flags=None, success=True):
         (root / "upload.json").unlink(missing_ok=True)
@@ -86,17 +86,17 @@ subprocess.run(["sh", "scripts/package-switch.sh", "--record", 'a'*40], check=Tr
         return root / "upload.json"
 
     import zipfile
-    previous_stage = root / "build-switch-full/sdcard"
+    previous_stage = root / "build/switch/full/sdcard"
     private_save = Path("switch/snowboardkids2-recompiled/saves/local.bin")
     (previous_stage / private_save).parent.mkdir(parents=True)
     (previous_stage / private_save).write_bytes(b"personal save")
     (root / "assets/local.z64").write_bytes(b"untracked ROM")
     upload = run(("--build-only",))
     assert not upload.exists()
-    with zipfile.ZipFile(root / "build-switch-full/snowboardkids2-switch.zip") as archive:
+    with zipfile.ZipFile(root / "build/switch/full/snowboardkids2-switch.zip") as archive:
         assert not any(name.endswith(("local.z64", "local.bin")) for name in archive.namelist())
     assert any(folder.joinpath("sdcard", private_save).is_file()
-               for folder in (root / "build-switch-full").glob("sdcard-previous-*"))
+               for folder in (root / "build/switch/full").glob("sdcard-previous-*"))
 
     upload = run()
     args = json.loads(upload.read_text())
@@ -113,17 +113,17 @@ subprocess.run(["sh", "scripts/package-switch.sh", "--record", 'a'*40], check=Tr
     for flag in ("DIRTY", "UNPUSHED", "WRONG_TAG", "CONTAMINATED"):
         assert not run(flags={flag: "1"}, success=False).exists(), flag
     run(("--build-only",))
-    count = (root / "build-switch-full/build-count").read_text()
-    before = (root / "build-switch-full/snowboardkids2-switch.zip").read_bytes()
+    count = (root / "build/switch/full/build-count").read_text()
+    before = (root / "build/switch/full/snowboardkids2-switch.zip").read_bytes()
     assert run(("--use-existing",)).exists()
-    assert count == (root / "build-switch-full/build-count").read_text()
-    assert before == (root / "build-switch-full/snowboardkids2-switch.zip").read_bytes()
+    assert count == (root / "build/switch/full/build-count").read_text()
+    assert before == (root / "build/switch/full/snowboardkids2-switch.zip").read_bytes()
     assert not run(("--use-existing",), flags={"NEW_HEAD": "1"}, success=False).exists()
-    package = root / "build-switch-full/snowboardkids2-switch.zip"
+    package = root / "build/switch/full/snowboardkids2-switch.zip"
     package.write_bytes(before + b"changed ZIP bytes")
     assert not run(("--use-existing",), success=False).exists()
     package.write_bytes(before)
-    nro = root / "build-switch-full/snowboardkids2-recompiled.nro"
+    nro = root / "build/switch/full/snowboardkids2-recompiled.nro"
     data = bytearray(nro.read_bytes())
     data[0x80+0x38+0x3060] = ord('2')
     nro.write_bytes(data)

@@ -6,9 +6,9 @@ import subprocess
 import tempfile
 
 root = Path(__file__).resolve().parent.parent
-subprocess.run(['git', '-C', str(root / 'build-switch-nvk/source'), 'apply',
+subprocess.run(['git', '-C', str(root / 'build/switch/nvk/source'), 'apply',
                 '--reverse', '--check', str(root / 'switch/nvk/switch-nvk-build.patch')], check=True)
-source = (root / 'build-switch-nvk/source/winsys/drm_shim.c').read_text()
+source = (root / 'build/switch/nvk/source/winsys/drm_shim.c').read_text()
 def function(name):
     start = source.rfind('\n', 0, source.index(name + '(')) + 1
     return source[start:source.index('\n}', start) + 2]
@@ -84,7 +84,7 @@ with tempfile.TemporaryDirectory(prefix='sk2-retirement-') as temp:
     src=Path(temp)/'test.c'; exe=Path(temp)/'test'
     src.write_text(stub+'\n'+drain+'\n'+functions+'\n'+tests)
     subprocess.run([os.environ.get('CC','cc'), '-std=c11', '-D_POSIX_C_SOURCE=200809L',
-                    '-Wall','-Wextra','-Werror','-I',str(root/'build-switch-nvk/source/winsys'),
+                    '-Wall','-Wextra','-Werror','-I',str(root/'build/switch/nvk/source/winsys'),
                     str(src),'-o',str(exe)],check=True)
     subprocess.run([str(exe)],check=True)
 print('PASS: pending work drains before buffer/channel release and CPU access; faults retain resources')

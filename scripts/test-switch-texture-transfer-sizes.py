@@ -6,7 +6,7 @@ import subprocess
 import tempfile
 
 root = Path(__file__).resolve().parent.parent
-source = (root/'build-switch-deps/rt64/src/render/rt64_texture_cache.cpp').read_text()
+source = (root/'build/switch/deps/rt64/src/render/rt64_texture_cache.cpp').read_text()
 start = source.index('                    uint8_t *uploadData = reinterpret_cast<uint8_t *>(switchDecodedUploads[i]->map());')
 write = source[start:source.index('                    dstTexture->memorySize = uploadSize;', start)]
 start = source.index('                    RenderCommandList *stageCommandList = switchDecodedStageCommandLists[commandListIndex].get();')

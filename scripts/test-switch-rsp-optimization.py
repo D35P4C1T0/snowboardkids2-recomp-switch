@@ -5,7 +5,7 @@ import os
 import subprocess
 import tempfile
 root=Path(__file__).resolve().parent.parent
-runtime=root/'build-switch-deps/N64ModernRuntime'
+runtime=root/'build/switch/deps/N64ModernRuntime'
 rom=root/'snowboardkids2.z64'
 assert rom.is_file(), 'Provide the supported local ROM for audio task tables'
 program=r'''

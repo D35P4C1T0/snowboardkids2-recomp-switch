@@ -28,7 +28,9 @@ def main():
         line.split() for line in (PATCHES / "series").read_text().splitlines()
         if line.strip() and not line.startswith("#")
     ]
-    with tempfile.TemporaryDirectory(prefix="build-patch-test-", dir=ROOT) as temp:
+    build = ROOT / "build"
+    build.mkdir(exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="patch-test-", dir=build) as temp:
         temp = Path(temp)
         original = temp / "original"
         candidate = temp / "candidate"

@@ -3,7 +3,7 @@ set -eu
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 REPO_ROOT=$(CDPATH= cd -- "${SCRIPT_DIR}/.." && pwd)
-BUILD_ROOT="${REPO_ROOT}/build-switch-nvk"
+BUILD_ROOT="${REPO_ROOT}/build/switch/nvk"
 NVK_SOURCE="${BUILD_ROOT}/source"
 NVK_COMMIT="6eec707da3ad5f86c64f748226583202801bfd03"
 MESA_VERSION="25.0.7"

@@ -163,9 +163,8 @@ Checks passed:
 These checks validate CPU behavior and compilation; they do not establish that
 the Vulkan driver can compile and execute the game's MSAA pipelines.
 
-The tested native-resolution build is preserved at
-`build-switch-baseline/stable-0cea74f.nro`. The graphics-settings candidate is
-packaged in `build-switch-full/snowboardkids2-switch.zip` with
+The tested native-resolution baseline was built from commit `0cea74f`.
+The graphics-settings candidate is packaged in `build/switch/full/snowboardkids2-switch.zip` with
 packed/fused transfers enabled and no ROM included.
 
 ## Hardware log
@@ -234,5 +233,5 @@ The log analyzer retains requested settings, device support, rebuild completion
 and actual target dimensions/sample counts:
 
 ```sh
-python3 scripts/analyze-switch-log.py build-switch-logs/full-20261006-212929.log
+python3 scripts/analyze-switch-log.py build/switch/logs/full-20261006-212929.log
 ```

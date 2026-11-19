@@ -7,9 +7,9 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parent.parent
 # Ensure tests exercise the durable patch, not an unrelated ignored-tree edit.
-subprocess.run(['git', '-C', str(ROOT / 'build-switch-nvk/source'), 'apply',
+subprocess.run(['git', '-C', str(ROOT / 'build/switch/nvk/source'), 'apply',
                 '--reverse', '--check', str(ROOT / 'switch/nvk/switch-nvk-build.patch')], check=True)
-source = (ROOT / 'build-switch-nvk/source/winsys/drm_shim.c').read_text()
+source = (ROOT / 'build/switch/nvk/source/winsys/drm_shim.c').read_text()
 
 def function(name):
     start = source.index(name + '(')
@@ -177,6 +177,6 @@ with tempfile.TemporaryDirectory(prefix='sk2-submit-test-') as temp:
     src=Path(temp)/'test.c'; binary=Path(temp)/'test'
     src.write_text(stub+'\n'+functions+'\n'+tests)
     subprocess.run([os.environ.get('CC','cc'), '-std=c11', '-D_POSIX_C_SOURCE=200809L',
-                    '-I', str(ROOT / 'build-switch-nvk/source/winsys'), '-Wall', '-Wextra',
+                    '-I', str(ROOT / 'build/switch/nvk/source/winsys'), '-Wall', '-Wextra',
                     '-Wno-unused-variable', '-Werror', str(src), '-o', str(binary)], check=True)
     subprocess.run([str(binary)], check=True)

@@ -3,7 +3,7 @@ set -eu
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 REPO_ROOT=$(CDPATH= cd -- "${SCRIPT_DIR}/.." && pwd)
-DESTINATION_ROOT=${1:-"${REPO_ROOT}/build-switch-deps"}
+DESTINATION_ROOT=${1:-"${REPO_ROOT}/build/switch/deps"}
 
 case "${DESTINATION_ROOT}" in
     "${REPO_ROOT}"/build*) ;;

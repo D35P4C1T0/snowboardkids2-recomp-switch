@@ -6,7 +6,7 @@ import subprocess
 import tempfile
 
 root = Path(__file__).resolve().parent.parent
-source = (root / 'build-switch-deps/rt64/src/hle/rt64_state.cpp').read_text()
+source = (root / 'build/switch/deps/rt64/src/hle/rt64_state.cpp').read_text()
 start = source.index('                const bool combinedColorDepthCopyback =')
 prepare = source[start:source.index('\n#endif', start)]
 start = source.index('                submitSwitchFramebuffer(combinedColorDepthCopyback ?')

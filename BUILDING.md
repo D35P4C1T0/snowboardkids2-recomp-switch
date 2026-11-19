@@ -71,16 +71,28 @@ On Windows, you can open the repository folder with Visual Studio, and you'll be
 If you prefer the command line or you're on a Unix platform you can build the project using CMake:
 
 ```bash
-cmake -S . -B build-cmake -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_COMPILER=clang -G Ninja -DCMAKE_BUILD_TYPE=Release # or Debug if you want to debug
-cmake --build build-cmake --target SnowboardKids2Recompiled -j$(nproc) --config Release # or Debug
+cmake -S . -B build/desktop -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_COMPILER=clang -G Ninja -DCMAKE_BUILD_TYPE=Release # or Debug if you want to debug
+cmake --build build/desktop --target SnowboardKids2Recompiled -j$(nproc) --config Release # or Debug
 ```
 
 ## 5. Success
 
-Voilà! You should now have a `SnowboardKids2Recompiled` executable in the build directory! If you used Visual Studio this will be `out/build/x64-[Configuration]` and if you used the provided CMake commands then this will be `build-cmake`. You will need to run the executable out of the root folder of this project or copy the assets folder to the build folder to run it.
+Voilà! You should now have a `SnowboardKids2Recompiled` executable in the build directory! If you used Visual Studio this will be `out/build/x64-[Configuration]` and if you used the provided CMake commands then this will be `build/desktop`. You will need to run the executable out of the root folder of this project or copy the assets folder to the build folder to run it.
 
 > [!IMPORTANT]  
 > In the game itself, you should be using a standard ROM, not the decompressed one.
+
+## Local build directories
+
+- `build/desktop/` contains the command-line desktop build.
+- `build/tools/` contains host tools used by the Switch build.
+- `build/switch/{bootstrap,core,full}/` contains the three Switch build modes.
+- `build/switch/{deps,nvk,logs}/` contains patched dependencies, the NVK driver,
+  and hardware logs and screenshots.
+
+Regenerate CMake builds in the new locations because caches store absolute paths.
+You can move an existing `build-switch-nvk/` to `build/switch/nvk/` and
+`build-switch-logs/` to `build/switch/logs/` to reuse them.
 
 ## Publishing a Switch release
 
@@ -133,7 +145,7 @@ Optional modes:
 Without custom notes, the release includes SD-card setup instructions and the
 supported ROM hash. Packaging starts from tracked assets and the current build.
 If the previous staging folder contains extra files, the packager preserves it
-under `build-switch-full/sdcard-previous-*/` and prints the path. Keep ROMs,
+under `build/switch/full/sdcard-previous-*/` and prints the path. Keep ROMs,
 saves and personal settings on your SD card.
 
 ## Nintendo Switch homebrew
@@ -155,11 +167,11 @@ probe, Docker and about 15 GB of free storage are also required:
 
 ```bash
 ./scripts/build-switch-nvk.sh
-export SK2_SWITCH_NVK_ROOT="$PWD/build-switch-nvk/source/nvk-switch"
+export SK2_SWITCH_NVK_ROOT="$PWD/build/switch/nvk/source/nvk-switch"
 ./scripts/switch-build.sh core
 ```
 
-This produces `build-switch-core/snowboardkids2-core-probe.nro`. See
+This produces `build/switch/core/snowboardkids2-core-probe.nro`. See
 [`docs/SWITCH_PORT.md`](docs/SWITCH_PORT.md) for hardware-test details and the
 remaining release gates.
 
@@ -169,7 +181,7 @@ own decompressed NTSC-U 1.1 ROM:
 ```bash
 cp /path/to/your/rom.z64 snowboardkids2.z64
 ./scripts/generate-recompiled-code.sh
-export SK2_SWITCH_NVK_ROOT="$PWD/build-switch-nvk/source/nvk-switch"
+export SK2_SWITCH_NVK_ROOT="$PWD/build/switch/nvk/source/nvk-switch"
 ./scripts/switch-build.sh full
 ```
 
@@ -179,10 +191,10 @@ backend). The ROM and generated outputs are ignored by Git and are never
 included in a release package.
 
 The complete SD-card payload is staged at
-`build-switch-full/sdcard/switch/snowboardkids2-recompiled/`. Copy that whole
+`build/switch/full/sdcard/switch/snowboardkids2-recompiled/`. Copy that whole
 directory to `sdmc:/switch/`, then add your own ROM as `snowboardkids2.z64`.
 The `assets/` directory is required by the launcher and must accompany the NRO.
-Alternatively, extract `build-switch-full/snowboardkids2-switch.zip`
+Alternatively, extract `build/switch/full/snowboardkids2-switch.zip`
 directly at the SD-card root; it contains the exact `switch/` hierarchy.
 The standard package includes the accepted packed-copyback and fused-transfer
 optimizations. Repackage the current NRO with `scripts/package-switch.sh`.
@@ -197,14 +209,14 @@ export SWITCH_IP=192.168.222.235 # Replace with your Switch's NetLoader address.
 
 The NRO is uploaded without removing the SD-card payload or ROM. Timestamped
 application, RT64, and Plume checkpoints stream to the terminal and are
-retained under `build-switch-logs/`, so normal testing no longer requires
+retained under `build/switch/logs/`, so normal testing no longer requires
 copying a log from the SD card. The network writes are nonblocking: a lost or
 slow nxlink receiver drops messages instead of freezing a game thread. The NRO
 does not create or write `startup.log`; hardware diagnostics are nxlink-only.
 
 During a full NetLoader run, press R3 to capture the next composed frame. The
 host watcher started by `switch-run.sh` downloads it automatically to
-`build-switch-logs/manual-YYYYMMDD-HHMMSS.jpg` and prints the exact path. R3 is
+`build/switch/logs/manual-YYYYMMDD-HHMMSS.jpg` and prints the exact path. R3 is
 reserved only while this debug capture server is active; normal SD launches
 keep the configured game binding.
 
@@ -231,10 +243,10 @@ longer; known shaders finish warming before gameplay resumes.
 After a run, generate a compact performance and failure summary with:
 
 ```bash
-./scripts/analyze-switch-log.py build-switch-logs/full-YYYYMMDD-HHMMSS.log
+./scripts/analyze-switch-log.py build/switch/logs/full-YYYYMMDD-HHMMSS.log
 ```
 
-Add `--csv build-switch-logs/perf.csv` to export the two-second performance
+Add `--csv build/switch/logs/perf.csv` to export the two-second performance
 windows for plotting or comparison between builds. Use `--start-seconds` and
 `--end-seconds` to compare warm report intervals; faults are still checked
 across the complete log. The top-left FPS counter counts completed

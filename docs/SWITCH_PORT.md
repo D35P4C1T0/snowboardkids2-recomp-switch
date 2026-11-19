@@ -61,8 +61,8 @@ fullscreen vertex and texture-copy pixel shaders and compares every output
 texel. It does not yet validate RmlUi filtering, N64 decoding, or all game
 shader variants.
 
-Evidence is in `build-switch-logs/core-20261001-105947.log` (before) and
-`build-switch-logs/core-20261001-110516.log` (after). The earlier inline
+Evidence is in `build/switch/logs/core-20261001-105947.log` (before) and
+`build/switch/logs/core-20261001-110516.log` (after). The earlier inline
 upload/readback probe triggered notification 32, a rejected GPU command list.
 Full-game diagnostic runs before the cache fix trapped at `NVB197_END`
 (`class=0xb197`, `method=0x1614`, `irq=0x00200000`); native error type 2
@@ -77,7 +77,7 @@ presentation. Reproduce the fault-prone inline matrix explicitly with:
 ./scripts/switch-build.sh core
 ./scripts/switch-run.sh 192.168.222.235 core
 SWITCH_NRO_ARGS='--inline-transfers' ./scripts/switch-run.sh 192.168.222.235 core
-python3 scripts/analyze-switch-log.py build-switch-logs/core-YYYYMMDD-HHMMSS.log
+python3 scripts/analyze-switch-log.py build/switch/logs/core-YYYYMMDD-HHMMSS.log
 python3 scripts/test-switch-submit.py
 python3 scripts/test-switch-sync.py
 python3 scripts/test-switch-log.py
@@ -92,14 +92,14 @@ now exits on termination, so a closed nxlink connection cannot leave the run
 script waiting on an orphaned capture loop.
 
 The rebuilt full game also launched and reached a race in
-`build-switch-logs/full-20261001-112145.log`. Over 103.7 seconds, the analyzer
+`build/switch/logs/full-20261001-112145.log`. Over 103.7 seconds, the analyzer
 reported a gameplay median of 34.83 FPS, a 27.95 FPS tenth percentile, and a
 26.70 FPS minimum window. GPU-wait p95 was 1.28 ms, Vulkan memory peaked at
 136 MiB, and audio reported no empty queues or failed submissions. No native
 GPU fault or Vulkan fatal was logged before the nxlink connection reset.
 The reset alone does not establish whether the game exited normally.
 
-The race-start capture `build-switch-logs/manual-20261001-112314.jpg` shows
+The race-start capture `build/switch/logs/manual-20261001-112314.jpg` shows
 legible lap, rank, and coin indicators and coherent character/world textures.
 The item slots are empty, so this capture does not validate item icons; it
 also does not validate the launcher or other menus. This run used a different
@@ -153,7 +153,7 @@ October status above for current measurements and audio validation.
 - [x] Reproducible dependency patch chain; every follow-up patch passes forward
   and reverse application checks against the pinned submodules.
 - [x] Clean dependency workflow: Switch patches are applied to disposable,
-  manifest-cached sources under `build-switch-deps/`; canonical submodule
+  manifest-cached sources under `build/switch/deps/`; canonical submodule
   worktrees remain at their pinned commits.
 
 ### Still missing before the port is release-ready
@@ -178,7 +178,7 @@ October status above for current measurements and audio validation.
 
 Run each candidate through `./scripts/switch-run.sh <switch-ip> full`. Pause at
 each named screen and press R3 once; the host stores timestamped JPEGs under
-`build-switch-logs/`.
+`build/switch/logs/`.
 
 1. Re-run the durable core transfer/draw/batch probes after changing GPU
    synchronization or cache maintenance. The baseline verifier is implemented
@@ -409,15 +409,15 @@ Requirements: devkitA64, libnx, `switch-sdl2`, CMake, and either Ninja or Make.
 ./scripts/switch-build.sh bootstrap
 ```
 
-The output is `build-switch/snowboardkids2-recompiled.nro`. Copy it to the target SD-card directory and launch it through title takeover. A green left status bar means SD-card persistence works; a green right status bar means the process has application-mode memory. Press Plus to exit.
+The output is `build/switch/bootstrap/snowboardkids2-recompiled.nro`. Copy it to the target SD-card directory and launch it through title takeover. A green left status bar means SD-card persistence works; a green right status bar means the process has application-mode memory. Press Plus to exit.
 
 ## Build the runtime + NVK hardware probe
 
 Non-bootstrap builds first export the pinned N64ModernRuntime, RecompFrontend,
-RT64, and nested submodule commits into the ignored `build-switch-deps/`
+RT64, and nested submodule commits into the ignored `build/switch/deps/`
 directory. The complete Switch patch chain is applied there in strict order,
 and CMake builds only from those disposable sources. A manifest reuses the
-tree until a dependency commit or patch changes; deleting `build-switch-deps/`
+tree until a dependency commit or patch changes; deleting `build/switch/deps/`
 is always safe. The checked-out `lib/*` submodules are never patched in place.
 
 The renderer package is pinned to switch-nvk commit
@@ -428,7 +428,7 @@ silently break as nightly Rust changes.
 
 ```sh
 ./scripts/build-switch-nvk.sh
-export SK2_SWITCH_NVK_ROOT="$PWD/build-switch-nvk/source/nvk-switch"
+export SK2_SWITCH_NVK_ROOT="$PWD/build/switch/nvk/source/nvk-switch"
 ./scripts/switch-build.sh core
 ```
 
@@ -438,7 +438,7 @@ On memory-constrained hosts, limit cross-build concurrency, for example:
 export SK2_SWITCH_BUILD_JOBS=2
 ```
 
-The output is `build-switch-core/snowboardkids2-core-probe.nro`. Launch it in
+The output is `build/switch/core/snowboardkids2-core-probe.nro`. Launch it in
 application mode. It creates the NVK interface/device, a native VI surface, a
 1280x720 three-image swapchain, and presents a green clear through Plume. NVK
 is then fully shut down before the libnx console is restored. The final screen
@@ -458,20 +458,20 @@ release archive.
 
 ```sh
 ./scripts/generate-recompiled-code.sh
-export SK2_SWITCH_NVK_ROOT="$PWD/build-switch-nvk/source/nvk-switch"
+export SK2_SWITCH_NVK_ROOT="$PWD/build/switch/nvk/source/nvk-switch"
 ./scripts/switch-build.sh full
 ```
 
-The expected output is `build-switch-full/snowboardkids2-recompiled.nro`.
+The expected output is `build/switch/full/snowboardkids2-recompiled.nro`.
 The script compiles the MIPS patch payload inside the pinned switch-nvk Docker
 image before cross-linking the aarch64 NRO, so it also works on macOS hosts
 whose system Clang lacks a MIPS backend.
 
 A ready-to-copy directory containing the NRO, required UI assets, and controller
 database is created at
-`build-switch-full/sdcard/switch/snowboardkids2-recompiled/`. Add the user-owned
+`build/switch/full/sdcard/switch/snowboardkids2-recompiled/`. Add the user-owned
 ROM to that directory as `snowboardkids2.z64` before copying it to the SD card.
-The same payload is also emitted as `build-switch-full/snowboardkids2-switch.zip`
+The same payload is also emitted as `build/switch/full/snowboardkids2-switch.zip`
 for extraction directly at the SD-card root.
 The standard package enables the accepted packed-copyback and fused-transfer
 optimizations.
@@ -491,14 +491,14 @@ The equivalent explicit form is `./scripts/switch-run.sh 192.168.222.237 full`.
 To upload a specific diagnostic or candidate NRO without renaming it:
 
 ```sh
-./scripts/switch-run.sh build-switch-full/candidate.nro 192.168.222.237
+./scripts/switch-run.sh build/switch/full/candidate.nro 192.168.222.237
 ```
 
 `nxlink -s` receives an explicit checkpoint stream; stdout/stderr are not
 redirected because libnx's blocking stdio socket can freeze a render thread
 when the host backpressures or disconnects. Network writes are nonblocking and
 may drop messages instead. The helper writes each session to
-`build-switch-logs/full-YYYYMMDD-HHMMSS.log`. Checkpoints include millisecond
+`build/switch/logs/full-YYYYMMDD-HHMMSS.log`. Checkpoints include millisecond
 timestamps, and RT64 emits a two-second performance sample containing effective
 FPS; average and maximum frame/GPU-wait times; sample count; swapchain extent;
 detected F3DEX/S2DEX microcodes; bounded unknown-opcode warnings; framebuffer
@@ -510,24 +510,24 @@ While the game is running, fetch the composed 1280x720 frame (including UI)
 for visual-regression or texture-glitch inspection with:
 
 ```sh
-./scripts/switch-screenshot.sh 192.168.222.237 build-switch-logs/capture.jpg
+./scripts/switch-screenshot.sh 192.168.222.237 build/switch/logs/capture.jpg
 ```
 
 The target serves a synchronized renderer readback on TCP port 47474. Omitting
-the output argument creates a timestamped JPEG under `build-switch-logs/`.
+the output argument creates a timestamped JPEG under `build/switch/logs/`.
 
 For rapid manual capture during a full NetLoader run, press R3. The target
 captures the next presented frame and `switch-run.sh` automatically saves it
-as `build-switch-logs/manual-YYYYMMDD-HHMMSS.jpg`. R3 is reserved and consumed
+as `build/switch/logs/manual-YYYYMMDD-HHMMSS.jpg`. R3 is reserved and consumed
 only while the debug screenshot server is active; a normal SD launch preserves
 the game's configured R3 action.
 
 Summarize a captured run, or export its performance windows for plotting, with:
 
 ```sh
-./scripts/analyze-switch-log.py build-switch-logs/full-YYYYMMDD-HHMMSS.log
-./scripts/analyze-switch-log.py build-switch-logs/full-YYYYMMDD-HHMMSS.log \
-  --csv build-switch-logs/perf.csv
+./scripts/analyze-switch-log.py build/switch/logs/full-YYYYMMDD-HHMMSS.log
+./scripts/analyze-switch-log.py build/switch/logs/full-YYYYMMDD-HHMMSS.log \
+  --csv build/switch/logs/perf.csv
 ```
 
 The summary reports FPS distribution, frame/GPU wait percentiles, pipeline

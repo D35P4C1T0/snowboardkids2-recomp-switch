@@ -7,7 +7,7 @@ if [[ $# -lt 1 || $# -gt 2 ]]; then
 fi
 
 SWITCH_ADDRESS=$1
-OUTPUT_PATH=${2:-"build-switch-logs/screenshot-$(date '+%Y%m%d-%H%M%S').jpg"}
+OUTPUT_PATH=${2:-"build/switch/logs/screenshot-$(date '+%Y%m%d-%H%M%S').jpg"}
 mkdir -p "$(dirname -- "${OUTPUT_PATH}")"
 
 curl --fail --silent --show-error --max-time 5 \
