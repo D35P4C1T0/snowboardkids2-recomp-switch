@@ -459,6 +459,19 @@ add_custom_command(OUTPUT ${CMAKE_SOURCE_DIR}/RecompiledPatches/patches_bin.c
 )
 
 # Recompile patches elf into patches.c and patches.bin
+if(NOT SK2_HOST_N64RECOMP)
+    if(WIN32 AND EXISTS "${CMAKE_SOURCE_DIR}/N64Recomp.exe")
+        set(SK2_HOST_N64RECOMP "${CMAKE_SOURCE_DIR}/N64Recomp.exe")
+    elseif(EXISTS "${CMAKE_SOURCE_DIR}/build/tools/n64recomp/N64Recomp")
+        set(SK2_HOST_N64RECOMP "${CMAKE_SOURCE_DIR}/build/tools/n64recomp/N64Recomp")
+    elseif(EXISTS "${CMAKE_SOURCE_DIR}/N64Recomp")
+        set(SK2_HOST_N64RECOMP "${CMAKE_SOURCE_DIR}/N64Recomp")
+    elseif(WIN32)
+        set(SK2_HOST_N64RECOMP "${CMAKE_SOURCE_DIR}/N64Recomp.exe")
+    else()
+        set(SK2_HOST_N64RECOMP "${CMAKE_SOURCE_DIR}/N64Recomp")
+    endif()
+endif()
 add_custom_command(OUTPUT
                        ${CMAKE_SOURCE_DIR}/patches/patches.bin
                        ${CMAKE_SOURCE_DIR}/RecompiledPatches/patches.c
@@ -765,31 +778,33 @@ if (CMAKE_SYSTEM_NAME STREQUAL "NintendoSwitch")
     )
 endif()
 
-# Embed all .nrm files in the "mods" directory
-file(GLOB NRM_FILES "${CMAKE_SOURCE_DIR}/mods/*.nrm")
+# Embed all .nrm files in the "mods" directory (desktop only; Switch lacks live code-mod JIT)
+if(NOT CMAKE_SYSTEM_NAME STREQUAL "NintendoSwitch")
+    file(GLOB NRM_FILES "${CMAKE_SOURCE_DIR}/mods/*.nrm")
 
-set(GENERATED_NRM_SOURCES "")
-set(GENERATED_NRM_HEADERS "")
+    set(GENERATED_NRM_SOURCES "")
+    set(GENERATED_NRM_HEADERS "")
 
-foreach(NRM_FILE ${NRM_FILES})
-    get_filename_component(NRM_NAME ${NRM_FILE} NAME_WE)
-    set(OUT_C "${CMAKE_CURRENT_BINARY_DIR}/mods/${NRM_NAME}.c")
-    set(OUT_H "${CMAKE_CURRENT_BINARY_DIR}/mods/${NRM_NAME}.h")
+    foreach(NRM_FILE ${NRM_FILES})
+        get_filename_component(NRM_NAME ${NRM_FILE} NAME_WE)
+        set(OUT_C "${CMAKE_CURRENT_BINARY_DIR}/mods/${NRM_NAME}.c")
+        set(OUT_H "${CMAKE_CURRENT_BINARY_DIR}/mods/${NRM_NAME}.h")
 
-    add_custom_command(
-        OUTPUT ${OUT_C} ${OUT_H}
-        COMMAND file_to_c ${NRM_FILE} ${NRM_NAME} ${OUT_C} ${OUT_H}
-        DEPENDS ${NRM_FILE} file_to_c
-    )
+        add_custom_command(
+            OUTPUT ${OUT_C} ${OUT_H}
+            COMMAND file_to_c ${NRM_FILE} ${NRM_NAME} ${OUT_C} ${OUT_H}
+            DEPENDS ${NRM_FILE} file_to_c
+        )
 
-    list(APPEND GENERATED_NRM_SOURCES ${OUT_C})
-    list(APPEND GENERATED_NRM_HEADERS ${OUT_H})
-endforeach()
+        list(APPEND GENERATED_NRM_SOURCES ${OUT_C})
+        list(APPEND GENERATED_NRM_HEADERS ${OUT_H})
+    endforeach()
 
-target_sources(SnowboardKids2Recompiled PRIVATE ${GENERATED_NRM_SOURCES})
-if(GENERATED_NRM_HEADERS)
-    add_custom_target(EmbeddedMods DEPENDS ${GENERATED_NRM_SOURCES} ${GENERATED_NRM_HEADERS})
-    add_dependencies(SnowboardKids2Recompiled EmbeddedMods)
+    target_sources(SnowboardKids2Recompiled PRIVATE ${GENERATED_NRM_SOURCES})
+    if(GENERATED_NRM_HEADERS)
+        add_custom_target(EmbeddedMods DEPENDS ${GENERATED_NRM_SOURCES} ${GENERATED_NRM_HEADERS})
+        add_dependencies(SnowboardKids2Recompiled EmbeddedMods)
+    endif()
 endif()
 
 target_sources(SnowboardKids2Recompiled PRIVATE ${SOURCES})

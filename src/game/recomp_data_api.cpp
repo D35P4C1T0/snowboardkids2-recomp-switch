@@ -339,6 +339,10 @@ void recomputil_u32_memory_hashmap_create(uint8_t* rdram, recomp_context* ctx) {
 
     // Allocate the map's size and return the pointer.
     void* mem = recomp::alloc(rdram, map->second);
+    if (mem == nullptr) {
+        _return(ctx, 0);
+        return;
+    }
     gpr addr = reinterpret_cast<uint8_t*>(mem) - rdram + 0xFFFFFFFF80000000ULL;
 
     // Zero the memory.
@@ -535,6 +539,7 @@ void recomputil_u32_slotmap_set(uint8_t* rdram, recomp_context* ctx) {
     uint32_t* value_ptr;
     if (!map->get(key, &value_ptr)) {
         _return(ctx, 0);
+        return;
     }
 
     *value_ptr = value;
@@ -550,11 +555,7 @@ void recomputil_u32_slotmap_erase(uint8_t* rdram, recomp_context* ctx) {
         HANDLE_INVALID_ERROR();
     }
     
-    if (!map->erase(key)) {
-        _return(ctx, 0);
-    }
-    
-    _return(ctx, 1);
+    _return(ctx, map->erase(key));
 }
 
 void recomputil_u32_slotmap_size(uint8_t* rdram, recomp_context* ctx) {

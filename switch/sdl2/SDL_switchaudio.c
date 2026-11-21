@@ -191,9 +191,11 @@ SWITCHAUDIO_PlayDevice(_THIS)
                 break;
             }
         }
-        while (this->hidden->buffer[current].state == AudioDriverWaveBufState_Playing) {
-            audrvUpdate(&this->hidden->driver);
-            audrenWaitFrame();
+        if (current >= 0) {
+            while (this->hidden->buffer[current].state == AudioDriverWaveBufState_Playing) {
+                audrvUpdate(&this->hidden->driver);
+                audrenWaitFrame();
+            }
         }
     }
 }
@@ -226,6 +228,10 @@ static Uint8
 static void
 SWITCHAUDIO_CloseDevice(_THIS)
 {
+    if (this->hidden == NULL) {
+        return;
+    }
+
     if (this->hidden->audr_driver) {
         audrvClose(&this->hidden->driver);
     }
@@ -240,6 +246,7 @@ SWITCHAUDIO_CloseDevice(_THIS)
     }
 
     SDL_free(this->hidden);
+    this->hidden = NULL;
 }
 
 static void

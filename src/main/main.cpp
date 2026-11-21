@@ -59,9 +59,10 @@
 #include "librecomp/mods.hpp"
 #include "librecomp/helpers.hpp"
 
-#include "mods/snowboardkids2_mod_template.h"
+#if !defined(__SWITCH__)
 #include "mods/snowboardkids2_randomizer.h"
 #include "mods/snowboardkids2_time_trial.h"
+#endif
 #include "sk2_game_version.h"
 #include "sk2_launcher.h"
 #include "sk2_theme.h"
@@ -78,7 +79,18 @@
 const std::string version_string = sk2_game_version;
 constexpr int sk2_max_players = 4;
 
-#if !defined(__SWITCH__)
+#if defined(__SWITCH__)
+// Restore clocks and flush pending saves before an unrecoverable _Exit.
+extern "C" void switch_fatal_cleanup() {
+    static std::atomic_flag cleaned = ATOMIC_FLAG_INIT;
+    if (cleaned.test_and_set()) {
+        return;
+    }
+    sk2::clocks::shutdown();
+    ultramodern::join_saving_thread();
+    switch_shutdown_logging();
+}
+#else
 void switch_log_checkpoint(const char*, bool) {
 }
 #endif
@@ -687,7 +699,7 @@ bool preload_executable(PreloadContext& context) {
         fprintf(stderr, "Failed to create file mapping of executable!");
         CloseHandle(context.handle);
         context = {};
-        return EXIT_FAILURE;
+        return false;
     }
 
     context.view = MapViewOfFile(context.mapping_handle, FILE_MAP_READ, 0, 0, 0);
@@ -712,6 +724,7 @@ bool preload_executable(PreloadContext& context) {
     SIZE_T minimum_set_size, maximum_set_size;
     if (!GetProcessWorkingSetSize(process_handle, &minimum_set_size, &maximum_set_size)) {
         fprintf(stderr, "Failed to get working set size!");
+        CloseHandle(process_handle);
         CloseHandle(context.mapping_handle);
         CloseHandle(context.handle);
         context = {};
@@ -720,11 +733,14 @@ bool preload_executable(PreloadContext& context) {
 
     if (!SetProcessWorkingSetSize(process_handle, minimum_set_size + context.size, maximum_set_size + context.size)) {
         fprintf(stderr, "Failed to set working set size!");
+        CloseHandle(process_handle);
         CloseHandle(context.mapping_handle);
         CloseHandle(context.handle);
         context = {};
         return false;
     }
+
+    CloseHandle(process_handle);
 
     if (VirtualLock(context.view, context.size) == 0) {
         fprintf(stderr, "Failed to lock view of executable! (Error: %08lx)\n", GetLastError());
@@ -865,7 +881,7 @@ int main(int argc, char** argv) {
         else {
             switch_log_checkpoint("fatal: std::terminate without active exception");
         }
-        switch_shutdown_logging();
+        switch_fatal_cleanup();
         std::_Exit(EXIT_FAILURE);
     });
     const std::filesystem::path switch_root = "sdmc:/switch/snowboardkids2-recompiled";
@@ -1048,15 +1064,14 @@ int main(int argc, char** argv) {
         recomp::register_game(game);
     }
 
-    recomp::mods::register_embedded_mod(
-        "snowboardkids2_mod_template",
-        { reinterpret_cast<const uint8_t*>(snowboardkids2_mod_template), snowboardkids2_mod_template_size });
+#if !defined(__SWITCH__)
     recomp::mods::register_embedded_mod(
         "snowboardkids2_randomizer",
         { reinterpret_cast<const uint8_t*>(snowboardkids2_randomizer), snowboardkids2_randomizer_size });
     recomp::mods::register_embedded_mod(
         "snowboardkids2_time_trial",
         { reinterpret_cast<const uint8_t*>(snowboardkids2_time_trial), snowboardkids2_time_trial_size });
+#endif
 
     REGISTER_FUNC(recomp_get_target_aspect_ratio);
     REGISTER_FUNC(recomp_get_target_hud_aspect_ratio);

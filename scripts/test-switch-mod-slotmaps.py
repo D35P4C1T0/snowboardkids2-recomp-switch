@@ -45,6 +45,20 @@ int main() {
     const gpr int_map = call(recomputil_create_u32_slotmap);
     assert(call(recomputil_u32_slotmap_get, int_map, 0, base) == 0);
     assert(ram[0] == 0xFF);
+    assert(call(recomputil_u32_slotmap_set, int_map, 0, 123) == 0);
+    assert(call(recomputil_u32_slotmap_erase, int_map, 0) == 0);
+    const gpr int_key = call(recomputil_u32_slotmap_create, int_map);
+    assert(call(recomputil_u32_slotmap_set, int_map, int_key, 456) == 1);
+    assert(call(recomputil_u32_slotmap_get, int_map, int_key, base) == 1);
+    assert(call(recomputil_u32_slotmap_erase, int_map, int_key) == 1);
+    assert(call(recomputil_u32_slotmap_erase, int_map, int_key) == 0);
+    call(recomputil_destroy_u32_slotmap, int_map);
+    std::memset(ram, 0xFF, sizeof(ram));
+
+    const gpr mem_hashmap = call(recomputil_create_u32_memory_hashmap, 200);
+    assert(call(recomputil_u32_memory_hashmap_create, mem_hashmap, 7) == 0);
+    assert(call(recomputil_u32_memory_hashmap_size, mem_hashmap) == 0);
+    call(recomputil_destroy_u32_memory_hashmap, mem_hashmap);
 
     const gpr mem_map = call(recomputil_create_memory_slotmap, 16);
     const gpr key = call(recomputil_memory_slotmap_create, mem_map);
