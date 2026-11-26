@@ -9,7 +9,7 @@
 #include <cstring>
 #include <mutex>
 
-static std::atomic<bool> switch_profile_enabled{true};
+static std::atomic<bool> switch_profile_enabled{false};
 static std::atomic<float> switch_display_fps{0.0f};
 
 extern "C" float switch_fps_value() {

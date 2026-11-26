@@ -299,9 +299,6 @@ void queue_samples(int16_t* audio_data, size_t sample_count) {
     // Buffer for holding the output of swapping the audio channels. This is reused across
     // calls to reduce runtime allocations.
     static std::vector<float> swap_buffer;
-#if defined(__SWITCH__)
-    uint32_t chunk_peak = 0;
-#endif
 
     // Make sure the swap buffer is large enough to hold the audio data, including any extra space needed for
     // resampling.
@@ -320,11 +317,6 @@ void queue_samples(int16_t* audio_data, size_t sample_count) {
     // swap buffer to correct for the address xor caused by endianness handling.
     float cur_main_volume = zelda64::get_main_volume() / 100.0f; // Get the current main volume, normalized to 0.0-1.0.
     for (size_t i = 0; i < sample_count; i += input_channels) {
-#if defined(__SWITCH__)
-        const int32_t left = audio_data[i + 0];
-        const int32_t right = audio_data[i + 1];
-        chunk_peak = std::max(chunk_peak, uint32_t(std::max(std::abs(left), std::abs(right))));
-#endif
         swap_buffer[i + 0 + duplicated_input_frames * input_channels] =
             audio_data[i + 1] * (0.5f / 32768.0f) * cur_main_volume;
         swap_buffer[i + 1 + duplicated_input_frames * input_channels] =
@@ -381,68 +373,69 @@ void queue_samples(int16_t* audio_data, size_t sample_count) {
     // end of the buffer.
     const int queue_result = SDL_QueueAudio(audio_device, samples_to_queue, num_bytes_to_queue);
 #if defined(__SWITCH__)
-    static uint64_t queue_count = 0;
-    static uint64_t empty_queue_count = 0;
-    static uint64_t queue_failure_count = 0;
-    static uint32_t interval_peak = 0;
-    static uint64_t interval_min_us = UINT64_MAX, interval_max_us = 0, interval_gap_us = 0;
-    static uint64_t interval_input_frames = 0, interval_output_frames = 0, interval_corrections = 0;
-    static auto previous_queue_time = std::chrono::steady_clock::time_point{};
-    const auto queue_time = std::chrono::steady_clock::now();
-    if (previous_queue_time != std::chrono::steady_clock::time_point{}) {
-        interval_gap_us = std::max(interval_gap_us, uint64_t(std::chrono::duration_cast<
-            std::chrono::microseconds>(queue_time - previous_queue_time).count()));
-    }
-    previous_queue_time = queue_time;
-    interval_min_us = std::min(interval_min_us, cur_queued_microseconds);
-    interval_max_us = std::max(interval_max_us, cur_queued_microseconds);
-    interval_input_frames += sample_count / input_channels;
-    interval_output_frames += num_bytes_to_queue / (output_channels * sizeof(float));
-    interval_corrections += skip_factor != 0;
-    const uint32_t queued_bytes = SDL_GetQueuedAudioSize(audio_device);
+    if (switch_logging_active()) {
+        static uint64_t queue_count = 0;
+        static uint64_t empty_queue_count = 0;
+        static uint64_t queue_failure_count = 0;
+        static uint64_t interval_min_us = UINT64_MAX, interval_max_us = 0, interval_gap_us = 0;
+        static uint64_t interval_input_frames = 0, interval_output_frames = 0, interval_corrections = 0;
+        static auto previous_queue_time = std::chrono::steady_clock::time_point{};
+        const auto queue_time = std::chrono::steady_clock::now();
+        if (previous_queue_time != std::chrono::steady_clock::time_point{}) {
+            interval_gap_us = std::max(interval_gap_us, uint64_t(std::chrono::duration_cast<
+                std::chrono::microseconds>(queue_time - previous_queue_time).count()));
+        }
+        previous_queue_time = queue_time;
+        interval_min_us = std::min(interval_min_us, cur_queued_microseconds);
+        interval_max_us = std::max(interval_max_us, cur_queued_microseconds);
+        interval_input_frames += sample_count / input_channels;
+        interval_output_frames += num_bytes_to_queue / (output_channels * sizeof(float));
+        interval_corrections += skip_factor != 0;
+        const uint32_t queued_bytes = SDL_GetQueuedAudioSize(audio_device);
 
-    queue_count++;
-    interval_peak = std::max(interval_peak, chunk_peak);
-    if ((cur_queued_microseconds == 0) && (queue_count > 1)) {
-        empty_queue_count++;
-    }
-    if (queue_result != 0) {
-        queue_failure_count++;
-    }
+        queue_count++;
+        if ((cur_queued_microseconds == 0) && (queue_count > 1)) {
+            empty_queue_count++;
+        }
+        if (queue_result != 0) {
+            queue_failure_count++;
+        }
 
-    static std::atomic<bool> logged_first_audio_queue{false};
-    if (!logged_first_audio_queue.exchange(true, std::memory_order_relaxed)) {
-        char message[320]{};
-        std::snprintf(message, sizeof(message),
-            "audio: first queue samples=%zu input_rate=%u output_rate=%u bytes=%u result=%d status=%d queued=%u peak=%u volume=%.2f error='%s'",
-            sample_count, sample_rate, output_sample_rate, num_bytes_to_queue,
-            queue_result, int(SDL_GetAudioDeviceStatus(audio_device)),
-            queued_bytes, chunk_peak, double(cur_main_volume), SDL_GetError());
-        switch_log_checkpoint(message);
-    }
+        static std::atomic<bool> logged_first_audio_queue{false};
+        if (!logged_first_audio_queue.exchange(true, std::memory_order_relaxed)) {
+            char message[320]{};
+            std::snprintf(message, sizeof(message),
+                "audio: first queue samples=%zu input_rate=%u output_rate=%u bytes=%u result=%d status=%d queued=%u volume=%.2f error='%s'",
+                sample_count, sample_rate, output_sample_rate, num_bytes_to_queue,
+                queue_result, int(SDL_GetAudioDeviceStatus(audio_device)),
+                queued_bytes, double(cur_main_volume), SDL_GetError());
+            switch_log_checkpoint(message);
+        }
 
-    // Audio callbacks normally arrive about thirty times per second. Keep this
-    // diagnostic infrequent so nxlink logging cannot become a source of
-    // underruns itself.
-    if ((queue_count % 120) == 0) {
-        char message[320]{};
-        std::snprintf(message, sizeof(message),
-            "audio: health queues=%llu empty_before=%llu failures=%llu queued=%u status=%d peak=%u volume=%.2f",
-            static_cast<unsigned long long>(queue_count),
-            static_cast<unsigned long long>(empty_queue_count),
-            static_cast<unsigned long long>(queue_failure_count), queued_bytes,
-            int(SDL_GetAudioDeviceStatus(audio_device)), interval_peak, double(cur_main_volume));
-        switch_log_checkpoint(message);
-        interval_peak = 0;
-        std::snprintf(message, sizeof(message),
-            "audio: timing min_us=%llu max_us=%llu gap_us=%llu input_frames=%llu output_frames=%llu corrections=%llu",
-            (unsigned long long)interval_min_us, (unsigned long long)interval_max_us,
-            (unsigned long long)interval_gap_us, (unsigned long long)interval_input_frames,
-            (unsigned long long)interval_output_frames, (unsigned long long)interval_corrections);
-        switch_log_checkpoint(message);
-        interval_min_us = UINT64_MAX;
-        interval_max_us = interval_gap_us = interval_input_frames = interval_output_frames = interval_corrections = 0;
+        // Audio callbacks normally arrive about thirty times per second. Keep this
+        // diagnostic infrequent so nxlink logging cannot become a source of
+        // underruns itself.
+        if ((queue_count % 120) == 0) {
+            char message[320]{};
+            std::snprintf(message, sizeof(message),
+                "audio: health queues=%llu empty_before=%llu failures=%llu queued=%u status=%d volume=%.2f",
+                static_cast<unsigned long long>(queue_count),
+                static_cast<unsigned long long>(empty_queue_count),
+                static_cast<unsigned long long>(queue_failure_count), queued_bytes,
+                int(SDL_GetAudioDeviceStatus(audio_device)), double(cur_main_volume));
+            switch_log_checkpoint(message);
+            std::snprintf(message, sizeof(message),
+                "audio: timing min_us=%llu max_us=%llu gap_us=%llu input_frames=%llu output_frames=%llu corrections=%llu",
+                (unsigned long long)interval_min_us, (unsigned long long)interval_max_us,
+                (unsigned long long)interval_gap_us, (unsigned long long)interval_input_frames,
+                (unsigned long long)interval_output_frames, (unsigned long long)interval_corrections);
+            switch_log_checkpoint(message);
+            interval_min_us = UINT64_MAX;
+            interval_max_us = interval_gap_us = interval_input_frames = interval_output_frames = interval_corrections = 0;
+        }
     }
+#else
+    (void) queue_result;
 #endif
 }
 
@@ -536,22 +529,10 @@ bool reset_audio(uint32_t output_freq) {
 }
 
 extern RspUcodeFunc aspMain;
-#if defined(__SWITCH__)
-extern RspUcodeFunc switchAspMainOptimized;
-#endif
 
 RspUcodeFunc* get_rsp_microcode(const OSTask* task) {
     switch (task->t.type) {
         case M_AUDTASK:
-#if defined(__SWITCH__)
-            {
-                static const bool optimized = [] {
-                    const char* setting = SDL_getenv("SK2_SWITCH_OPTIMIZED_AUDIO_RSP");
-                    return !setting || *setting != '0';
-                }();
-                if (optimized) return switchAspMainOptimized;
-            }
-#endif
             return aspMain;
 
         default:
@@ -818,50 +799,15 @@ int main(int argc, char** argv) {
     (void) argc;
     (void) argv;
 #if defined(__SWITCH__)
+    bool enable_profile = false;
     for (int i = 1; i < argc; i++) {
-        if (std::strcmp(argv[i], "--fused-framebuffer-transfers") == 0)
-            SDL_setenv("SK2_SWITCH_FUSED_RAM_TRANSFERS", "1", 1);
-        if (std::strcmp(argv[i], "--staged-framebuffer-transfers") == 0)
-            SDL_setenv("SK2_SWITCH_FUSED_RAM_TRANSFERS", "0", 1);
-        if (std::strcmp(argv[i], "--packed-framebuffer-copyback") == 0)
-            SDL_setenv("SK2_SWITCH_PACKED_COPYBACK", "1", 1);
-        if (std::strcmp(argv[i], "--rgba-framebuffer-copyback") == 0)
-            SDL_setenv("SK2_SWITCH_PACKED_COPYBACK", "0", 1);
-        if (std::strcmp(argv[i], "--batch-upload-prefix") == 0)
-            SDL_setenv("SK2_SWITCH_BATCH_UPLOAD_PREFIX", "1", 1);
-        if (std::strcmp(argv[i], "--prioritize-present") == 0)
-            SDL_setenv("SK2_SWITCH_PRESENT_PRIORITY", "1", 1);
-        if (std::strcmp(argv[i], "--reference-audio-rsp") == 0)
-            SDL_setenv("SK2_SWITCH_OPTIMIZED_AUDIO_RSP", "0", 1);
-        if (std::strcmp(argv[i], "--cached-encoded-readbacks") == 0)
-            SDL_setenv("SK2_SWITCH_DIRECT_ENCODED_READBACKS", "0", 1);
-        if (std::strcmp(argv[i], "--ram-framebuffers") == 0)
-            SDL_setenv("SK2_SWITCH_RAM_FRAMEBUFFERS", "1", 1);
-        if (std::strcmp(argv[i], "--optimized-audio-rsp") == 0)
-            SDL_setenv("SK2_SWITCH_OPTIMIZED_AUDIO_RSP", "1", 1);
-        if (std::strcmp(argv[i], "--direct-encoded-readbacks") == 0)
-            SDL_setenv("SK2_SWITCH_DIRECT_ENCODED_READBACKS", "1", 1);
-        if (std::strcmp(argv[i], "--direct-readbacks") == 0)
-            SDL_setenv("SK2_SWITCH_CACHE_READBACKS", "0", 1);
-        if (std::strcmp(argv[i], "--cache-readbacks") == 0)
-            SDL_setenv("SK2_SWITCH_CACHE_READBACKS", "1", 1);
         if (std::strcmp(argv[i], "--no-fps") == 0)
             SDL_setenv("SK2_SWITCH_FPS", "0", 1);
-        if (std::strcmp(argv[i], "--no-profile") == 0) {
-            switch_set_profile_enabled(false);
-            SDL_setenv("SK2_SWITCH_PROFILE", "0", 1);
-        }
-        if (std::strcmp(argv[i], "--legacy-texture-uploads") == 0)
-            SDL_setenv("SK2_SWITCH_BATCH_UPLOADS", "0", 1);
-        if (std::strcmp(argv[i], "--async-submissions") == 0)
-            SDL_setenv("NVK_SWITCH_ASYNC", "1", 1);
-        if (std::strcmp(argv[i], "--batch-color-depth-copyback") == 0)
-            SDL_setenv("SK2_SWITCH_BATCH_COLOR_DEPTH_COPYBACK", "1", 1);
-        if (std::strcmp(argv[i], "--batch-framebuffer-copyback") == 0)
-            SDL_setenv("SK2_SWITCH_BATCH_FRAMEBUFFER_COPYBACK", "1", 1);
-        if (std::strcmp(argv[i], "--legacy-audio-backend") == 0)
-            SDL_setenv("SK2_SWITCH_LEGACY_AUDIO", "1", 1);
+        else if (std::strcmp(argv[i], "--profile") == 0)
+            enable_profile = true;
     }
+    switch_set_profile_enabled(enable_profile);
+    SDL_setenv("SK2_SWITCH_PROFILE", enable_profile ? "1" : "0", 1);
     std::set_terminate([]() {
         const std::exception_ptr active_exception = std::current_exception();
         if (active_exception != nullptr) {
@@ -893,61 +839,11 @@ int main(int argc, char** argv) {
     std::filesystem::create_directories(switch_root / "cache", switch_path_error);
     switch_initialize_logging();
     switch_log_checkpoint("startup: entered main", true);
-    switch_log_checkpoint("startup: nonblocking nxlink checkpoints enabled");
-    if (std::filesystem::exists(switch_root / "config" / "ram-framebuffers", switch_path_error)) {
-        SDL_setenv("SK2_SWITCH_RAM_FRAMEBUFFERS", "1", 1);
-    }
-    const char* ram_framebuffers = SDL_getenv("SK2_SWITCH_RAM_FRAMEBUFFERS");
-    switch_log_checkpoint(ram_framebuffers && *ram_framebuffers == '1'
-        ? "startup: framebuffer RAM copyback selected"
-        : "startup: GPU framebuffers selected");
-    const char* upload_prefix = SDL_getenv("SK2_SWITCH_BATCH_UPLOAD_PREFIX");
-    switch_log_checkpoint(upload_prefix && *upload_prefix == '1'
-        ? "startup: batched texture upload prefix selected"
-        : "startup: separate texture upload prefix selected");
-    const char* present_priority = SDL_getenv("SK2_SWITCH_PRESENT_PRIORITY");
-    switch_log_checkpoint(present_priority && *present_priority == '1'
-        ? "startup: presentation queue priority selected"
-        : "startup: native queue scheduling selected");
-    const char* optimized_audio = SDL_getenv("SK2_SWITCH_OPTIMIZED_AUDIO_RSP");
-    switch_log_checkpoint(!optimized_audio || *optimized_audio != '0'
-        ? "startup: optimized audio RSP selected"
-        : "startup: reference audio RSP selected");
-    const char* asynchronous = SDL_getenv("NVK_SWITCH_ASYNC");
-    switch_log_checkpoint(asynchronous && *asynchronous == '1'
-        ? "startup: NVK bounded asynchronous submissions selected"
-        : "startup: NVK synchronous submissions selected");
-    const char* cached_readbacks = SDL_getenv("SK2_SWITCH_CACHE_READBACKS");
-    switch_log_checkpoint(!cached_readbacks || *cached_readbacks != '0'
-        ? "startup: cached CPU framebuffer readback selected"
-        : "startup: direct CPU framebuffer readback selected");
-    if (!SDL_getenv("SK2_SWITCH_PACKED_COPYBACK") &&
-        std::filesystem::exists(switch_root / "config" / "packed-framebuffer-copyback", switch_path_error))
-        SDL_setenv("SK2_SWITCH_PACKED_COPYBACK", "1", 1);
-    if (!SDL_getenv("SK2_SWITCH_FUSED_RAM_TRANSFERS") &&
-        std::filesystem::exists(switch_root / "config" / "fused-framebuffer-transfers", switch_path_error))
-        SDL_setenv("SK2_SWITCH_FUSED_RAM_TRANSFERS", "1", 1);
-    const char* fused_transfers = SDL_getenv("SK2_SWITCH_FUSED_RAM_TRANSFERS");
-    switch_log_checkpoint(fused_transfers && *fused_transfers == '1'
-        ? "startup: fused framebuffer RAM transfers selected"
-        : "startup: staged framebuffer RAM transfers selected");
-    const char* packed_copyback = SDL_getenv("SK2_SWITCH_PACKED_COPYBACK");
-    switch_log_checkpoint(packed_copyback && *packed_copyback == '1'
-        ? "startup: packed RG8 framebuffer copyback selected"
-        : "startup: reference RGBA8 framebuffer copyback selected");
-    const char* direct_encoded = SDL_getenv("SK2_SWITCH_DIRECT_ENCODED_READBACKS");
-    switch_log_checkpoint(!direct_encoded || *direct_encoded != '0'
-        ? "startup: direct encoded framebuffer packing selected"
-        : "startup: cached encoded framebuffer packing selected");
-    const char* batched_copyback = SDL_getenv("SK2_SWITCH_BATCH_FRAMEBUFFER_COPYBACK");
-    switch_log_checkpoint(batched_copyback && *batched_copyback == '1'
-        ? "startup: combined depth-active draw/color copyback selected"
-        : "startup: isolated depth-active draw/color copyback selected");
-    const char* batched_color_depth = SDL_getenv("SK2_SWITCH_BATCH_COLOR_DEPTH_COPYBACK");
-    switch_log_checkpoint(batched_color_depth && *batched_color_depth == '1'
-        ? "startup: combined color/depth copyback selected"
-        : "startup: isolated color/depth copyback selected");
     switch_install_driver_log_sink();
+
+    // Enable the shipping Switch framebuffer optimizations unconditionally.
+    SDL_setenv("SK2_SWITCH_PACKED_COPYBACK", "1", 1);
+    SDL_setenv("SK2_SWITCH_FUSED_RAM_TRANSFERS", "1", 1);
 
     // NVK does not advertise the non-conformant GM20B device unless the
     // application opts in explicitly.
@@ -957,15 +853,9 @@ int main(int argc, char** argv) {
     const bool force_cpu_copy =
         std::filesystem::exists(switch_root / "config" / "force-cpu-copy", switch_path_error);
     SDL_setenv("NVK_SWITCH_WSI_CPU_COPY", force_cpu_copy ? "1" : "0", 1);
-    switch_log_checkpoint(force_cpu_copy
-        ? "startup: NVK CPU-copy recovery mode selected"
-        : "startup: NVK zero-copy presentation selected");
-
-    // Retain the guarded first native workload while allowing graphics-menu
-    // selections to control rendering resolution and multisampling.
-    SDL_setenv("SK2_SWITCH_DIAGNOSTIC_NATIVE_RESOLUTION", "1", 1);
-    switch_log_checkpoint("startup: resolution and MSAA controlled by graphics settings; 720p output retained");
-
+    if (force_cpu_copy) {
+        switch_log_checkpoint("startup: NVK CPU-copy recovery mode selected");
+    }
 #endif
     recomp::Version project_version{};
     if (!recomp::Version::from_string(version_string, project_version)) {

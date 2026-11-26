@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parent.parent
 with tempfile.TemporaryDirectory(prefix="sk2-release-test-") as directory:
     root = Path(directory)
     (root / "scripts").mkdir()
-    for name in ("release-switch.sh", "package-switch.sh", "package-switch.py"):
+    for name in ("release-switch.sh", "package-switch.py"):
         shutil.copy2(ROOT / "scripts" / name, root / "scripts" / name)
     tools = root / "tools"
     tools.mkdir()
@@ -61,12 +61,12 @@ nro[0x80+0x38+0x3060:0x80+0x38+0x3060+len(version)]=version
 (build/'snowboardkids2-recompiled.nro').write_bytes(nro)
 count=build/'build-count'
 count.write_text(str(int(count.read_text())+1 if count.exists() else 1))
-subprocess.run(["sh", "scripts/package-switch.sh"], check=True)
+subprocess.run(["python3", "scripts/package-switch.py"], check=True)
 archive = build/'snowboardkids2-switch.zip'
 if os.environ.get('CONTAMINATED'):
     with zipfile.ZipFile(archive,'a') as package:
         package.writestr('switch/snowboardkids2-recompiled/snowboardkids2.z64',b'private ROM')
-subprocess.run(["sh", "scripts/package-switch.sh", "--record", 'a'*40], check=True)
+subprocess.run(["python3", "scripts/package-switch.py", "--record", 'a'*40], check=True)
 ''')
     (root / "assets").mkdir()
     (root / "assets/font.ttf").write_bytes(b"font")
@@ -133,6 +133,6 @@ subprocess.run(["sh", "scripts/package-switch.sh", "--record", 'a'*40], check=Tr
     with zipfile.ZipFile(package, 'w') as archive:
         for name, value in contents.items():
             archive.writestr(name, value)
-    subprocess.run(["sh", "scripts/package-switch.sh", "--record", "a"*40], cwd=root, env=env, check=True)
+    subprocess.run(["python3", "scripts/package-switch.py", "--record", "a"*40], cwd=root, env=env, check=True)
     assert not run(("--use-existing",), success=False).exists()
 print("PASS: ZIP-only upload, exact source target, notes/draft/prerelease, local-only mode, source/ZIP provenance, clean staging, and ROM rejection")

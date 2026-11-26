@@ -22,7 +22,7 @@ ROM_MAGIC = {bytes.fromhex(magic) for magic in ("80371240", "37804012", "4012378
 ASSET_SUFFIXES = {".png", ".rcss", ".svg", ".ttf", ".txt"}
 
 
-def payload(packed_only=False):
+def payload():
     tracked = subprocess.check_output(
         ["git", "ls-files", "-z", "--", "assets/", "recompcontrollerdb.txt"], cwd=ROOT
     )
@@ -39,16 +39,13 @@ def payload(packed_only=False):
         if path.suffix.lower() not in ASSET_SUFFIXES or data[:4] in ROM_MAGIC:
             raise ValueError(f"Unexpected file type in tracked package inputs: {path}")
         files[APP / path] = data
-    files[APP / "config/packed-framebuffer-copyback"] = b""
-    if not packed_only:
-        files[APP / "config/fused-framebuffer-transfers"] = b""
     return files
 
 
-def pack(packed_only):
-    files = payload(packed_only)
-    stage = BUILD / ("sdcard-packed" if packed_only else "sdcard")
-    archive = BUILD / "snowboardkids2-switch-packed-copyback.zip" if packed_only else ARCHIVE
+def pack():
+    files = payload()
+    stage = BUILD / "sdcard"
+    archive = ARCHIVE
     with tempfile.TemporaryDirectory(prefix="package-", dir=BUILD) as directory:
         work = Path(directory)
         new_stage = work / "stage"
@@ -139,8 +136,6 @@ def verify(archive, version, commit):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     mode = parser.add_mutually_exclusive_group()
-    mode.add_argument("--packed-copyback", action="store_true")
-    mode.add_argument("--fused-transfers", action="store_true")
     mode.add_argument("--record", metavar="COMMIT")
     mode.add_argument("--verify", metavar="VERSION")
     parser.add_argument("--archive", type=Path, default=ARCHIVE)
@@ -152,7 +147,7 @@ def main():
         elif args.verify:
             verify(args.archive, args.verify, args.commit)
         else:
-            pack(args.packed_copyback)
+            pack()
     except (OSError, ValueError, struct.error, zipfile.BadZipFile, subprocess.CalledProcessError) as error:
         parser.exit(1, f"{error}\n")
 

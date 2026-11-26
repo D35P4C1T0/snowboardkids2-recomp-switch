@@ -28,7 +28,7 @@ typedef int AudioDriverWaveBufState;
 typedef struct { int state; } AudioDriverWaveBuf;
 typedef struct { bool playing; } AudioDriver;
 struct Hidden { AudioDriver driver; AudioDriverWaveBuf buffer[2];
-    void *pool, *buffer_tmp; bool audr_driver, audr_device, legacy; uint64_t buffers_submitted; };
+    void *pool, *buffer_tmp; bool audr_driver, audr_device; uint64_t buffers_submitted; };
 typedef struct { struct Hidden *hidden; struct { unsigned size; } spec; int enabled, shutdown; } SDL_AudioDevice;
 #define _THIS SDL_AudioDevice *this
 static unsigned waits, added, failures, feeds, errors;
@@ -83,13 +83,7 @@ int main(void) {
     /* CloseDevice must tolerate NULL hidden after a failed OpenDevice. */
     SDL_AudioDevice uninit={.hidden=NULL};
     SWITCHAUDIO_CloseDevice(&uninit);
-    /* Legacy PlayDevice must not index buffer[-1] when both slots are Queued. */
-    struct Hidden legacy_hidden={.legacy=true};
-    legacy_hidden.buffer[0].state=AudioDriverWaveBufState_Queued;
-    legacy_hidden.buffer[1].state=AudioDriverWaveBufState_Queued;
-    SDL_AudioDevice legacy_dev={.hidden=&legacy_hidden,.spec={8},.enabled=1};
-    SWITCHAUDIO_PlayDevice(&legacy_dev);
-    puts("PASS: prefill both slots, no waiting/dropped chunk in Play, wait-before-reuse, shutdown, update failure, null close, legacy queued");
+    puts("PASS: prefill both slots, no waiting/dropped chunk in Play, wait-before-reuse, shutdown, update failure, null close");
 }
 '''
 functions = '\n'.join(function(name) for name in ['update_device','SWITCHAUDIO_PlayDevice','SWITCHAUDIO_WaitDevice','SWITCHAUDIO_CloseDevice'])

@@ -7,12 +7,12 @@ REPO_ROOT=$(CDPATH= cd -- "${SCRIPT_DIR}/.." && pwd)
 usage() {
     echo "Usage:" >&2
     echo "  $0 <nro-path> <switch-ip>" >&2
-    echo "  $0 <switch-ip> [full|core|bootstrap]" >&2
+    echo "  $0 <switch-ip>" >&2
     echo "  SWITCH_IP=<switch-ip> $0 [nro-path]" >&2
 }
 
 NRO=""
-MODE=""
+MODE="full"
 SWITCH_ADDRESS=""
 
 if [[ "${1:-}" == *.nro ]]; then
@@ -25,28 +25,11 @@ if [[ "${1:-}" == *.nro ]]; then
     fi
 else
     SWITCH_ADDRESS=${1:-${SWITCH_IP:-}}
-    MODE=${2:-full}
-    if [[ $# -gt 2 ]]; then
+    if [[ $# -gt 2 ]] || { [[ $# -eq 2 ]] && [[ "$2" != "full" ]]; }; then
         usage
         exit 1
     fi
-
-    case "${MODE}" in
-        full)
-            NRO="${REPO_ROOT}/build/switch/full/snowboardkids2-recompiled.nro"
-            ;;
-        core)
-            NRO="${REPO_ROOT}/build/switch/core/snowboardkids2-core-probe.nro"
-            ;;
-        bootstrap)
-            NRO="${REPO_ROOT}/build/switch/bootstrap/snowboardkids2-recompiled.nro"
-            ;;
-        *)
-            echo "Unknown mode '${MODE}'. Expected full, core, or bootstrap." >&2
-            usage
-            exit 1
-            ;;
-    esac
+    NRO="${REPO_ROOT}/build/switch/full/snowboardkids2-recompiled.nro"
 fi
 
 if [[ -z "${SWITCH_ADDRESS}" ]]; then
@@ -62,8 +45,8 @@ fi
 
 if [[ ! -f "${NRO}" ]]; then
     echo "NRO not found: ${NRO}" >&2
-    if [[ "${MODE}" == full || "${MODE}" == core || "${MODE}" == bootstrap ]]; then
-        echo "Build it first with: ./scripts/switch-build.sh ${MODE}" >&2
+    if [[ "${MODE}" == full ]]; then
+        echo "Build it first with: ./scripts/switch-build.sh" >&2
     fi
     exit 1
 fi

@@ -107,31 +107,17 @@ if(CMAKE_SYSTEM_NAME STREQUAL "NintendoSwitch")
     endif()
 endif()
 
-# The Horizon OS port is being brought up in layers. The bootstrap target is a
-# small, hardware-runnable NRO that validates the devkitA64, libnx, SDL2, audio,
-# controller, and SD-card path before the much larger RT64 Vulkan integration is
-# enabled. Keeping it as an early return also avoids perturbing desktop builds.
 if(CMAKE_SYSTEM_NAME STREQUAL "NintendoSwitch")
     option(
-        SK2_SWITCH_BOOTSTRAP_ONLY
-        "Build the Switch platform bootstrap NRO instead of the game runtime"
-        ON
+        SK2_SWITCH_DEV_SCREENSHOTS
+        "Enable the nxlink HTTP screenshot capture server in Switch builds"
+        OFF
     )
-    option(
-        SK2_SWITCH_CORE_PROBE_ONLY
-        "Cross-build the complete runtime/frontend/RT64 stack without generated game code"
-        ON
-    )
-
-    if(SK2_SWITCH_BOOTSTRAP_ONLY)
-        add_subdirectory(switch)
-        return()
-    endif()
 
     if(SK2_SWITCH_DEPS_ROOT STREQUAL "")
         message(FATAL_ERROR
-            "Full Switch builds require disposable patched dependencies. "
-            "Run scripts/switch-build.sh core or scripts/switch-build.sh full."
+            "Switch builds require disposable patched dependencies. "
+            "Run scripts/switch-build.sh."
         )
     endif()
     foreach(SK2_SWITCH_DEPENDENCY_DIR IN ITEMS
@@ -157,25 +143,6 @@ if(CMAKE_SYSTEM_NAME STREQUAL "NintendoSwitch")
 
     set(SDL2_FOUND TRUE)
     set(SDL2_LIBRARIES SDL2::SDL2)
-
-    # RecompFrontend reuses RT64's shader helper functions from the parent
-    # scope, so provide runnable host DXC settings before adding either tree.
-    set(DXC_SPV_OPTS "-spirv" "-fspv-target-env=vulkan1.0" "-fvk-use-dx-layout")
-    set(DXC_PS_OPTS "-I${CMAKE_SOURCE_DIR}/src" "-E" "PSMain" "-T" "ps_6_0" "-D" "DYNAMIC_RENDER_PARAMS")
-    set(DXC_VS_OPTS "-I${CMAKE_SOURCE_DIR}/src" "-E" "VSMain" "-T" "vs_6_0" "-D" "DYNAMIC_RENDER_PARAMS" "-fvk-invert-y")
-    if(CMAKE_HOST_APPLE)
-        if(CMAKE_HOST_SYSTEM_PROCESSOR MATCHES "x86_64|amd64|AMD64")
-            set(DXC
-                "DYLD_LIBRARY_PATH=${SK2_RT64_SOURCE_DIR}/src/contrib/dxc/lib/x64"
-                "${SK2_RT64_SOURCE_DIR}/src/contrib/dxc/bin/x64/dxc-macos"
-            )
-        else()
-            set(DXC
-                "DYLD_LIBRARY_PATH=${SK2_RT64_SOURCE_DIR}/src/contrib/dxc/lib/arm64"
-                "${SK2_RT64_SOURCE_DIR}/src/contrib/dxc/bin/arm64/dxc-macos"
-            )
-        endif()
-    endif()
 
     set(SK2_HOST_FILE_TO_C
         "${CMAKE_SOURCE_DIR}/build/tools/file-to-c/file_to_c"
@@ -250,6 +217,9 @@ if(CMAKE_SYSTEM_NAME STREQUAL "NintendoSwitch")
         RT64_SDL_WINDOW_VULKAN
         VK_USE_PLATFORM_VI_NN
     )
+    if(SK2_SWITCH_DEV_SCREENSHOTS)
+        add_compile_definitions(SK2_SWITCH_DEV_SCREENSHOTS=1)
+    endif()
     include_directories(BEFORE "${CMAKE_SOURCE_DIR}/switch/compat")
 endif()
 
@@ -319,59 +289,6 @@ if(NOT CMAKE_SYSTEM_NAME STREQUAL "NintendoSwitch")
 endif()
 
 target_include_directories(rt64 PRIVATE ${SK2_RT64_BINARY_DIR}/src)
-
-if (CMAKE_SYSTEM_NAME STREQUAL "NintendoSwitch" AND SK2_SWITCH_CORE_PROBE_ONLY)
-    set(RECOMP_FRONTEND_N64MODERNRUNTIME_PATH ${SK2_N64MODERNRUNTIME_SOURCE_DIR})
-    set(RECOMP_FRONTEND_RT64_PATH ${SK2_RT64_SOURCE_DIR})
-    add_subdirectory(${SK2_RECOMP_FRONTEND_SOURCE_DIR} ${SK2_RECOMP_FRONTEND_BINARY_DIR})
-
-    add_executable(SnowboardKids2SwitchCoreProbe switch/core_probe.cpp switch/texture_probe.cpp switch/full_main.cpp)
-    target_include_directories(SnowboardKids2SwitchCoreProbe PRIVATE
-        ${SK2_RECOMP_FRONTEND_SOURCE_DIR}/recompui/src
-        ${SK2_RECOMP_FRONTEND_SOURCE_DIR}/recompui/include
-        ${SK2_RT64_SOURCE_DIR}/src/contrib/plume
-        ${CMAKE_CURRENT_BINARY_DIR}/src
-        ${SDL2_INCLUDE_DIRS}
-    )
-    target_link_options(SnowboardKids2SwitchCoreProbe PRIVATE
-        "-Wl,--wrap=open"
-        "-Wl,--wrap=close"
-        "-Wl,--wrap=stat"
-        "-Wl,--wrap=lstat"
-        "-Wl,--allow-multiple-definition"
-        # Plume's static archive retains this SDL helper even though the
-        # headless probe never creates a window. Force it into SDL's archive
-        # before Plume appears later in the transitive static-link order.
-        "-Wl,--undefined=SDL_GetWindowSizeInPixels"
-    )
-    target_link_libraries(SnowboardKids2SwitchCoreProbe PRIVATE
-        recompui
-        recompinput
-        librecomp
-        ultramodern
-        rt64
-        PkgConfig::SDL2
-        PkgConfig::FREETYPE
-        "-Wl,--whole-archive"
-        SwitchNVK
-        "-Wl,--no-whole-archive"
-        "${SK2_SWITCH_NVK_EXPAT_LIBRARY}"
-    )
-
-    set(SK2_SWITCH_CORE_NACP "${CMAKE_CURRENT_BINARY_DIR}/snowboardkids2-core-probe.nacp")
-    nx_generate_nacp(
-        OUTPUT "${SK2_SWITCH_CORE_NACP}"
-        NAME "SK2 Runtime + NVK Probe"
-        AUTHOR "Snowboard Kids 2 Recompiled"
-        VERSION "${SK2_GAME_VERSION}"
-    )
-    nx_create_nro(
-        SnowboardKids2SwitchCoreProbe
-        OUTPUT "${CMAKE_BINARY_DIR}/snowboardkids2-core-probe.nro"
-        NACP "${SK2_SWITCH_CORE_NACP}"
-    )
-    return()
-endif()
 
 # RecompiledFuncs - Library containing the primary recompiler output
 add_library(RecompiledFuncs STATIC)
@@ -501,9 +418,7 @@ set (SOURCES
     ${CMAKE_SOURCE_DIR}/src/main/register_patches.cpp
 
     ${CMAKE_SOURCE_DIR}/src/game/config.cpp
-    ${CMAKE_SOURCE_DIR}/src/game/quicksaving.cpp
     ${CMAKE_SOURCE_DIR}/src/game/recomp_api.cpp
-    ${CMAKE_SOURCE_DIR}/src/game/recomp_actor_api.cpp
     ${CMAKE_SOURCE_DIR}/src/game/recomp_data_api.cpp
 
     ${CMAKE_SOURCE_DIR}/rsp/aspMain.cpp
@@ -522,12 +437,12 @@ if (CMAKE_SYSTEM_NAME STREQUAL "NintendoSwitch")
         ${CMAKE_SOURCE_DIR}/switch/profiling.cpp
         ${CMAKE_SOURCE_DIR}/switch/clock_control.cpp
         ${CMAKE_SOURCE_DIR}/switch/performance_config.cpp
-        ${CMAKE_SOURCE_DIR}/switch/asp_optimized.cpp
     )
-    # Restrict stronger optimization to the integer audio microcode. Keep the
-    # original O2 translation as a selectable reference; no fast-math flags.
-    set_source_files_properties(${CMAKE_SOURCE_DIR}/switch/asp_optimized.cpp
-        PROPERTIES COMPILE_OPTIONS "-O3")
+    # Restrict stronger optimization and vector-memory fast path to the integer audio microcode.
+    set_source_files_properties(${CMAKE_SOURCE_DIR}/rsp/aspMain.cpp
+        PROPERTIES
+            COMPILE_OPTIONS "-O3"
+            COMPILE_DEFINITIONS "SK2_SWITCH_RSP_VECTOR_MEMORY=1")
     # Resolve SDL's Switch bootstrap here so its unmodified archive backend
     # is not pulled in. The private interface is pinned to SDL 2.28.5.
     list(APPEND SOURCES ${CMAKE_SOURCE_DIR}/switch/sdl2/SDL_switchaudio.c)

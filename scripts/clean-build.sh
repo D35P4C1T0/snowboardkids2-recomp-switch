@@ -33,6 +33,12 @@ require_file() {
     fi
 }
 
+if [[ -x "$ROOT_DIR/build/tools/n64recomp/N64Recomp" ]]; then
+    N64RECOMP="$ROOT_DIR/build/tools/n64recomp/N64Recomp"
+else
+    N64RECOMP="$ROOT_DIR/N64Recomp"
+fi
+
 require_tool cmake
 require_tool ninja
 require_tool make
@@ -40,7 +46,7 @@ require_tool "$C_COMPILER"
 require_tool "$CXX_COMPILER"
 require_tool "$PATCHES_C_COMPILER"
 require_tool "$PATCHES_LD"
-require_file "$ROOT_DIR/N64Recomp"
+require_file "$N64RECOMP"
 
 echo "==> Cleaning CMake build directory: $BUILD_PATH"
 rm -rf "$BUILD_PATH"
@@ -57,7 +63,7 @@ make -C "$ROOT_DIR/patches" CC="$PATCHES_C_COMPILER" LD="$PATCHES_LD"
 echo "==> Recompiling patches"
 (
     cd "$ROOT_DIR"
-    ./N64Recomp patches.toml
+    "$N64RECOMP" patches.toml
 )
 
 echo "==> Configuring $BUILD_TYPE build"

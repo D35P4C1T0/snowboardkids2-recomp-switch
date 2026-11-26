@@ -32,7 +32,6 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
-#include <malloc.h>
 
 #include <SDL2/SDL_audio.h>
 
@@ -87,11 +86,9 @@ SWITCHAUDIO_OpenDevice(_THIS, const char *devname)
     }
     this->hidden->audr_driver = true;
 
-    const char* legacy = SDL_getenv("SK2_SWITCH_LEGACY_AUDIO");
-    this->hidden->legacy = legacy && *legacy == '1';
     this->spec.format = AUDIO_S16SYS;
     // Two 21 ms buffers tolerate the renderer's 5 ms update quantum.
-    if (!this->hidden->legacy) this->spec.samples = 1024;
+    this->spec.samples = 1024;
     SDL_CalculateAudioSpec(&this->spec);
 
     size = (u32) ((this->spec.size * 2) + 0xfff) & ~0xfff;
@@ -139,7 +136,7 @@ static void
 SWITCHAUDIO_PlayDevice(_THIS)
 {
     int current = -1;
-    if (!this->hidden->legacy && !update_device(this)) return;
+    if (!update_device(this)) return;
     for (int i = 0; i < 2; i++) {
         if (this->hidden->buffer[i].state == AudioDriverWaveBufState_Free
             || this->hidden->buffer[i].state == AudioDriverWaveBufState_Done) {
@@ -148,62 +145,31 @@ SWITCHAUDIO_PlayDevice(_THIS)
         }
     }
 
-    if (!this->hidden->legacy && current < 0) {
+    if (current < 0) {
         // WaitDevice guarantees a reusable slot before the next SDL callback.
         record_event("audio_backend_failure");
         SDL_OpenedAudioDeviceDisconnected(this);
         return;
     }
-    if (current >= 0) {
-        Uint8 *ptr = (Uint8 *) (this->hidden->pool + (current * this->spec.size));
-        memcpy(ptr, this->hidden->buffer_tmp, this->spec.size);
-        armDCacheFlush(ptr, this->spec.size);
-        if (!audrvVoiceAddWaveBuf(&this->hidden->driver, 0, &this->hidden->buffer[current])) {
-            SDL_OpenedAudioDeviceDisconnected(this);
-            return;
-        }
-        this->hidden->buffers_submitted++;
-    }
-    else if (!audrvVoiceIsPlaying(&this->hidden->driver, 0)) {
-        audrvVoiceStart(&this->hidden->driver, 0);
-    }
 
-    if (!this->hidden->legacy) {
-        // Queue immediately. Waiting for PLAYING here starves the other slot.
-        if (!audrvVoiceIsPlaying(&this->hidden->driver, 0)) audrvVoiceStart(&this->hidden->driver, 0);
-        update_device(this);
-        record_event("audio_backend_feed");
+    Uint8 *ptr = (Uint8 *) (this->hidden->pool + (current * this->spec.size));
+    memcpy(ptr, this->hidden->buffer_tmp, this->spec.size);
+    armDCacheFlush(ptr, this->spec.size);
+    if (!audrvVoiceAddWaveBuf(&this->hidden->driver, 0, &this->hidden->buffer[current])) {
+        SDL_OpenedAudioDeviceDisconnected(this);
         return;
     }
-    audrvUpdate(&this->hidden->driver);
+    this->hidden->buffers_submitted++;
 
-    if (current >= 0) {
-        while (this->hidden->buffer[current].state != AudioDriverWaveBufState_Playing) {
-            audrvUpdate(&this->hidden->driver);
-            audrenWaitFrame();
-        }
-    }
-    else {
-        current = -1;
-        for (int i = 0; i < 2; i++) {
-            if (this->hidden->buffer[i].state == AudioDriverWaveBufState_Playing) {
-                current = i;
-                break;
-            }
-        }
-        if (current >= 0) {
-            while (this->hidden->buffer[current].state == AudioDriverWaveBufState_Playing) {
-                audrvUpdate(&this->hidden->driver);
-                audrenWaitFrame();
-            }
-        }
-    }
+    // Queue immediately. Waiting for PLAYING here starves the other slot.
+    if (!audrvVoiceIsPlaying(&this->hidden->driver, 0)) audrvVoiceStart(&this->hidden->driver, 0);
+    update_device(this);
+    record_event("audio_backend_feed");
 }
 
 static void
 SWITCHAUDIO_WaitDevice(_THIS)
 {
-    if (this->hidden->legacy) return;
     while (!SDL_AtomicGet(&this->shutdown) && SDL_AtomicGet(&this->enabled)) {
         if (!update_device(this)) return;
         unsigned reusable = 0;

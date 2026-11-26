@@ -6,4 +6,5 @@ void switch_log_checkpoint(const char* message, bool reset = false);
 void switch_initialize_logging();
 void switch_shutdown_logging();
 void switch_install_driver_log_sink();
+bool switch_logging_active();
 #endif

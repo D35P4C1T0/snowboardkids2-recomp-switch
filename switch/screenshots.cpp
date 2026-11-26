@@ -1,4 +1,12 @@
 #include "screenshots.h"
+#if !defined(SK2_SWITCH_DEV_SCREENSHOTS)
+void switch_start_screenshots() {}
+void switch_stop_screenshots() {}
+extern "C" bool switch_screenshot_capture_requested() { return false; }
+extern "C" bool switch_manual_screenshot_enabled() { return false; }
+extern "C" bool switch_request_manual_screenshot() { return false; }
+extern "C" void switch_screenshot_capture_complete(const void*, size_t, uint32_t, uint32_t) {}
+#else
 #include "logging.h"
 
 #include <algorithm>
@@ -275,3 +283,4 @@ extern "C" void switch_screenshot_capture_complete(const void *pixels, size_t si
         switch_log_checkpoint(message, false);
     }
 }
+#endif

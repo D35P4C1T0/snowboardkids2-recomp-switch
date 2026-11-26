@@ -105,7 +105,7 @@ if [[ $build_only == 0 ]]; then
     cp "$archive" "$upload_dir/"
     archive="$upload_dir/${archive##*/}"
 fi
-"$SCRIPT_DIR/package-switch.sh" "${verify_args[@]}" --archive "$archive"
+python3 "$SCRIPT_DIR/package-switch.py" "${verify_args[@]}" --archive "$archive"
 
 if [[ $build_only == 1 ]]; then
     printf 'Package ready: %s\n' "$archive"

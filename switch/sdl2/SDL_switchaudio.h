@@ -36,7 +36,6 @@ struct SDL_PrivateAudioData
     void *pool;
     bool audr_device;
     bool audr_driver;
-    bool legacy;
     uint64_t buffers_submitted;
 };
 

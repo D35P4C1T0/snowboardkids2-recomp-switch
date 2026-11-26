@@ -19,6 +19,11 @@ std::mutex switch_log_mutex;
 u64 switch_log_start_tick = 0;
 int switch_nxlink_socket = -1;
 bool switch_socket_initialized = false;
+std::atomic<bool> switch_nxlink_connected{false};
+}
+
+bool switch_logging_active() {
+    return switch_nxlink_connected.load(std::memory_order_relaxed);
 }
 
 void switch_initialize_logging() {
@@ -43,6 +48,7 @@ void switch_initialize_logging() {
             if (socket_flags >= 0) {
                 fcntl(switch_nxlink_socket, F_SETFL, socket_flags | O_NONBLOCK);
             }
+            switch_nxlink_connected.store(true, std::memory_order_release);
 
             switch_start_screenshots();
         }
@@ -54,6 +60,7 @@ void switch_shutdown_logging() {
 
     {
         const std::lock_guard<std::mutex> lock(switch_log_mutex);
+        switch_nxlink_connected.store(false, std::memory_order_release);
         if (switch_nxlink_socket >= 0) {
             close(switch_nxlink_socket);
             switch_nxlink_socket = -1;
@@ -70,10 +77,16 @@ void switch_log_checkpoint(const char* message, bool reset) {
     if (message == nullptr) {
         return;
     }
+    if (!reset && !switch_nxlink_connected.load(std::memory_order_relaxed)) {
+        return;
+    }
 
     const std::lock_guard<std::mutex> lock(switch_log_mutex);
     if (reset) {
         switch_log_start_tick = armGetSystemTick();
+    }
+    if (switch_nxlink_socket < 0) {
+        return;
     }
 
     const u64 now = armGetSystemTick();
@@ -81,21 +94,20 @@ void switch_log_checkpoint(const char* message, bool reset) {
     const size_t message_length = std::strlen(message);
     const bool has_newline = message_length > 0 && message[message_length - 1] == '\n';
 
-    if (switch_nxlink_socket >= 0) {
-        char live_line[1024]{};
-        const int formatted_length = std::snprintf(
-            live_line, sizeof(live_line), "[%8" PRIu64 " ms] %s%s",
-            elapsed_ms, message, has_newline ? "" : "\n");
-        if (formatted_length > 0) {
-            const size_t live_length = std::min(
-                size_t(formatted_length), sizeof(live_line) - 1);
-            const ssize_t sent = send(switch_nxlink_socket, live_line,
-                live_length, MSG_DONTWAIT | MSG_NOSIGNAL);
-            if (sent < 0 && errno != EAGAIN && errno != EWOULDBLOCK &&
-                errno != EINTR) {
-                close(switch_nxlink_socket);
-                switch_nxlink_socket = -1;
-            }
+    char live_line[1024]{};
+    const int formatted_length = std::snprintf(
+        live_line, sizeof(live_line), "[%8" PRIu64 " ms] %s%s",
+        elapsed_ms, message, has_newline ? "" : "\n");
+    if (formatted_length > 0) {
+        const size_t live_length = std::min(
+            size_t(formatted_length), sizeof(live_line) - 1);
+        const ssize_t sent = send(switch_nxlink_socket, live_line,
+            live_length, MSG_DONTWAIT | MSG_NOSIGNAL);
+        if (sent < 0 && errno != EAGAIN && errno != EWOULDBLOCK &&
+            errno != EINTR) {
+            close(switch_nxlink_socket);
+            switch_nxlink_socket = -1;
+            switch_nxlink_connected.store(false, std::memory_order_release);
         }
     }
 }
