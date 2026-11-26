@@ -494,7 +494,39 @@ diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
          VkFramebufferCreateInfo fbInfo = {};
          fbInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
          fbInfo.renderPass = renderPass;
-@@ -3117,11 +3395,34 @@
+@@ -3077,12 +3355,21 @@
+     }
+ 
+     void VulkanCommandList::setScissors(const RenderRect *scissorRects, uint32_t count) {
++        auto toVkScissor = [](const RenderRect &rect) {
++            // Vulkan forbids negative scissor offsets; NVK/GM20B wraps them to 16-bit unsigned and clips all pixels.
++            const int32_t left = std::max<int32_t>(rect.left, 0);
++            const int32_t top = std::max<int32_t>(rect.top, 0);
++            const int32_t right = std::max<int32_t>(rect.right, left);
++            const int32_t bottom = std::max<int32_t>(rect.bottom, top);
++            return VkRect2D{ VkOffset2D{ left, top }, VkExtent2D{ uint32_t(right - left), uint32_t(bottom - top) } };
++        };
++
+         if (count > 1) {
+             thread_local std::vector<VkRect2D> scissorVector;
+             scissorVector.clear();
+ 
+             for (uint32_t i = 0; i < count; i++) {
+-                scissorVector.emplace_back(VkRect2D{ VkOffset2D{ scissorRects[i].left, scissorRects[i].top }, VkExtent2D{ uint32_t(scissorRects[i].right - scissorRects[i].left), uint32_t(scissorRects[i].bottom - scissorRects[i].top) } });
++                scissorVector.emplace_back(toVkScissor(scissorRects[i]));
+             }
+ 
+             if (!scissorVector.empty()) {
+@@ -3091,7 +3378,7 @@
+         }
+         else {
+             // Single element fast path.
+-            VkRect2D scissor = VkRect2D{ VkOffset2D{ scissorRects[0].left, scissorRects[0].top }, VkExtent2D{ uint32_t(scissorRects[0].right - scissorRects[0].left), uint32_t(scissorRects[0].bottom - scissorRects[0].top) } };
++            VkRect2D scissor = toVkScissor(scissorRects[0]);
+             vkCmdSetScissor(vk, 0, 1, &scissor);
+         }
+     }
+@@ -3117,11 +3404,34 @@
  
          if (clearRectsCount > 0) {
              for (uint32_t i = 0; i < clearRectsCount; i++) {
@@ -533,7 +565,7 @@ diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
                  clearRect.baseArrayLayer = 0;
                  clearRect.layerCount = 1;
                  rectVector.emplace_back(clearRect);
-@@ -3144,10 +3445,13 @@
+@@ -3144,10 +3454,13 @@
          assert(attachmentIndex < targetFramebuffer->colorAttachments.size());
          assert((clearRectsCount == 0) || (clearRects != nullptr));
  
@@ -549,7 +581,7 @@ diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
  
          VkClearAttachment attachment = {};
          auto &rgba = attachment.clearValue.color.float32;
-@@ -3168,6 +3472,9 @@
+@@ -3168,6 +3481,9 @@
  
          thread_local std::vector<VkClearRect> rectVector;
          clearCommonRectVector(targetFramebuffer->getWidth(), targetFramebuffer->getHeight(), clearRects, clearRectsCount, rectVector);
@@ -559,7 +591,7 @@ diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
  
          VkClearAttachment attachment = {};
          attachment.clearValue.depthStencil.depth = depthValue;
-@@ -3229,6 +3536,51 @@
+@@ -3229,6 +3545,51 @@
              imageCopy.imageExtent.depth = srcLocation.placedFootprint.depth;
              vkCmdCopyBufferToImage(vk, srcBuffer->vk, dstTexture->vk, toImageLayout(dstTexture->textureLayout), 1, &imageCopy);
          }
@@ -611,7 +643,7 @@ diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
          else {
              VkImageCopy imageCopy = {};
              imageCopy.srcSubresource.aspectMask = toAspectFlags(srcTexture->desc.format, srcTexture->desc.flags);
-@@ -3571,13 +3923,18 @@
+@@ -3571,13 +3932,18 @@
      void VulkanCommandQueue::executeCommandLists(const RenderCommandList **commandLists, uint32_t commandListCount, RenderCommandSemaphore **waitSemaphores, uint32_t waitSemaphoreCount, RenderCommandSemaphore **signalSemaphores, uint32_t signalSemaphoreCount, RenderCommandFence *signalFence) {
          assert(commandLists != nullptr);
          assert(commandListCount > 0);
@@ -630,7 +662,7 @@ diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
  
          for (uint32_t i = 0; i < waitSemaphoreCount; i++) {
              VulkanCommandSemaphore *interfaceSemaphore = static_cast<VulkanCommandSemaphore *>(waitSemaphores[i]);
-@@ -3601,11 +3958,22 @@
+@@ -3601,11 +3967,22 @@
          submitInfo.pCommandBuffers = commandBuffers.data();
          submitInfo.commandBufferCount = uint32_t(commandBuffers.size());
  
@@ -655,7 +687,7 @@ diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
          }
  
          if (!signalSemaphoreVector.empty()) {
-@@ -3620,12 +3988,82 @@
+@@ -3620,12 +3997,82 @@
          }
  
          VkResult res;
@@ -739,7 +771,7 @@ diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
              fprintf(stderr, "vkQueueSubmit failed with error code 0x%X.\n", res);
              return;
          }
-@@ -3635,12 +4073,42 @@
+@@ -3635,12 +4082,42 @@
          assert(fence != nullptr);
  
          VulkanCommandFence *interfaceFence = static_cast<VulkanCommandFence *>(fence);
@@ -782,7 +814,7 @@ diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
          vkResetFences(device->vk, 1, &interfaceFence->vk);
      }
  
-@@ -3718,7 +4186,15 @@
+@@ -3718,7 +4195,15 @@
          }
  
          if (queues[queueIndex].mutex == nullptr) {
@@ -798,7 +830,7 @@ diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
          }
  
          virtualQueue->queue = &queues[queueIndex];
-@@ -3944,7 +4420,14 @@
+@@ -3944,7 +4429,14 @@
              createDeviceChain = &layoutFeatures;
          }
  
@@ -813,7 +845,7 @@ diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
          if (presentWaitSupported) {
              presentIdFeatures.pNext = createDeviceChain;
              createDeviceChain = &presentIdFeatures;
-@@ -4054,6 +4537,37 @@
+@@ -4054,6 +4546,37 @@
              fprintf(stderr, "vkCreateDevice failed with error code 0x%X.\n", res);
              return;
          }
@@ -851,7 +883,7 @@ diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
  
          for (uint32_t i = 0; i < queueFamilyCount; i++) {
              for (uint32_t j = 0; j < queueFamilies[i].queues.size(); j++) {
-@@ -4173,14 +4687,65 @@
+@@ -4173,14 +4696,65 @@
      }
  
      std::unique_ptr<RenderPipeline> VulkanDevice::createComputePipeline(const RenderComputePipelineDesc &desc) {
@@ -917,7 +949,7 @@ diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
          return std::make_unique<VulkanRaytracingPipeline>(this, desc, previousPipeline);
      }
  
-@@ -4438,6 +5003,12 @@
+@@ -4438,6 +5012,12 @@
          }
  
          if (vk != VK_NULL_HANDLE) {
@@ -930,7 +962,7 @@ diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
              vkDestroyDevice(vk, nullptr);
              vk = VK_NULL_HANDLE;
          }
-@@ -4464,7 +5035,12 @@
+@@ -4464,7 +5044,12 @@
  #else
      VulkanInterface::VulkanInterface() {
  #endif
@@ -943,7 +975,7 @@ diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
          if (res != VK_SUCCESS) {
              fprintf(stderr, "volkInitialize failed with error code 0x%X.\n", res);
              return;
-@@ -4500,7 +5076,7 @@
+@@ -4500,7 +5085,7 @@
          const std::unordered_set<std::string> dlssExtensions = DLSS::getRequiredInstanceExtensionsVulkan();
  #   endif
  
