@@ -7,14 +7,14 @@ import tempfile
 
 root = Path(__file__).resolve().parent.parent
 base = root / 'build/switch/deps/rt64/src'
-formats = (base/'shaders/Formats.hlsli').read_text()
+formats = (base/'shared/rt64_formats.h').read_text()
 depth = (base/'shaders/Depth.hlsli').read_text()
 random = (base/'shaders/Random.hlsli').read_text()
 shader = (base/'shaders/SwitchFramebufferColorCopyPS.hlsl').read_text()
 # Only HLSL syntax/interface adapters are replaced; the math and PS body are
 # taken verbatim from production. DXC separately compiles the real GPU shader.
-functions = formats[formats.index('static const uint DitherPatternBayer'):formats.index('uint AlphaDitherValue')]
-functions += formats[formats.index('float4 RGBA16ToFloat4'):formats.index('float4 IA16ToFloat4')]
+functions = formats[formats.index('static const uint DitherPatternBayer'):formats.index('static uint AlphaDitherValue')]
+functions += formats[formats.index('static float4 RGBA16ToFloat4'):formats.index('static float4 IA16ToFloat4')]
 functions += depth[depth.index('#define DEPTH_EXPONENT_MASK'):depth.index('float Depth16ToFloat')]
 functions += random[random.index('uint initRand'):random.index('void nextRandUint')].replace('[unroll]', '')
 functions += shader[shader.index('float4 PSMain'):].replace('in float4', 'float4').replace('in float2', 'float2').replace(' : SV_Position','').replace(' : TEXCOORD0','').replace(' : SV_TARGET','')

@@ -255,7 +255,13 @@ void start_or_select_rom() {
             case recomp::RomValidationError::Good:
                 rom_valid = true;
                 if (start_option != nullptr) {
+                    // The file dialog callback can run after the launcher's UI context has closed.
+                    recompui::ContextId context = recompui::get_launcher_context_id();
+                    bool opened = context.open_if_not_already();
                     start_option->set_title("Start game");
+                    if (opened) {
+                        context.close();
+                    }
                 }
                 break;
             case recomp::RomValidationError::FailedToOpen:
@@ -308,7 +314,7 @@ void on_launcher_init(recompui::LauncherMenu* menu) {
     logo->set_top(20.0f);
     logo->set_left(30.0f);
     logo->set_width(620.0f);
-    logo->set_height(249.0f);
+    logo->set_height_auto();
     logo->set_pointer_events(PointerEvents::None);
 
     auto* version_group = context.create_element<Element>(menu);

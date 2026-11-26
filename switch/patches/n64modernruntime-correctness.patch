@@ -1,7 +1,8 @@
 diff --git a/librecomp/src/pi.cpp b/librecomp/src/pi.cpp
+index 43509ba..e794aa5 100644
 --- a/librecomp/src/pi.cpp
 +++ b/librecomp/src/pi.cpp
-@@ -88,12 +88,11 @@
+@@ -88,12 +88,11 @@ struct {
      std::vector<char> save_buffer;
      std::thread saving_thread;
      std::filesystem::path save_file_path;
@@ -18,7 +19,7 @@ diff --git a/librecomp/src/pi.cpp b/librecomp/src/pi.cpp
  } save_context;
  
  const std::u8string save_folder = u8"saves";
-@@ -101,6 +100,7 @@
+@@ -101,6 +100,7 @@ const std::u8string save_folder = u8"saves";
  extern std::filesystem::path config_path;
  
  std::filesystem::path ultramodern::get_save_file_path() {
@@ -26,38 +27,13 @@ diff --git a/librecomp/src/pi.cpp b/librecomp/src/pi.cpp
      return save_context.save_file_path;
  }
  
-@@ -112,31 +112,40 @@
+@@ -112,31 +112,40 @@ void set_save_file_path(const std::u8string& subfolder, const std::u8string& nam
      save_context.save_file_path = save_folder_path / (name + u8".bin");
  }
  
 -void update_save_file() {
 -    bool saving_failed = false;
-+static bool write_save_file() {
-+    if (!save_context.dirty) return true;
-+    const auto& path = save_context.save_file_path;
-+    auto file = recomp::open_output_file_with_backup(path, std::ios_base::binary);
-+    file.write(save_context.save_buffer.data(), save_context.save_buffer.size());
-+    file.close();
-+    if (!file) return false;
-+    if (save_context.recovering_backup) {
-+        // Keep the recovered backup until a complete new primary is installed.
-+        std::error_code ec;
-+        std::filesystem::remove(path, ec);
-+        if (ec) return false;
-+    }
-+    if (!recomp::finalize_output_file_with_backup(path)) return false;
-+    save_context.recovering_backup = false;
-+    save_context.dirty = false;
-+    return true;
-+}
-+
-+static void report_save_failure() {
-+    ultramodern::error_handling::message_box("Failed to write the game save. Check that the save folder is writable and has free space.");
-+}
-+
-+static void update_save_file() {
-+    bool saved;
-     {
+-    {
 -        std::ofstream save_file = recomp::open_output_file_with_backup(ultramodern::get_save_file_path(), std::ios_base::binary);
 -
 -        if (save_file.good()) {
@@ -73,10 +49,33 @@ diff --git a/librecomp/src/pi.cpp b/librecomp/src/pi.cpp
 -    }
 -    if (saving_failed) {
 -        ultramodern::error_handling::message_box("Failed to write to the save file. Check your file permissions and whether the save folder has been moved to Dropbox or similar, as this can cause issues.");
--    }
--}
--
++static bool write_save_file() {
++    if (!save_context.dirty) return true;
++    const auto& path = save_context.save_file_path;
++    auto file = recomp::open_output_file_with_backup(path, std::ios_base::binary);
++    file.write(save_context.save_buffer.data(), save_context.save_buffer.size());
++    file.close();
++    if (!file) return false;
++    if (save_context.recovering_backup) {
++        // Keep the recovered backup until a complete new primary is installed.
++        std::error_code ec;
++        std::filesystem::remove(path, ec);
++        if (ec) return false;
+     }
++    if (!recomp::finalize_output_file_with_backup(path)) return false;
++    save_context.recovering_backup = false;
++    save_context.dirty = false;
++    return true;
+ }
+ 
 -extern std::atomic_bool exited;
++static void report_save_failure() {
++    ultramodern::error_handling::message_box("Failed to write the game save. Check that the save folder is writable and has free space.");
++}
++
++static void update_save_file() {
++    bool saved;
++    {
 +        std::lock_guard lock{ save_context.save_buffer_mutex };
 +        saved = write_save_file();
 +    }
@@ -89,7 +88,7 @@ diff --git a/librecomp/src/pi.cpp b/librecomp/src/pi.cpp
          bool save_buffer_updated = false;
          // Repeatedly wait for a new action to be sent.
          constexpr int64_t wait_time_microseconds = 10000;
-@@ -146,7 +155,8 @@
+@@ -146,7 +155,8 @@ void saving_thread_func(RDRAM_ARG1) {
          // Wait up to the given timeout for a write to come in. Allow multiple writes to coalesce together into a single save.
          // Cap the number of coalesced writes to guarantee that the save buffer eventually gets written out to the file even if the game
          // is constantly sending writes.
@@ -99,35 +98,33 @@ diff --git a/librecomp/src/pi.cpp b/librecomp/src/pi.cpp
              save_buffer_updated = true;
              num_actions++;
          }
-@@ -156,10 +166,8 @@
+@@ -156,10 +166,8 @@ void saving_thread_func(RDRAM_ARG1) {
              update_save_file();
          }
  
 -        if (save_context.swap_file_pending_sempahore.tryWait()) {
 -            save_context.swap_file_ready_sempahore.signal();
 -        }
--    }
-+    }
+     }
 +    update_save_file();
  }
  
  void save_write_ptr(const void* in, uint32_t offset, uint32_t count) {
-@@ -167,10 +175,11 @@
+@@ -167,10 +175,11 @@ void save_write_ptr(const void* in, uint32_t offset, uint32_t count) {
  
      {
          std::lock_guard lock { save_context.save_buffer_mutex };
 +        if (save_context.stopping) return;
          memcpy(&save_context.save_buffer[offset], in, count);
--    }
--    
--    save_context.write_sempahore.signal();
 +        save_context.dirty = true;
 +        save_context.write_semaphore.signal();
-+    }
+     }
+-    
+-    save_context.write_sempahore.signal();
  }
  
  void save_write(RDRAM_ARG PTR(void) rdram_address, uint32_t offset, uint32_t count) {
-@@ -178,12 +187,13 @@
+@@ -178,12 +187,13 @@ void save_write(RDRAM_ARG PTR(void) rdram_address, uint32_t offset, uint32_t cou
  
      {
          std::lock_guard lock { save_context.save_buffer_mutex };
@@ -135,31 +132,29 @@ diff --git a/librecomp/src/pi.cpp b/librecomp/src/pi.cpp
          for (gpr i = 0; i < count; i++) {
              save_context.save_buffer[offset + i] = MEM_B(i, rdram_address);
          }
--    }
--
--    save_context.write_sempahore.signal();
 +        save_context.dirty = true;
 +        save_context.write_semaphore.signal();
-+    }
+     }
+-
+-    save_context.write_sempahore.signal();
  }
  
  void save_read(RDRAM_ARG PTR(void) rdram_address, uint32_t offset, uint32_t count) {
-@@ -200,10 +210,11 @@
+@@ -200,10 +210,11 @@ void save_clear(uint32_t start, uint32_t size, char value) {
  
      {
          std::lock_guard lock { save_context.save_buffer_mutex };
 +        if (save_context.stopping) return;
          std::fill_n(save_context.save_buffer.begin() + start, size, value);
--    }
--
--    save_context.write_sempahore.signal();
 +        save_context.dirty = true;
 +        save_context.write_semaphore.signal();
-+    }
+     }
+-
+-    save_context.write_sempahore.signal();
  }
  
  size_t get_save_size(recomp::SaveType save_type) {
-@@ -224,19 +235,21 @@
+@@ -224,19 +235,21 @@ size_t get_save_size(recomp::SaveType save_type) {
  }
  
  void read_save_file() {
@@ -194,7 +189,7 @@ diff --git a/librecomp/src/pi.cpp b/librecomp/src/pi.cpp
      }
  }
  
-@@ -251,17 +264,24 @@
+@@ -251,17 +264,24 @@ void ultramodern::init_saving(RDRAM_ARG1) {
  }
  
  void ultramodern::change_save_file(const std::u8string& subfolder, const std::u8string& name) {
@@ -227,9 +222,10 @@ diff --git a/librecomp/src/pi.cpp b/librecomp/src/pi.cpp
      }
  }
 diff --git a/librecomp/src/recomp.cpp b/librecomp/src/recomp.cpp
+index 9bee41c..bcd4088 100644
 --- a/librecomp/src/recomp.cpp
 +++ b/librecomp/src/recomp.cpp
-@@ -173,10 +173,12 @@
+@@ -180,10 +180,12 @@ static std::vector<uint8_t> read_file(const std::filesystem::path& path) {
  
      if (file.good()) {
          file.seekg(0, std::ios::end);
@@ -244,7 +240,7 @@ diff --git a/librecomp/src/recomp.cpp b/librecomp/src/recomp.cpp
      }
  
      return ret;
-@@ -190,29 +192,26 @@
+@@ -197,29 +199,26 @@ bool write_file(const std::filesystem::path& path, const std::vector<uint8_t>& d
      }
  
      out_file.write(reinterpret_cast<const char*>(data.data()), data.size());
@@ -270,7 +266,7 @@ diff --git a/librecomp/src/recomp.cpp b/librecomp/src/recomp.cpp
  static std::unordered_set<std::u8string> valid_game_roms;
 +static std::mutex valid_game_roms_mutex;
  
- bool recomp::is_rom_valid(std::u8string& game_id) {
+ bool recomp::is_rom_valid(const std::u8string& game_id) {
 +    std::lock_guard lock(valid_game_roms_mutex);
      return valid_game_roms.contains(game_id);
  }
@@ -280,7 +276,7 @@ diff --git a/librecomp/src/recomp.cpp b/librecomp/src/recomp.cpp
      for (const auto& cur_rom_entry: game_roms) {
          if (check_stored_rom(cur_rom_entry.second)) {
              valid_game_roms.insert(cur_rom_entry.first);
-@@ -229,9 +228,9 @@
+@@ -236,9 +235,9 @@ bool recomp::load_stored_rom(const std::u8string& game_id) {
      
      std::vector<uint8_t> stored_rom_data = read_file(config_path / find_it->second.stored_filename());
  
@@ -293,7 +289,7 @@ diff --git a/librecomp/src/recomp.cpp b/librecomp/src/recomp.cpp
          return false;
      }
  
-@@ -391,22 +390,21 @@
+@@ -398,22 +397,21 @@ recomp::RomValidationError recomp::select_rom(const std::filesystem::path& rom_p
      }
  
      if (!check_hash(rom_data, game_entry.rom_hash)) {
@@ -312,13 +308,11 @@ diff --git a/librecomp/src/recomp.cpp b/librecomp/src/recomp.cpp
 -                return recomp::RomValidationError::IncorrectRom;
 -            }
 -        }
--    }
--
++        return recomp::RomValidationError::IncorrectRom;
+     }
+ 
 -    write_file(config_path / game_entry.stored_filename(), rom_data);
 -    
-+        return recomp::RomValidationError::IncorrectRom;
-+    }
-+
 +    if (!write_file(config_path / game_entry.stored_filename(), rom_data)) {
 +        return recomp::RomValidationError::OtherError;
 +    }
@@ -329,7 +323,7 @@ diff --git a/librecomp/src/recomp.cpp b/librecomp/src/recomp.cpp
      return recomp::RomValidationError::Good;
  }
  
-@@ -552,11 +550,11 @@
+@@ -559,11 +557,11 @@ std::atomic_bool exited = false;
  moodycamel::LightweightSemaphore graphics_shutdown_ready;
  
  void ultramodern::quit() {
@@ -342,7 +336,7 @@ diff --git a/librecomp/src/recomp.cpp b/librecomp/src/recomp.cpp
      current_game.reset();
  }
  
-@@ -705,12 +703,22 @@
+@@ -712,12 +710,22 @@ bool wait_for_game_started(uint8_t* rdram, recomp_context* context) {
          // TODO refactor this to allow a project to specify what entrypoint function to run for a give game.
          case GameStatus::Running:
              {
@@ -353,18 +347,18 @@ diff --git a/librecomp/src/recomp.cpp b/librecomp/src/recomp.cpp
 +                    std::lock_guard lock(current_game_mutex);
 +                    if (exited || !current_game) return true;
 +                    game_id = *current_game;
-                 }
- 
--                auto find_it = game_roms.find(current_game.value());
--                const recomp::GameEntry& game_entry = find_it->second;
++                }
++
 +                if (!recomp::load_stored_rom(game_id)) {
 +                    ultramodern::error_handling::message_box("Could not read the stored ROM. Select the original ROM again.");
 +                    std::lock_guard lock(current_game_mutex);
 +                    if (exited) return true;
 +                    game_status.store(GameStatus::None);
 +                    return false;
-+                }
-+
+                 }
+ 
+-                auto find_it = game_roms.find(current_game.value());
+-                const recomp::GameEntry& game_entry = find_it->second;
 +                const recomp::GameEntry& game_entry = game_roms.at(game_id);
  
                  init(rdram, context, game_entry.entrypoint_address);

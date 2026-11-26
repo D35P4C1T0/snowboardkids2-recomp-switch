@@ -63,11 +63,11 @@ namespace recomp {
         uint64_t rom_hash = 1;
         std::u8string stored_filename() const { return u8"stored.rom"; }
     };
-    RomValidationError select_rom(const std::filesystem::path&, std::u8string&);
+    RomValidationError select_rom(const std::filesystem::path&, const std::u8string&);
     void set_rom_contents(std::vector<uint8_t>&&) {}
-    bool is_rom_valid(std::u8string&);
+    bool is_rom_valid(const std::u8string&);
     void check_all_stored_roms();
-    bool load_stored_rom(std::u8string&);
+    bool load_stored_rom(const std::u8string&);
 }
 std::unordered_map<std::u8string, recomp::GameEntry> game_roms{{u8"game", {}}};
 std::filesystem::path config_path = ".";

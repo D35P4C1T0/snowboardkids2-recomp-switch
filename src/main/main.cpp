@@ -1,5 +1,6 @@
 #include <cstdio>
 #include <algorithm>
+#include <cstdlib>
 #include <cassert>
 #include <cstring>
 #include <vector>
@@ -62,10 +63,12 @@
 #if !defined(__SWITCH__)
 #include "mods/snowboardkids2_randomizer.h"
 #include "mods/snowboardkids2_time_trial.h"
+#include "mods/snowboardkids2_quickstart.h"
+#include "mods/snowboardkids2_nepo_kids.h"
 #endif
 #include "sk2_game_version.h"
 #include "sk2_launcher.h"
-#include "sk2_theme.h"
+#include "recomp_theme.h"
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -181,6 +184,29 @@ bool SetImageAsIcon(const char* filename, SDL_Window* window) {
 
 SDL_Window* window;
 
+static void apply_test_hud_ratio_override() {
+    const char* test_hud_ratio = std::getenv("TEST_HUD_RATIO");
+    ultramodern::renderer::GraphicsConfig graphics_config = ultramodern::renderer::get_graphics_config();
+    ultramodern::renderer::HUDRatioMode hud_ratio_mode;
+
+    if (test_hud_ratio == nullptr) {
+        return;
+    }
+
+    if (std::strcmp(test_hud_ratio, "original") == 0) {
+        hud_ratio_mode = ultramodern::renderer::HUDRatioMode::Original;
+    } else if (std::strcmp(test_hud_ratio, "16:9") == 0) {
+        hud_ratio_mode = ultramodern::renderer::HUDRatioMode::Clamp16x9;
+    } else if (std::strcmp(test_hud_ratio, "expanded") == 0) {
+        hud_ratio_mode = ultramodern::renderer::HUDRatioMode::Full;
+    } else {
+        return;
+    }
+
+    graphics_config.hr_option = hud_ratio_mode;
+    ultramodern::renderer::set_graphics_config(graphics_config);
+}
+
 ultramodern::renderer::WindowHandle create_window(ultramodern::gfx_callbacks_t::gfx_data_t) {
     switch_log_checkpoint("gfx: create_window entered");
 #if defined(__SWITCH__)
@@ -192,15 +218,49 @@ ultramodern::renderer::WindowHandle create_window(ultramodern::gfx_callbacks_t::
     return window;
 #else
     uint32_t flags = SDL_WINDOW_RESIZABLE;
+    int window_width = 1600;
+    int window_height = 960;
 
 #if defined(__APPLE__)
     flags |= SDL_WINDOW_METAL;
 #elif defined(RT64_SDL_WINDOW_VULKAN)
     flags |= SDL_WINDOW_VULKAN;
 #endif
+#if defined(_WIN32) || defined(__APPLE__) || (defined(__linux__) && !defined(__ANDROID__))
+    const char* test_resolution = std::getenv("TEST_RESOLUTION");
+    const bool test_normal = test_resolution != nullptr && std::strcmp(test_resolution, "normal") == 0;
+    const bool test_ultrawide = test_resolution != nullptr && std::strcmp(test_resolution, "ultrawide") == 0;
+    const bool test_tall = test_resolution != nullptr && std::strcmp(test_resolution, "tall") == 0;
+    const char* test_window_width = std::getenv("TEST_WINDOW_WIDTH");
+    const char* test_window_height = std::getenv("TEST_WINDOW_HEIGHT");
+    bool test_resolution_applied = false;
+
+    SDL_Rect display_bounds{};
+    if (test_tall) {
+        // Preserve the 1470:923 usable-frame aspect ratio of the project's laptop while fitting within the UTM
+        // guest's 812-point usable height. This exercises the output geometry that exposed split-divider and
+        // race-progress alignment errors without allowing the guest window manager to clip the requested window.
+        window_width = 1294;
+        window_height = 812;
+        test_resolution_applied = true;
+    } else if ((test_normal || test_ultrawide) && SDL_GetDisplayUsableBounds(0, &display_bounds) == 0) {
+        window_width = display_bounds.w;
+        window_height = test_ultrawide ? display_bounds.h / 2 : display_bounds.h;
+        test_resolution_applied = true;
+    }
+    if (test_resolution_applied && test_window_width != nullptr && test_window_height != nullptr) {
+        int requested_width = std::atoi(test_window_width);
+        int requested_height = std::atoi(test_window_height);
+        if (requested_width > 0 && requested_height > 0) {
+            // Test-only scale sweeps retain the named reference profile while probing nearby output-pixel mappings.
+            window_width = requested_width;
+            window_height = requested_height;
+        }
+    }
+#endif
+
     window = SDL_CreateWindow("Snowboard Kids 2: Recompiled", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-                              1600, 960,
-                              flags);
+                              window_width, window_height, flags);
 #if defined(__linux__)
     SetImageAsIcon("icons/512.png", window);
     if (ultramodern::renderer::get_graphics_config().wm_option ==
@@ -217,6 +277,25 @@ ultramodern::renderer::WindowHandle create_window(ultramodern::gfx_callbacks_t::
         exit_error("Failed to create window: %s\n", SDL_GetError());
     }
     switch_log_checkpoint("gfx: SDL window created");
+
+    SDL_SetWindowMinimumSize(window, 1, 240);
+
+#if defined(_WIN32) || defined(__APPLE__) || (defined(__linux__) && !defined(__ANDROID__))
+    if (test_resolution_applied) {
+        int border_top = 0;
+        int border_left = 0;
+        int border_bottom = 0;
+        int border_right = 0;
+        if (SDL_GetWindowBordersSize(window, &border_top, &border_left, &border_bottom, &border_right) == 0) {
+            const int content_width = window_width - border_left - border_right;
+            const int content_height = window_height - border_top - border_bottom;
+            if (content_width > 0 && content_height > 0) {
+                SDL_SetWindowSize(window, content_width, content_height);
+                SDL_SetWindowPosition(window, SDL_WINDOWPOS_CENTERED_DISPLAY(0), SDL_WINDOWPOS_CENTERED_DISPLAY(0));
+            }
+        }
+    }
+#endif
 
     // macOS can leave the launcher behind the terminal/harness that spawned it,
     // so explicitly ask SDL to surface the window after creation.
@@ -793,6 +872,31 @@ ultramodern::input::connected_device_info_t get_sk2_connected_device_info(int co
     };
 }
 
+bool get_sk2_n64_input(int controller_num, uint16_t* buttons_out, float* x_out, float* y_out) {
+    static const int mirrored_player_count = []() {
+        const char* value = std::getenv("RECOMP_MIRROR_INPUTS");
+        if (value == nullptr) {
+            return 0;
+        }
+
+        char* end = nullptr;
+        const long count = std::strtol(value, &end, 10);
+        if (end == value || *end != '\0' || count < 2 || count > sk2_max_players) {
+            fprintf(stderr, "Ignoring invalid RECOMP_MIRROR_INPUTS value '%s'; expected 2 through %d.\n", value,
+                    sk2_max_players);
+            return 0;
+        }
+
+        return static_cast<int>(count);
+    }();
+
+    // Validation sequences assign one keyboard to several players. Their normal multiplayer profiles intentionally
+    // have separate bindings, so mirror Player 1 here only when the test environment explicitly requests it.
+    const int input_player =
+        controller_num > 0 && controller_num < mirrored_player_count ? 0 : controller_num;
+    return recompinput::profiles::get_n64_input(input_player, buttons_out, x_out, y_out);
+}
+
 #define REGISTER_FUNC(name) recomp::overlays::register_base_export(#name, name)
 
 int main(int argc, char** argv) {
@@ -946,7 +1050,7 @@ int main(int argc, char** argv) {
         fprintf(stderr, "Failed to load controller mappings: %s\n", SDL_GetError());
     }
 
-    sk2::theme::apply();
+    snowboardkids::theme::apply();
     recomp::register_config_path(recompui::file::get_app_folder_path());
 
     // Register supported games and patches
@@ -961,6 +1065,12 @@ int main(int argc, char** argv) {
     recomp::mods::register_embedded_mod(
         "snowboardkids2_time_trial",
         { reinterpret_cast<const uint8_t*>(snowboardkids2_time_trial), snowboardkids2_time_trial_size });
+    recomp::mods::register_embedded_mod(
+        "snowboardkids2_quickstart",
+        { reinterpret_cast<const uint8_t*>(snowboardkids2_quickstart), snowboardkids2_quickstart_size });
+    recomp::mods::register_embedded_mod(
+        "snowboardkids2_nepo_kids",
+        { reinterpret_cast<const uint8_t*>(snowboardkids2_nepo_kids), snowboardkids2_nepo_kids_size });
 #endif
 
     REGISTER_FUNC(recomp_get_target_aspect_ratio);
@@ -987,6 +1097,8 @@ int main(int argc, char** argv) {
     zelda64::register_overlays();
     zelda64::register_patches();
     zelda64::init_config();
+    // Test overrides must run after the persisted graphics configuration is loaded or init_config replaces them.
+    apply_test_hud_ratio_override();
 
     sk2::launcher::register_callbacks(supported_games[0]);
     switch_log_checkpoint("startup: game, mods, and launcher registered");
@@ -1020,7 +1132,7 @@ int main(int argc, char** argv) {
 
     ultramodern::input::callbacks_t input_callbacks{
         .poll_input = recompinput::poll_inputs,
-        .get_input = recompinput::profiles::get_n64_input,
+        .get_input = get_sk2_n64_input,
         .set_rumble = recompinput::set_rumble,
         .get_connected_device_info = get_sk2_connected_device_info,
     };
@@ -1052,8 +1164,18 @@ int main(int argc, char** argv) {
     recomp::mods::register_mod_container_type("rtz", std::vector{ texture_pack_content_type_id }, false);
 
     switch_log_checkpoint("runtime: recomp::start entered");
-    recomp::start(project_version, {}, rsp_callbacks, renderer_callbacks, audio_callbacks, input_callbacks,
-                  gfx_callbacks, thread_callbacks, error_handling_callbacks, threads_callbacks);
+    recomp::start({
+        .project_version = project_version,
+        .window_handle = {},
+        .rsp_callbacks = rsp_callbacks,
+        .renderer_callbacks = renderer_callbacks,
+        .audio_callbacks = audio_callbacks,
+        .input_callbacks = input_callbacks,
+        .gfx_callbacks = gfx_callbacks,
+        .events_callbacks = thread_callbacks,
+        .error_handling_callbacks = error_handling_callbacks,
+        .threads_callbacks = threads_callbacks,
+    });
     switch_log_checkpoint("runtime: recomp::start returned cleanly");
 
     // Join SDL's audio thread before hbloader can unmap the executable.

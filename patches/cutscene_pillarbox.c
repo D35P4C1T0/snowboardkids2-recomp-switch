@@ -5,7 +5,7 @@
 
 #include "animation/animation_loop.h"
 #include "animation/slot_animation.h"
-#include "cutscene/1DD170.h"
+#include "cutscene/cutscene_commands.h"
 #include "cutscene/cutscene_manager.h"
 #include "transform_ids.h"
 
@@ -15,7 +15,6 @@
 #define PILLARBOX_RECTANGLE_TRANSFORM_ID_START 0x31000000
 
 extern float recomp_get_target_aspect_ratio(float original);
-extern Gfx* gDisplayListAllocPtr;
 extern char gDebugFrameFormatString[];
 
 extern void guMtxF2L(float mf[4][4], Mtx* m);
@@ -96,9 +95,9 @@ static void drawCutscenePillarbox(void* unused) {
         return;
     }
 
-    projection = arenaAlloc16(sizeof(float) * 4 * 4);
-    modelview = arenaAlloc16(sizeof(Mtx) * 2);
-    verts = arenaAlloc16(sizeof(Vtx) * 4);
+    projection = graphicsAlloc(sizeof(float) * 4 * 4);
+    modelview = graphicsAlloc(sizeof(Mtx) * 2);
+    verts = graphicsAlloc(sizeof(Vtx) * 4);
 
     if (projection == NULL || modelview == NULL || verts == NULL) {
         return;
@@ -172,7 +171,7 @@ RECOMP_PATCH s32 processCutsceneFrame(CutsceneManager* cutsceneManager) {
 
     if (cutsceneManager->showDebugInfo) {
         _Sprintf((char*) cutsceneManager->debugText, gDebugFrameFormatString, cutsceneManager->currentFrame);
-        enqueueCallbackBySlotIndex(cutsceneManager->uiResource->callbackSlotIndex, 6, &renderTextPalette,
+        pushViewportCallbackBySlot(cutsceneManager->uiResource->callbackSlotIndex, 6, &renderTextPalette,
                                    &cutsceneManager->textX);
     }
 
@@ -248,13 +247,13 @@ RECOMP_PATCH s32 processCutsceneFrame(CutsceneManager* cutsceneManager) {
     cameraOffsetX = -((curtainPos * 120) >> 16);
     cameraScaleZ = (curtainPos * 119) >> 16;
 
-    setModelRenderMode(&cutsceneManager->unk10.renderModeArg, cutsceneManager->enableTransparency);
+    setModelEntityVisibility(&cutsceneManager->modelEntity, cutsceneManager->enableTransparency);
     setModelCameraTransform(cutsceneManager->uiResource, 0, 0, -0xA0, cameraOffsetX, 0x9F, cameraScaleZ);
     setModelCameraTransform(cutsceneManager->shadowModel, 0, 0, -0xA0, cameraOffsetX, 0x9F, cameraScaleZ);
     setModelCameraTransform(cutsceneManager->reflectionModel, 0, 0, -0xA0, cameraOffsetX, 0x9F, cameraScaleZ);
 
     // @recomp draw pillarbox on top of existing frame
-    enqueueCallbackBySlotIndex(cutsceneManager->uiResource->callbackSlotIndex, 7, drawCutscenePillarbox, NULL);
+    pushViewportCallbackBySlot(cutsceneManager->uiResource->callbackSlotIndex, 7, drawCutscenePillarbox, NULL);
 
     return (cutsceneManager->currentFrame <= cutsceneManager->endFrame) ? 1 : 0;
 }

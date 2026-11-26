@@ -2,7 +2,6 @@
 
 #define MODELVIEW_RACE_PLAYER_SHADOW_ID_BASE 0xB2000000
 
-extern Gfx* gDisplayListAllocPtr;
 extern Gfx gPlayerShadowRenderSetupDl[];
 extern s32 cur_modelview_race_viewport_index;
 
@@ -29,7 +28,7 @@ static void tagRacePlayerMultipartBones(DisplayListObject* displayObjects) {
 
     for (i = 0; i < gameState->numPlayers; i++) {
         player = &gameState->players[i];
-        if ((displayObjects == player->boneDisplayObjects) && (player->flyingAttackState == 0)) {
+        if ((displayObjects == player->bodyPartDisplayObjects) && (player->flyingAttackState == 0)) {
             setDisplayListObjectRacePlayerBones(displayObjects, player->playerIndex);
             return;
         }
@@ -84,28 +83,28 @@ RECOMP_PATCH void enqueuePreLitMultiPartDisplayList(s32 arg0, DisplayListObject*
             dlPtrs = currentPart->displayLists;
             (new_var = currentPart)->transformMatrix = 0;
             if (dlPtrs->opaqueDisplayList != 0) {
-                renderFlags |= 1;
+                renderFlags |= DISPLAY_LIST_PASS_OPAQUE;
             }
             if (dlPtrs->transparentDisplayList != 0) {
-                renderFlags |= 2;
+                renderFlags |= DISPLAY_LIST_PASS_TRANSPARENT;
             }
             if (dlPtrs->overlayDisplayList != 0) {
-                renderFlags |= 4;
+                renderFlags |= DISPLAY_LIST_PASS_OVERLAY;
             }
             i += 1;
             currentPart++;
         } while (i < arg2);
     }
 
-    if (renderFlags & 1) {
-        enqueueCallbackBySlotIndex(arg0 & 0xFFFF, 1, &renderMultiPartOpaqueDisplayLists, arg1);
+    if (renderFlags & DISPLAY_LIST_PASS_OPAQUE) {
+        pushViewportCallbackBySlot(arg0 & 0xFFFF, 1, &renderMultiPartOpaqueDisplayLists, arg1);
     }
     new_var = arg1;
-    if (renderFlags & 2) {
-        enqueueCallbackBySlotIndex((arg0 & 0xFFFF) ^ 0, 3, &renderMultiPartTransparentDisplayLists, new_var);
+    if (renderFlags & DISPLAY_LIST_PASS_TRANSPARENT) {
+        pushViewportCallbackBySlot((arg0 & 0xFFFF) ^ 0, 3, &renderMultiPartTransparentDisplayLists, new_var);
     }
-    if (renderFlags & 4) {
-        enqueueCallbackBySlotIndex(arg0 & 0xFFFF, 5, &renderMultiPartOverlayDisplayLists, arg1);
+    if (renderFlags & DISPLAY_LIST_PASS_OVERLAY) {
+        pushViewportCallbackBySlot(arg0 & 0xFFFF, 5, &renderMultiPartOverlayDisplayLists, arg1);
     }
 }
 
@@ -130,28 +129,28 @@ RECOMP_PATCH void enqueueMultiPartDisplayList(s32 arg0, DisplayListObject* arg1,
             dlPtrs = currentPart->displayLists;
             (new_var = currentPart)->transformMatrix = 0;
             if (dlPtrs->opaqueDisplayList != 0) {
-                renderFlags |= 1;
+                renderFlags |= DISPLAY_LIST_PASS_OPAQUE;
             }
             if (dlPtrs->transparentDisplayList != 0) {
-                renderFlags |= 2;
+                renderFlags |= DISPLAY_LIST_PASS_TRANSPARENT;
             }
             if (dlPtrs->overlayDisplayList != 0) {
-                renderFlags |= 4;
+                renderFlags |= DISPLAY_LIST_PASS_OVERLAY;
             }
             i += 1;
             currentPart++;
         } while (i < arg2);
     }
-    if (renderFlags & 1) {
-        enqueueCallbackBySlotIndex(arg0 & 0xFFFF, 1, &renderMultiPartOpaqueDisplayListsWithLights, arg1);
+    if (renderFlags & DISPLAY_LIST_PASS_OPAQUE) {
+        pushViewportCallbackBySlot(arg0 & 0xFFFF, 1, &renderMultiPartOpaqueDisplayListsWithLights, arg1);
     }
     new_var = arg1;
-    if (renderFlags & 2) {
-        enqueueCallbackBySlotIndex((arg0 & 0xFFFF) ^ 0, 3, &renderMultiPartTransparentDisplayListsWithLights,
+    if (renderFlags & DISPLAY_LIST_PASS_TRANSPARENT) {
+        pushViewportCallbackBySlot((arg0 & 0xFFFF) ^ 0, 3, &renderMultiPartTransparentDisplayListsWithLights,
                                    new_var);
     }
-    if (renderFlags & 4) {
-        enqueueCallbackBySlotIndex(arg0 & 0xFFFF, 5, &renderMultiPartOverlayDisplayListsWithLights, arg1);
+    if (renderFlags & DISPLAY_LIST_PASS_OVERLAY) {
+        pushViewportCallbackBySlot(arg0 & 0xFFFF, 5, &renderMultiPartOverlayDisplayListsWithLights, arg1);
     }
 }
 
@@ -162,7 +161,7 @@ RECOMP_PATCH void renderRacerProjectedShadow(Player* player) {
     s32 sampleIndex;
 
     if (player->shadowMeshNeedsUpdate != 0) {
-        player->shadowVertices = arenaAlloc16(0x90);
+        player->shadowVertices = graphicsAlloc(9 * sizeof(Vtx));
         if (player->shadowVertices != NULL) {
             sampleIndex = 0;
             shadowAlpha = 0x50;
@@ -207,7 +206,7 @@ RECOMP_PATCH void renderRacerProjectedShadow(Player* player) {
             player->shadowVertices[8].v.tc[1] = 0x7E0;
         }
 
-        player->shadowMatrix = arenaAlloc16(0x40);
+        player->shadowMatrix = graphicsAlloc(sizeof(Mtx));
         if (player->shadowMatrix != NULL) {
             memcpy(&gScaleMatrix.translation, &player->shadowSamplePositions[0], sizeof(Vec3i));
             transform3DToN64Mtx(&gScaleMatrix, player->shadowMatrix);
@@ -220,9 +219,9 @@ RECOMP_PATCH void renderRacerProjectedShadow(Player* player) {
         pushRacerProjectedShadowMatrixGroup(player);
 
         gSPMatrix(gDisplayListAllocPtr++, player->shadowMatrix, (G_MTX_NOPUSH | G_MTX_LOAD) | G_MTX_MODELVIEW);
-        gGraphicsMode = -1;
+        gGraphicsMode = GRAPHICS_MODE_INVALID;
         gSPDisplayList(gDisplayListAllocPtr++, gPlayerShadowRenderSetupDl);
-        getTableEntryByU16Index(player->assetTable, 0, &shadowTexture);
+        getTableEntryByU16Index(player->itemSpriteAssetTable, 0, &shadowTexture);
 
         gDPSetTextureImage(gDisplayListAllocPtr++, G_IM_FMT_I, G_IM_SIZ_16b, 1, shadowTexture.data_ptr);
         gDPSetTile(gDisplayListAllocPtr++, G_IM_FMT_I, G_IM_SIZ_16b, 0, 0, G_TX_LOADTILE, 0, G_TX_CLAMP, 5, G_TX_NOLOD,

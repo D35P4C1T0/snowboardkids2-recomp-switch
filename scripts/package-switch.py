@@ -23,22 +23,29 @@ ASSET_SUFFIXES = {".png", ".rcss", ".svg", ".ttf", ".txt"}
 
 
 def payload():
-    tracked = subprocess.check_output(
-        ["git", "ls-files", "-z", "--", "assets/", "recompcontrollerdb.txt"], cwd=ROOT
-    )
-    paths = [Path(os.fsdecode(name)) for name in tracked.split(b"\0") if name]
-    if Path("recompcontrollerdb.txt") not in paths or len(paths) < 2:
-        raise ValueError("Missing tracked Switch assets or controller database")
-
     files = {APP / NRO: (BUILD / NRO).read_bytes()}
-    for path in paths:
-        source = ROOT / path
-        if source.resolve() != source or not source.is_file():
-            raise ValueError(f"Expected a regular tracked package file: {path}")
-        data = source.read_bytes()
-        if path.suffix.lower() not in ASSET_SUFFIXES or data[:4] in ROM_MAGIC:
-            raise ValueError(f"Unexpected file type in tracked package inputs: {path}")
-        files[APP / path] = data
+
+    def add_tracked(repo_dir, *specs, dest_prefix=Path()):
+        tracked = subprocess.check_output(
+            ["git", "ls-files", "-z", "--", *specs], cwd=repo_dir
+        )
+        paths = [Path(os.fsdecode(name)) for name in tracked.split(b"\0") if name]
+        for path in paths:
+            source = repo_dir / path
+            if source.resolve() != source or not source.is_file():
+                raise ValueError(f"Expected a regular tracked package file: {path}")
+            data = source.read_bytes()
+            if path.suffix.lower() not in ASSET_SUFFIXES or data[:4] in ROM_MAGIC:
+                raise ValueError(f"Unexpected file type in tracked package inputs: {path}")
+            files[APP / dest_prefix / path] = data
+        return paths
+
+    theme_dir = ROOT / "lib/recomp-theme"
+    if (theme_dir / "assets").is_dir():
+        add_tracked(theme_dir, "assets/")
+    root_paths = add_tracked(ROOT, "assets/", "recompcontrollerdb.txt")
+    if Path("recompcontrollerdb.txt") not in root_paths or len(files) < 3:
+        raise ValueError("Missing tracked Switch assets or controller database")
     return files
 
 

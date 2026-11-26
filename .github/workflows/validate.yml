@@ -169,8 +169,7 @@ jobs:
 
       - name: Prepare Archive
         run: |
-          mv cmake-build/SnowboardKids2Recompiled SnowboardKids2Recompiled
-          tar -czf SnowboardKids2Recompiled.tar.gz SnowboardKids2Recompiled assets/ recompcontrollerdb.txt
+          tar -czf SnowboardKids2Recompiled.tar.gz -C cmake-build SnowboardKids2Recompiled assets/ recompcontrollerdb.txt
 
       - name: Archive SnowboardKids2Recomp
         uses: actions/upload-artifact@v4
@@ -353,8 +352,7 @@ jobs:
 
       - name: Prepare Archive
         run: |
-          mv cmake-build/SnowboardKids2Recompiled SnowboardKids2Recompiled
-          tar -czf SnowboardKids2Recompiled.tar.gz SnowboardKids2Recompiled assets/ recompcontrollerdb.txt
+          tar -czf SnowboardKids2Recompiled.tar.gz -C cmake-build SnowboardKids2Recompiled assets/ recompcontrollerdb.txt
 
       - name: Archive SnowboardKids2Recomp
         uses: actions/upload-artifact@v4
@@ -377,6 +375,7 @@ jobs:
     runs-on: windows-latest
     env:
       GAME_VERSION: ${{ needs.resolve_version.outputs.game_version }}
+      PYTHON: python
     strategy:
       matrix:
         type: ${{ fromJSON(inputs.WINDOWS_BUILD_TYPES) }}
@@ -395,6 +394,14 @@ jobs:
           git submodule sync --recursive
           git config submodule.snowboardkids2-recomp-syms.url "https://x-access-token:${{ secrets.PRIVATE_REPO_ACCESS }}@github.com/cdlewis/snowboardkids2-recomp-syms.git"
           git submodule update --init --recursive
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Python Dependencies
+        run: python -m pip install PyYAML
 
       - name: Install Windows Dependencies
         run: |
@@ -487,10 +494,6 @@ jobs:
 
       - name: Prepare Archive
         run: |
-          Move-Item -Path "cmake-build/SnowboardKids2Recompiled.exe" -Destination "SnowboardKids2Recompiled.exe"
-          Move-Item -Path "cmake-build/dxcompiler.dll" -Destination "dxcompiler.dll"
-          Move-Item -Path "cmake-build/dxil.dll" -Destination "dxil.dll"
-          Move-Item -Path "cmake-build/SDL2.dll" -Destination "SDL2.dll"
           Move-Item -Path "cmake-build/SnowboardKids2Recompiled.pdb" -Destination "SnowboardKids2Recompiled.pdb"
 
       - name: Archive SnowboardKids2Recomp
@@ -498,12 +501,12 @@ jobs:
         with:
           name: SnowboardKids2Recompiled-${{ runner.os }}-${{ matrix.type }}
           path: |
-            SnowboardKids2Recompiled.exe
-            dxcompiler.dll
-            dxil.dll
-            SDL2.dll
-            assets/
-            recompcontrollerdb.txt
+            cmake-build/SnowboardKids2Recompiled.exe
+            cmake-build/dxcompiler.dll
+            cmake-build/dxil.dll
+            cmake-build/SDL2.dll
+            cmake-build/assets/
+            cmake-build/recompcontrollerdb.txt
 
       - name: Archive Debug Files
         uses: actions/upload-artifact@v4
@@ -517,6 +520,7 @@ jobs:
     runs-on: macos-26
     env:
       GAME_VERSION: ${{ needs.resolve_version.outputs.game_version }}
+      PYTHON: python
     strategy:
       matrix:
         type: ${{ fromJSON(inputs.BUILD_TYPES) }}
@@ -551,6 +555,14 @@ jobs:
         id: macports
         with:
           parameters: .github/macos/macports.yaml
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Python Dependencies
+        run: python -m pip install PyYAML
 
       - name: Checkout baserom
         uses: actions/checkout@v4
