@@ -25,7 +25,10 @@ import os,sys
 args=sys.argv[1:]
 sha=('b' if os.environ.get('NEW_HEAD') else 'a')*40
 if args[0]=='ls-files':
-    sys.stdout.buffer.write(b'assets/font.ttf\\0recompcontrollerdb.txt\\0')
+    if os.getcwd().endswith('/lib/recomp-theme'):
+        sys.stdout.buffer.write(b'assets/recomp.rcss\\0')
+    else:
+        sys.stdout.buffer.write(b'assets/font.ttf\\0recompcontrollerdb.txt\\0')
 elif args[0]=='rev-parse': print(sha)
 elif args[0]=='status': print(' M source.c' if os.environ.get('DIRTY') else '',end='')
 elif args[0]=='remote': print('https://github.com/example/switch-port.git')
@@ -70,6 +73,8 @@ subprocess.run(["python3", "scripts/package-switch.py", "--record", 'a'*40], che
 ''')
     (root / "assets").mkdir()
     (root / "assets/font.ttf").write_bytes(b"font")
+    (root / "lib/recomp-theme/assets").mkdir(parents=True)
+    (root / "lib/recomp-theme/assets/recomp.rcss").write_bytes(b"body {}")
     (root / "recompcontrollerdb.txt").write_bytes(b"controllers")
     nvk = root / "build/switch/nvk/source/nvk-switch/lib"
     nvk.mkdir(parents=True)

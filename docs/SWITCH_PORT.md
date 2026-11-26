@@ -28,10 +28,10 @@ The 30-minute stress gate, wider course/item/menu coverage, handheld/docked
 tests, save/controller validation, and suspend/resume remain outstanding.
 Cold shader/pipeline initialization also remains costly.
 
-See the [build guide](../BUILDING.md#nintendo-switch-homebrew) for diagnostic
-flags. The [performance roadmap](SWITCH_PERFORMANCE_PLAN.md) tracks the phases
-and remaining work. The dated investigations below preserve earlier evidence;
-their historical FPS and audio queue readings are not the current checkpoint.
+See the [build guide](../BUILDING.md#nintendo-switch-homebrew) for current
+build and diagnostic instructions. The dated investigations below preserve
+earlier evidence; their historical FPS and audio queue readings are not the
+current checkpoint.
 
 ## GPU coherency investigation — 2026-10-01
 
@@ -401,19 +401,9 @@ Exit gate: the base game is completable with saves, menus, audio, rumble, and su
 | Mods | embedded and data-only mods first | live code mods if executable-memory policy permits |
 | UI | controller-first launcher/config | Switch keyboard and refined platform prompts |
 
-## Build the current bootstrap
+## Build dependencies and NVK driver
 
-Requirements: devkitA64, libnx, `switch-sdl2`, CMake, and either Ninja or Make.
-
-```sh
-./scripts/switch-build.sh bootstrap
-```
-
-The output is `build/switch/bootstrap/snowboardkids2-recompiled.nro`. Copy it to the target SD-card directory and launch it through title takeover. A green left status bar means SD-card persistence works; a green right status bar means the process has application-mode memory. Press Plus to exit.
-
-## Build the runtime + NVK hardware probe
-
-Non-bootstrap builds first export the pinned N64ModernRuntime, RecompFrontend,
+Switch builds first export the pinned N64ModernRuntime, RecompFrontend,
 RT64, and nested submodule commits into the ignored `build/switch/deps/`
 directory. The complete Switch patch chain is applied there in strict order,
 and CMake builds only from those disposable sources. A manifest reuses the

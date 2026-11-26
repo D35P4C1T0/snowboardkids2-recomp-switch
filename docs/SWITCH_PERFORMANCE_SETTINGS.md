@@ -94,5 +94,4 @@ at 48.417 seconds and full System restoration at 54.241 seconds, with both
 saves verified on SD and no clock-service errors. Charger/dock changes and
 forced-close behavior remain untested on device.
 
-See [the research](SWITCH_OVERCLOCK_RESEARCH.md) for upstream sources and policy
-reasoning. No voltage changes, custom loader patches or higher RAM rates are used.
+No voltage changes, custom loader patches or higher RAM rates are used.

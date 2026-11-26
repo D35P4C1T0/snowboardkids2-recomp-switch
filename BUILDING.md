@@ -86,7 +86,7 @@ Voilà! You should now have a `SnowboardKids2Recompiled` executable in the build
 
 - `build/desktop/` contains the command-line desktop build.
 - `build/tools/` contains host tools used by the Switch build.
-- `build/switch/{bootstrap,core,full}/` contains the three Switch build modes.
+- `build/switch/full/` contains the Switch build and SD-card release package.
 - `build/switch/{deps,nvk,logs}/` contains patched dependencies, the NVK driver,
   and hardware logs and screenshots.
 
@@ -155,40 +155,21 @@ counter. The standard graphics configuration keeps framebuffers on the GPU to
 target 60 FPS at stock clocks. The long hardware stress test remains open.
 See [port status](docs/SWITCH_PORT.md) for the remaining platform work.
 
-With devkitA64, libnx, and `switch-sdl2` installed, build the validated SDK/SDL
-bootstrap with:
-
-```bash
-./scripts/switch-build.sh bootstrap
-```
-
-To build the pinned NVK Vulkan driver and the complete runtime/RT64 hardware
-probe, Docker and about 15 GB of free storage are also required:
+With devkitA64, libnx, `switch-sdl2`, Docker (about 15 GB of free storage for
+the pinned NVK driver), and your own decompressed NTSC-U 1.1 ROM:
 
 ```bash
 ./scripts/build-switch-nvk.sh
-export SK2_SWITCH_NVK_ROOT="$PWD/build/switch/nvk/source/nvk-switch"
-./scripts/switch-build.sh core
-```
-
-This produces `build/switch/core/snowboardkids2-core-probe.nro`. See
-[`docs/SWITCH_PORT.md`](docs/SWITCH_PORT.md) for hardware-test details and the
-remaining release gates.
-
-After the bootstrap passes on hardware, generate the game sources from your
-own decompressed NTSC-U 1.1 ROM:
-
-```bash
 cp /path/to/your/rom.z64 snowboardkids2.z64
-./scripts/generate-recompiled-code.sh
 export SK2_SWITCH_NVK_ROOT="$PWD/build/switch/nvk/source/nvk-switch"
-./scripts/switch-build.sh full
+./scripts/switch-build.sh
 ```
 
-The full-build script reuses the pinned switch-nvk Docker image to compile the
-MIPS patch payload, which also avoids relying on Apple's Clang (it has no MIPS
-backend). The ROM and generated outputs are ignored by Git and are never
-included in a release package.
+The build script generates recompiled sources from your ROM, reuses the pinned
+switch-nvk Docker image to compile the MIPS patch payload (avoiding Apple Clang,
+which has no MIPS backend), builds the NRO, and stages the SD-card package. The
+ROM and generated outputs are ignored by Git and are never included in a release
+package.
 
 The complete SD-card payload is staged at
 `build/switch/full/sdcard/switch/snowboardkids2-recompiled/`. Copy that whole
@@ -196,15 +177,14 @@ directory to `sdmc:/switch/`, then add your own ROM as `snowboardkids2.z64`.
 The `assets/` directory is required by the launcher and must accompany the NRO.
 Alternatively, extract `build/switch/full/snowboardkids2-switch.zip`
 directly at the SD-card root; it contains the exact `switch/` hierarchy.
-The standard package includes the accepted packed-copyback and fused-transfer
-optimizations. Repackage the current NRO with `scripts/package-switch.sh`.
+Repackage the current NRO with `python3 scripts/package-switch.py`.
 
 For fast hardware iteration, enter hbmenu through Atmosphere title takeover
 (hold R while launching a game), press Y to start NetLoader, then run:
 
 ```bash
 export SWITCH_IP=192.168.222.235 # Replace with your Switch's NetLoader address.
-./scripts/switch-run.sh "$SWITCH_IP" full
+./scripts/switch-run.sh "$SWITCH_IP"
 ```
 
 The NRO is uploaded without removing the SD-card payload or ROM. Timestamped
@@ -214,11 +194,9 @@ copying a log from the SD card. The network writes are nonblocking: a lost or
 slow nxlink receiver drops messages instead of freezing a game thread. The NRO
 does not create or write `startup.log`; hardware diagnostics are nxlink-only.
 
-During a full NetLoader run, press R3 to capture the next composed frame. The
-host watcher started by `switch-run.sh` downloads it automatically to
-`build/switch/logs/manual-YYYYMMDD-HHMMSS.jpg` and prints the exact path. R3 is
-reserved only while this debug capture server is active; normal SD launches
-keep the configured game binding.
+To enable the opt-in dev HTTP screenshot server (R3 capture on port 47474),
+build and run with `SK2_SWITCH_DEV_SCREENSHOTS=1`. Normal Release builds omit
+the screenshot server so R3 keeps its configured game binding.
 
 The full Switch build presents at 1280x720. Graphics settings control the game
 render targets: Original uses native resolution, Original 2x doubles it, and
@@ -251,42 +229,23 @@ windows for plotting or comparison between builds. Use `--start-seconds` and
 `--end-seconds` to compare warm report intervals; faults are still checked
 across the complete log. The top-left FPS counter counts completed
 presentations, including interpolated frames, rather than simulation ticks.
-`--no-fps` hides it, and `--no-profile` disables detailed timing histograms.
+`--no-fps` hides it, and `--profile` enables detailed timing histograms (off by
+default).
 
 Pass diagnostic options through `SWITCH_NRO_ARGS`:
 
 ```bash
-SWITCH_NRO_ARGS='--no-profile --no-fps' ./scripts/switch-run.sh "$SWITCH_IP" full
-SWITCH_NRO_ARGS='--async-submissions' ./scripts/switch-run.sh "$SWITCH_IP" full
+SWITCH_NRO_ARGS='--profile' ./scripts/switch-run.sh "$SWITCH_IP"
+SWITCH_NRO_ARGS='--no-fps' ./scripts/switch-run.sh "$SWITCH_IP"
 ```
 
-Synchronous GPU submissions and GPU framebuffers are the default. To restore
-automatic RAM copyback for a mod that reads framebuffer pixels on the CPU,
-launch with `--ram-framebuffers` or create an empty `config/ram-framebuffers`
-in the SD-card application directory. Explicit RT64 render-to-RAM commands
-still work with the default. Asynchronous submissions and
-`--batch-framebuffer-copyback` remain experimental.
-`--direct-readbacks` and `--legacy-audio-backend` are comparison controls that
-can reduce smoothness or restore choppy sound.
+Synchronous GPU submissions, GPU framebuffers, packed framebuffer copyback, and
+fused single-pass RAM transfers are enabled by default. Create an empty
+`config/force-cpu-copy` file in the SD-card application directory only if you
+need the NVK CPU-copy scanout recovery path.
 
-Audio diagnostics include queue duration, production gaps, catch-up chunks,
-SDL/backend failures, and observed empty queues. These counters complement
-listening tests; an empty-queue observation alone is not an audible underrun.
+Run all Switch host unit tests with:
 
-
-The standard SD-card package enables packed framebuffer copyback. It halves
-eligible color/depth readback payloads and commits native bytes directly to RAM.
-`--rgba-framebuffer-copyback` restores reference mode for a
-NetLoader comparison.
-
-The standard package also enables single-pass RAM transfers. For comparisons,
-`--staged-framebuffer-transfers` retains packed copyback while disabling fused
-transfers. `scripts/package-switch.sh --packed-copyback` creates a separate
-comparison archive. The old `--fused-transfers` packaging flag remains an alias
-for the standard package.
-
-The Switch texture uploader copies and flushes active texture bytes when reusing
-larger pooled buffers. Profile windows include the worst sample's workload ID
-and approximate completion time. The analyzer's `--profiles-csv <path>` option
-exports these alongside the timing histograms. Texture traffic counters
-compare the active staging payload with retained capacity in the same run.
+```bash
+python3 scripts/test-switch.py
+```

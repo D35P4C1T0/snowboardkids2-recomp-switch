@@ -125,6 +125,10 @@ void zelda64::init_config() {
         TwoPlayerSplitScreenDirection::Vertical
     );
 
+#if defined(__SWITCH__)
+    recompui::config::create_graphics_tab();
+    sk2::clocks::create_performance_tab();
+#else
     auto& graphics_config = recompui::config::create_graphics_tab();
     // Swap the two inherently hidden options before loading settings so the visible options keep their order.
     // Neither option has index-based callbacks or dependencies; update their ID lookup entries after the swap.
@@ -139,8 +143,6 @@ void zelda64::init_config() {
     developer_mode_option.description =
         "Enables the RT64 debugger and texture dumping tools. Apply this setting and restart the game for changes to "
         "take effect. Press F1 during gameplay to open the debugger.";
-#if defined(__SWITCH__)
-    sk2::clocks::create_performance_tab();
 #endif
 
     set_control_descriptions();

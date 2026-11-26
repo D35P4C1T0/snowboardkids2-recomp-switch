@@ -41,8 +41,11 @@ def payload():
         return paths
 
     theme_dir = ROOT / "lib/recomp-theme"
-    if (theme_dir / "assets").is_dir():
-        add_tracked(theme_dir, "assets/")
+    if not (theme_dir / "assets").is_dir():
+        raise ValueError("Missing lib/recomp-theme/assets; run 'git submodule update --init lib/recomp-theme'")
+    theme_paths = add_tracked(theme_dir, "assets/")
+    if not theme_paths:
+        raise ValueError("No tracked assets found in lib/recomp-theme/assets")
     root_paths = add_tracked(ROOT, "assets/", "recompcontrollerdb.txt")
     if Path("recompcontrollerdb.txt") not in root_paths or len(files) < 3:
         raise ValueError("Missing tracked Switch assets or controller database")

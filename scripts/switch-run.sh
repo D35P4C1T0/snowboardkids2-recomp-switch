@@ -65,7 +65,7 @@ stop_capture_watcher() {
 }
 trap stop_capture_watcher EXIT INT TERM
 
-if [[ "${MODE}" == "full" ]]; then
+if [[ "${MODE}" == "full" && "${SK2_SWITCH_DEV_SCREENSHOTS:-0}" == "1" ]]; then
     "${SCRIPT_DIR}/switch-capture-watch.sh" "${SWITCH_ADDRESS}" &
     CAPTURE_WATCHER_PID=$!
 fi
